@@ -1,0 +1,68 @@
+"""Lead score and digest formatting. The AI gives sub-scores; the code owns the weights and the wording.
+
+v3: a vacancy is a lead for the owner's contracting work. Salary and work format are shown as facts only.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime
+
+from hh_scout.config import TZ, Settings
+from hh_scout.hh.salary import normalize
+
+WORK_FORMAT_RU = {"remote": "🏠 удалёнка", "hybrid": "гибрид", "office": "🏢 офис", "field": "🚗 разъездная", "unknown": None}
+EMPLOYMENT_RU = {"full": "штат", "part": "частичная занятость", "project": "📄 проектная работа", "fly_in_fly_out": "вахта", "unknown": None}
+IP_RU = {"yes": "да", "maybe": "возможно", "no": "нет"}
+COMPANY_RU = {"integrator": "интегратор", "manufacturer": "производитель оборудования", "end_customer": "конечный заказчик",
+              "agency": "агентство", "unknown": None}
+
+
+def total_score(settings: Settings, tech: int, role: int, lead: int) -> int:
+    return int(round(settings.weight_tech * tech + settings.weight_role * role + settings.weight_lead * lead))
+
+
+def format_card(position: int, v: sqlite3.Row, e: sqlite3.Row) -> str:
+    """One digest message (Telegram HTML)."""
+    sal = normalize(json.loads(v["salary_raw"]) if v["salary_raw"] else None)
+    kind = COMPANY_RU.get(e["company_kind"] or "unknown")
+    head = f"<b>{position}. {_esc(v['title'])}</b> — {_esc(v['employer'] or 'компания не указана')}" + (f" ({kind})" if kind else "")
+    facts = [f"💰 {sal.human()}", WORK_FORMAT_RU.get(v["work_format"]), f"📍 {v['area_name']}" if v["area_name"] else None,
+             EMPLOYMENT_RU.get(v["employment"] or "unknown")]
+    lead_bits = [f"🤝 ИП/ГПХ: {IP_RU.get(e['ip_gph_possible'], e['ip_gph_possible'])}"]
+    if e["is_agency"]:
+        lead_bits.append("🏷 агентство")
+    flags = json.loads(e["red_flags"]) if e["red_flags"] else []
+    lines = [
+        head,
+        "   " + " · ".join(x for x in facts if x),
+        "   " + " · ".join(lead_bits),
+        f"   ⭐ Лид: <b>{e['total']}/100</b> (техника {e['tech_score']} · роль {e['role_score']} · лид {e['lead_score']})",
+        f"   Что им нужно: {_esc(e['verdict'])}",
+    ]
+    if e["pitch_hint"]:
+        lines.append(f"   ✉️ Зацепка: {_esc(e['pitch_hint'])}")
+    if flags:
+        lines.append(f"   ⚠️ {_esc('; '.join(flags))}")
+    lines.append(f"   {v['url']}")
+    return "\n".join(lines)
+
+
+def format_letter(employer: str | None, text: str) -> str:
+    """Cover letter as a separate Telegram message; <pre> gives one-tap copy in Telegram clients."""
+    return f"✉️ Отклик для «{_esc(employer or 'компании')}»:\n<pre>{_esc(text)}</pre>"
+
+
+def digest_header(count: int, checked: int, when: datetime | None = None) -> str:
+    when = when or datetime.now(TZ)
+    months = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+    date = f"{when.day} {months[when.month - 1]}"
+    if count == 0:
+        return f"Сегодня лидов не нашлось. Проверено {checked} новых вакансий."
+    noun = "лид" if count % 10 == 1 and count % 100 != 11 else "лида" if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14 else "лидов"
+    return f"<b>Лиды за {date} — {count} {noun}</b> (проверено {checked} вакансий)"
+
+
+def _esc(s: str) -> str:
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")

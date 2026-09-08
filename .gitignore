@@ -1,0 +1,17 @@
+.env
+bridge/.env.bridge
+bridge/.venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/
+*.db
+*.db-wal
+*.db-shm
+*.egg-info/
+
+# личные данные владельца — не публиковать (шаблоны: prompts/*.example.md)
+prompts/resume.md
+prompts/candidate_profile.md
+docs/archive/2026-09-08-initial-vision/

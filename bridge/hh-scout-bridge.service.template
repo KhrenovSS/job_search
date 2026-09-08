@@ -1,0 +1,16 @@
+[Unit]
+Description=HH-Scout Claude bridge (headless Claude Code over HTTP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=@USER@
+WorkingDirectory=@REPO@/bridge
+EnvironmentFile=@REPO@/bridge/.env.bridge
+Environment=PATH=@HOME@/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=@REPO@/bridge/.venv/bin/uvicorn hh_scout_bridge:app --host 0.0.0.0 --port ${BRIDGE_PORT}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

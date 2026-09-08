@@ -1,0 +1,19 @@
+[Unit]
+Description=HH-Scout — Telegram bot, scheduler and hh.ru browsing pipeline
+After=network-online.target hh-scout-bridge.service
+Wants=network-online.target
+
+[Service]
+User=@USER@
+WorkingDirectory=@REPO@
+EnvironmentFile=@REPO@/.env
+Environment=PATH=@HOME@/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=@REPO@/src
+Environment=PYTHONUNBUFFERED=1
+Environment=TZ=Europe/Moscow
+ExecStart=@REPO@/.venv/bin/python -m hh_scout.main
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
