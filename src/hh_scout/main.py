@@ -8,6 +8,7 @@ import sys
 
 from hh_scout.bot.app import Notifier, create_bot, create_dispatcher
 from hh_scout.bot.digest import send_digest
+from hh_scout.bot.lead_actions import collapse_auto_responded
 from hh_scout.config import load_settings
 from hh_scout.db import kv_get, kv_set, open_db
 from hh_scout.logging_setup import setup_logging
@@ -33,7 +34,13 @@ async def run() -> int:
             return 0
         return await send_digest(bot, conn, settings, settings.tg_owner_chat_id)
 
-    scheduler = Scheduler(settings, conn, notify, digest)
+    async def after_crawl() -> None:
+        if settings.tg_owner_chat_id is not None:
+            n = await collapse_auto_responded(bot, conn, settings.tg_owner_chat_id)
+            if n:
+                await notify(f"✅ Свернул {n} лид(ов): вы уже откликнулись на них на hh.ru")
+
+    scheduler = Scheduler(settings, conn, notify, digest, after_crawl)
     dp = create_dispatcher(settings, conn, scheduler)
 
     # First start: leads the owner already saw as previews must not be re-sent tomorrow.

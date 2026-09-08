@@ -45,7 +45,9 @@ class EvalStats:
 
 def feedback_block(conn: sqlite3.Connection, limit: int = 20) -> str:
     rows = conn.execute(
-        """SELECT f.value, f.reason, v.title, v.employer, e.verdict FROM feedback f
+        """SELECT f.value, f.reason, v.title, v.employer, e.verdict,
+                  EXISTS(SELECT 1 FROM lead_actions a WHERE a.vacancy_id = v.id AND a.action IN ('responded','auto_responded')) AS responded
+           FROM feedback f
            JOIN vacancies v ON v.id = f.vacancy_id LEFT JOIN evaluations e ON e.vacancy_id = v.id
            ORDER BY f.id DESC LIMIT ?""", (limit,)).fetchall()
     if not rows:
@@ -54,6 +56,8 @@ def feedback_block(conn: sqlite3.Connection, limit: int = 20) -> str:
     out = []
     for r in rows:
         mark = "👍" if r["value"] > 0 else "👎"
+        if r["value"] > 0 and r["responded"]:
+            mark = "👍 (кандидат написал этой компании)"
         why = f" — причина: {reasons.get(r['reason'], r['reason'])}" if r["reason"] else ""
         out.append(f"{mark} «{r['title']}» ({r['employer'] or '—'}){why}. Вердикт ИИ был: {r['verdict'] or '—'}")
     return "\n".join(out)

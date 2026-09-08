@@ -207,10 +207,64 @@ def create_digest(conn: sqlite3.Connection, items_count: int, collected_count: i
     return int(cur.lastrowid)
 
 
-def add_digest_item(conn: sqlite3.Connection, digest_id: int, vacancy_id: int, position: int, tg_message_id: int | None) -> None:
-    conn.execute("INSERT OR REPLACE INTO digest_items(digest_id, vacancy_id, position, tg_message_id) VALUES (?, ?, ?, ?)",
-                 (digest_id, vacancy_id, position, tg_message_id))
+def add_digest_item(conn: sqlite3.Connection, digest_id: int, vacancy_id: int, position: int, tg_message_id: int | None,
+                    letter_message_id: int | None = None) -> None:
+    conn.execute("INSERT OR REPLACE INTO digest_items(digest_id, vacancy_id, position, tg_message_id, letter_message_id) "
+                 "VALUES (?, ?, ?, ?, ?)", (digest_id, vacancy_id, position, tg_message_id, letter_message_id))
     conn.execute("UPDATE vacancies SET status = 'sent', updated_at = ? WHERE id = ?", (utcnow(), vacancy_id))
+
+
+# --- lead lifecycle (v5) --------------------------------------------------------------
+
+CLOSING_ACTIONS = ("responded", "auto_responded", "disliked", "closed_stale")
+
+
+def add_action(conn: sqlite3.Connection, vacancy_id: int, action: str, reason: str | None = None) -> None:
+    conn.execute("INSERT INTO lead_actions(vacancy_id, action, reason, created_at) VALUES (?, ?, ?, ?)",
+                 (vacancy_id, action, reason, utcnow()))
+
+
+def lead_messages(conn: sqlite3.Connection, vacancy_id: int) -> tuple[int | None, int | None]:
+    """(card message id, letter message id) of the latest digest item for this vacancy."""
+    row = conn.execute("SELECT tg_message_id, letter_message_id FROM digest_items WHERE vacancy_id = ? "
+                       "ORDER BY digest_id DESC LIMIT 1", (vacancy_id,)).fetchone()
+    return (row["tg_message_id"], row["letter_message_id"]) if row else (None, None)
+
+
+_OPEN_LEADS_SQL = """
+    SELECT v.id, v.hh_id, v.title, v.employer, v.url, v.applied, e.total, d.sent_at, di.tg_message_id, di.letter_message_id,
+           EXISTS(SELECT 1 FROM lead_actions a WHERE a.vacancy_id = v.id AND a.action = 'deferred') AS deferred
+    FROM vacancies v
+    JOIN evaluations e ON e.vacancy_id = v.id
+    JOIN digest_items di ON di.vacancy_id = v.id
+    JOIN digests d ON d.id = di.digest_id
+    WHERE v.status = 'sent'
+      AND NOT EXISTS (SELECT 1 FROM lead_actions a WHERE a.vacancy_id = v.id
+                      AND a.action IN ('responded', 'auto_responded', 'disliked', 'closed_stale'))
+    GROUP BY v.id
+"""
+
+
+def open_leads(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Sent leads the owner has not acted on yet; deferred ones last, then oldest first."""
+    return conn.execute(_OPEN_LEADS_SQL + " ORDER BY deferred, d.sent_at, e.total DESC").fetchall()
+
+
+def open_leads_older_than(conn: sqlite3.Connection, cutoff_iso: str) -> list[sqlite3.Row]:
+    return conn.execute(_OPEN_LEADS_SQL + " HAVING d.sent_at < ? ORDER BY d.sent_at", (cutoff_iso,)).fetchall()
+
+
+def pending_auto_closes(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Open leads the owner has since responded to on hh.ru (applied=1) — to be collapsed in the chat."""
+    return conn.execute(_OPEN_LEADS_SQL + " HAVING v.applied = 1").fetchall()
+
+
+def is_lead_open(conn: sqlite3.Connection, vacancy_id: int) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM vacancies v WHERE v.id = ? AND v.status = 'sent' AND NOT EXISTS ("
+        "SELECT 1 FROM lead_actions a WHERE a.vacancy_id = v.id AND a.action IN ('responded','auto_responded','disliked','closed_stale'))",
+        (vacancy_id,)).fetchone()
+    return row is not None
 
 
 def add_feedback(conn: sqlite3.Connection, vacancy_id: int, value: int, reason: str | None = None) -> None:

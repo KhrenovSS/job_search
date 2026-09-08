@@ -5,11 +5,14 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 REASONS = [("salary", "💰 зарплата"), ("format", "🏢 формат"), ("stack", "🔧 не мой стек"), ("agency", "🏷 агентство"), ("skip", "пропустить")]
 
 
-def vote_kb(vacancy_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="👍", callback_data=f"fb:{vacancy_id}:up"),
-        InlineKeyboardButton(text="👎", callback_data=f"fb:{vacancy_id}:down"),
-    ]])
+def vote_kb(vacancy_id: int, *, liked: bool = False, deferred: bool = False) -> InlineKeyboardMarkup:
+    """Lead card keyboard: feedback row + action row."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👍 отмечено" if liked else "👍", callback_data=f"fb:{vacancy_id}:up"),
+         InlineKeyboardButton(text="👎", callback_data=f"fb:{vacancy_id}:down")],
+        [InlineKeyboardButton(text="✅ Написал", callback_data=f"act:{vacancy_id}:responded"),
+         InlineKeyboardButton(text="⏸ отложено" if deferred else "⏸ Позже", callback_data=f"act:{vacancy_id}:later")],
+    ])
 
 
 def reason_kb(vacancy_id: int) -> InlineKeyboardMarkup:
@@ -26,6 +29,6 @@ def done_kb(label: str = "✓ учтено") -> InlineKeyboardMarkup:
 def parse_callback(data: str) -> tuple[str, int, str] | None:
     """'fb:12:up' -> ('fb', 12, 'up'); None if malformed."""
     parts = data.split(":")
-    if len(parts) != 3 or parts[0] not in ("fb", "fbr") or not parts[1].isdigit():
+    if len(parts) != 3 or parts[0] not in ("fb", "fbr", "act") or not parts[1].isdigit():
         return None
     return parts[0], int(parts[1]), parts[2]

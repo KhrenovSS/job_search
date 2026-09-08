@@ -46,7 +46,7 @@ hh-scout.service.template (юнит, рендерится install_service.sh) ·
 src/hh_scout/
   config.py        Settings из .env (порог, веса, лимиты, окно, токены) + константы: SEARCH_QUERIES, REGION_NAMES (49),
                    TITLE_STOP/KEEP/REQUIRED_ANY;  logging_setup.py — логи в stdout/journald
-  db.py            SQLite, миграции _m001…_m004 (PRAGMA user_version), kv_get/kv_set
+  db.py            SQLite, миграции _m001…_m005 (PRAGMA user_version), kv_get/kv_set
   main.py          сервис: aiogram polling + планировщик; первый старт помечает превью как sent
   scheduler.py     дайджест по cron, случайный сбор в окне, повторы, восстановление из kv
   browser/         session.py (geckodriver --connect-existing, своё окно, бюджет) · hh_pages.py (URL, парсеры
@@ -56,7 +56,9 @@ src/hh_scout/
                    evaluator.py (лид: техника/роль/лид) · cover_letter.py (письмо на лид)
   pipeline/        repo.py (весь SQL) · collector.py · prefilter.py · details.py · ranker.py (total, карточка)
                    digest_builder.py · run.py (оркестратор одного прогона)
-  bot/             app.py (только владелец) · handlers.py (команды) · digest.py · feedback.py · keyboards.py
+  bot/             app.py (только владелец) · handlers.py (команды: /status /digest /crawl /next /pause /resume /skipped
+                   /letter /inbox /done /cleanup) · digest.py · feedback.py (кнопки 👍/👎/✅/⏸) · lead_actions.py
+                   (сворачивание карточек, автозакрытие по откликам) · keyboards.py
 tests/             53 теста; фикстуры — реальные страницы hh.ru и справочник регионов
 data/              hh_scout.db (WAL), logs/ — в .gitignore
 ```

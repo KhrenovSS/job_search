@@ -162,11 +162,29 @@ def _m004_cover_letters(conn: sqlite3.Connection) -> None:
     )
 
 
+def _m005_lead_actions(conn: sqlite3.Connection) -> None:
+    """v5: lead lifecycle in the chat — actions on sent leads and the letter message id for cleanup."""
+    conn.executescript(
+        """
+        CREATE TABLE lead_actions (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            vacancy_id  INTEGER NOT NULL REFERENCES vacancies(id),
+            action      TEXT NOT NULL,   -- liked / disliked / responded / auto_responded / deferred / closed_stale
+            reason      TEXT,
+            created_at  TEXT NOT NULL
+        );
+        CREATE INDEX idx_lead_actions_vacancy ON lead_actions(vacancy_id);
+        """
+    )
+    conn.execute("ALTER TABLE digest_items ADD COLUMN letter_message_id INTEGER")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m001_initial,
     _m002_triage_columns,
     _m003_lead_scoring,
     _m004_cover_letters,
+    _m005_lead_actions,
 ]
 
 

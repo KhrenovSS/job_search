@@ -21,8 +21,9 @@ PAUSE_S = 0.6
 
 async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, chat_id: int, note: str | None = None) -> int:
     plan = plan_digest(conn, settings)
+    open_before = len(repo.open_leads(conn))
     if not plan.leads:
-        await bot.send_message(chat_id, digest_header(0, plan.checked))
+        await bot.send_message(chat_id, digest_header(0, plan.checked, open_before=open_before))
         finalize_digest(conn, settings, [], plan.checked, note)
         return 0
     # letters for leads that still lack one (e.g. bridge was down during the crawl)
@@ -36,14 +37,16 @@ async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, ch
             log.warning("Не удалось дописать письма перед дайджестом: %s", e)
         plan = plan_digest(conn, settings)
 
-    await bot.send_message(chat_id, digest_header(len(plan.leads), plan.checked))
-    sent: list[tuple[sqlite3.Row, int | None]] = []
+    await bot.send_message(chat_id, digest_header(len(plan.leads), plan.checked, open_before=open_before))
+    sent: list[tuple[sqlite3.Row, int | None, int | None]] = []
     for i, row in enumerate(plan.leads, 1):
         await asyncio.sleep(PAUSE_S)
         msg = await bot.send_message(chat_id, format_card(i, row, row), reply_markup=vote_kb(row["id"]))
-        sent.append((row, msg.message_id))
+        letter_id = None
         if row["letter"]:
             await asyncio.sleep(PAUSE_S)
-            await bot.send_message(chat_id, format_letter(row["employer"], row["letter"]))
+            letter_msg = await bot.send_message(chat_id, format_letter(row["employer"], row["letter"]))
+            letter_id = letter_msg.message_id
+        sent.append((row, msg.message_id, letter_id))
     finalize_digest(conn, settings, sent, plan.checked, note)
     return len(sent)

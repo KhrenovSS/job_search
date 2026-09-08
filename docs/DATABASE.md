@@ -3,7 +3,8 @@
 Файл `DB_PATH` (по умолчанию `data/hh_scout.db`, WAL). Миграции — список функций в `db.py`, версия через
 `PRAGMA user_version`; применённые не редактировать, только добавлять: `_m001_initial` (таблицы),
 `_m002_triage_columns` (`vacancies.triage_priority`, `triage_note`), `_m003_lead_scoring` (`evaluations.role_score`,
-`lead_score`, `company_kind`, `pitch_hint`), `_m004_cover_letters`. Время — TEXT ISO-8601 UTC.
+`lead_score`, `company_kind`, `pitch_hint`), `_m004_cover_letters`, `_m005_lead_actions` (`lead_actions`,
+`digest_items.letter_message_id`). Время — TEXT ISO-8601 UTC.
 Весь SQL — в `src/hh_scout/pipeline/repo.py`.
 
 | Таблица | Назначение |
@@ -12,7 +13,8 @@
 | `vacancies` | все увиденные вакансии; `hh_id` UNIQUE = «уже видели» |
 | `evaluations` | одна оценка на вакансию (UNIQUE `vacancy_id`); при переоценке строка пересоздаётся |
 | `cover_letters` | текст отклика (UNIQUE `vacancy_id`), `model_note` |
-| `digests`, `digest_items` | отправленные подборки; `tg_message_id` карточки |
+| `digests`, `digest_items` | отправленные подборки; `tg_message_id` карточки, `letter_message_id` письма (для сворачивания) |
+| `lead_actions` | действия владельца по отправленному лиду: `action` liked / disliked / responded / auto_responded / deferred / closed_stale, `reason`, `created_at`. Лид открыт, пока нет responded/auto_responded/disliked/closed_stale |
 | `feedback` | 👍/👎: `value` ±1, `reason` salary/format/stack/agency/NULL |
 | `runs` | прогоны: `trigger` schedule/manual, `status` running/ok/failed, метрики collected/prefiltered/evaluated/bridge_calls/page_loads, `error`; колонка `sent` не используется |
 | `kv` | флаги, см. ниже |
@@ -25,7 +27,7 @@
 | `to_fetch` | triage | ИИ велел открыть страницу; `triage_priority` 1–3 |
 | `prefiltered` | details | страница загружена, `raw_json` заполнен, ждёт оценку |
 | `evaluated` | evaluator | оценена, строка в `evaluations`, кандидат в дайджест |
-| `sent` | digest | отправлена в дайджесте (или помечена при первом старте сервиса — `kv.preview_marked`) |
+| `sent` | digest | отправлена в дайджесте (или помечена при первом старте сервиса — `kv.preview_marked`); открыт/закрыт лид — по `lead_actions` |
 | `rejected` | digest | была `evaluated`, `total < score_threshold` на момент дайджеста |
 | `skipped` | prefilter/collector/triage/details | отсеяна; всегда с `skip_reason` |
 | `evaluation_failed` | evaluator (ИИ дважды вернул невалидный ответ / пропустил hh_id) или details (страница без `vacancyView`) | терминальная ошибка, не повторяется |

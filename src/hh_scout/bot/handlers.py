@@ -15,10 +15,11 @@ from aiogram.types import Message
 
 from hh_scout.bot.digest import send_digest
 from hh_scout.bot.keyboards import vote_kb
+from hh_scout.bot.lead_actions import cleanup_stale, collapse_lead
 from hh_scout.config import TZ, Settings
 from hh_scout.llm.cover_letter import CoverLetterWriter
 from hh_scout.pipeline import repo
-from hh_scout.pipeline.ranker import format_card, format_letter
+from hh_scout.pipeline.ranker import format_card, format_inbox, format_letter
 
 log = logging.getLogger(__name__)
 router = Router(name="commands")
@@ -27,13 +28,18 @@ HELP = (
     "<b>HH-Scout</b> — лиды с hh.ru для сотрудничества по ИП.\n"
     "Дайджест приходит каждый день в {digest}. Сбор идёт в случайное время в окне {window}.\n\n"
     "/status — состояние: Firefox, мост, последний и следующий сбор, лимиты\n"
+    "/inbox — открытые (необработанные) лиды: с чего продолжить\n"
+    "/done &lt;hh_id&gt; — отметить «написал», свернуть карточку\n"
+    "/cleanup [дней] — свернуть открытые лиды старше N дней (по умолчанию 14)\n"
     "/digest — прислать накопленные лиды сейчас\n"
     "/crawl — запустить сбор сейчас (30 мин — несколько часов, сериями с паузами)\n"
     "/next — когда следующий сбор\n"
     "/pause · /resume — приостановить/возобновить автоматические сборы\n"
     "/skipped [N] — последние отсеянные вакансии с причинами\n"
     "/letter &lt;hh_id&gt; — переписать отклик для вакансии\n"
-    "/help — эта справка"
+    "/help — эта справка\n\n"
+    "Кнопки под карточкой: 👍/👎 — обратная связь для ИИ (👎 сворачивает карточку), "
+    "✅ Написал — отклик отправлен (карточка сворачивается, письмо удаляется), ⏸ Позже — отложить."
 )
 
 
@@ -136,6 +142,36 @@ async def skipped_cmd(m: Message, command: CommandObject, conn: sqlite3.Connecti
     lines = [f"• <b>{r['title'][:60]}</b> — {r['employer'] or '—'}: {r['status']}/{r['skip_reason'] or ''}"
              + (f" ({r['triage_note']})" if r['triage_note'] and r['skip_reason'] == 'triage' else "") for r in rows]
     await m.answer("Последние отсеянные:\n" + "\n".join(lines))
+
+
+@router.message(Command("inbox"))
+async def inbox_cmd(m: Message, conn: sqlite3.Connection) -> None:
+    await m.answer(format_inbox(repo.open_leads(conn)))
+
+
+@router.message(Command("done"))
+async def done_cmd(m: Message, command: CommandObject, conn: sqlite3.Connection) -> None:
+    hh_id = (command.args or "").strip()
+    if not hh_id.isdigit():
+        await m.answer("Использование: /done &lt;hh_id&gt;")
+        return
+    row = repo.lead_by_hh_id(conn, hh_id)
+    if row is None:
+        await m.answer("Такой вакансии нет среди оценённых.")
+        return
+    with conn:
+        repo.add_feedback(conn, row["id"], +1)
+    if await collapse_lead(m.bot, conn, m.chat.id, row["id"], "responded"):
+        await m.answer(f"✅ Отмечено: написал — {row['employer'] or ''} · {row['title'][:60]}")
+    else:
+        await m.answer("Этот лид уже закрыт или ещё не отправлялся.")
+
+
+@router.message(Command("cleanup"))
+async def cleanup_cmd(m: Message, command: CommandObject, conn: sqlite3.Connection) -> None:
+    days = int(command.args) if command.args and command.args.strip().isdigit() else 14
+    n = await cleanup_stale(m.bot, conn, m.chat.id, days)
+    await m.answer(f"⌛ Свёрнуто как устаревшие: {n} (открытые лиды старше {days} дн.)")
 
 
 @router.message(Command("letter"))

@@ -57,11 +57,12 @@ def retry_time(now: datetime, rng: random.Random | None = None) -> datetime | No
 
 class Scheduler:
     def __init__(self, settings: Settings, conn, notify: Callable[[str], Awaitable[None]],
-                 send_digest: Callable[[], Awaitable[int]]) -> None:
+                 send_digest: Callable[[], Awaitable[int]], after_crawl: Callable[[], Awaitable[None]] | None = None) -> None:
         self.s = settings
         self.conn = conn
         self.notify = notify
         self.send_digest = send_digest
+        self.after_crawl = after_crawl
         self.rng = random.Random()
         self.aps = AsyncIOScheduler(timezone=TZ)
         self.crawl_lock = asyncio.Lock()
@@ -157,6 +158,12 @@ class Scheduler:
                 return None
         self.last_report = report
         await self.notify(report.as_text())
+        if self.after_crawl is not None:
+            try:
+                await self.after_crawl()
+            except Exception as e:  # noqa: BLE001
+                log.exception("after_crawl упал")
+                await self.notify(f"⚠️ Автозакрытие лидов не выполнено: {e}")
         if report.browser_error and trigger == "schedule":
             await self._maybe_retry(report)
         return report

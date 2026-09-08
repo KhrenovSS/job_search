@@ -54,14 +54,48 @@ def format_letter(employer: str | None, text: str) -> str:
     return f"✉️ Отклик для «{_esc(employer or 'компании')}»:\n<pre>{_esc(text)}</pre>"
 
 
-def digest_header(count: int, checked: int, when: datetime | None = None) -> str:
+COLLAPSED_LABELS = {
+    "responded": "✅ Написал",
+    "auto_responded": "✅ Откликнулся на hh.ru",
+    "disliked": "👎 Мимо",
+    "closed_stale": "⌛ Устарело",
+}
+_REASON_RU = {"salary": "зарплата", "format": "формат", "stack": "не мой стек", "agency": "агентство"}
+
+
+def format_collapsed(kind: str, row: sqlite3.Row, when: datetime | None = None, reason: str | None = None) -> str:
+    """One-line replacement for a processed lead card (no keyboard)."""
+    when = when or datetime.now(TZ)
+    label = COLLAPSED_LABELS.get(kind, kind)
+    tail = f" · {_REASON_RU.get(reason, reason)}" if reason else ""
+    return (f"{label} {when.strftime('%d.%m')}{tail} · {_esc(row['employer'] or 'компания не указана')} · "
+            f"<a href=\"{row['url']}\">{_esc(row['title'])}</a>")
+
+
+def format_inbox(rows: list[sqlite3.Row]) -> str:
+    if not rows:
+        return "Все лиды обработаны — открытых нет."
+    lines = ["<b>Открытые лиды</b> (сначала старые; ⏸ — отложенные внизу):"]
+    for r in rows:
+        try:
+            d = datetime.fromisoformat(r["sent_at"]).astimezone(TZ).strftime("%d.%m")
+        except (TypeError, ValueError):
+            d = "—"
+        mark = "⏸ " if r["deferred"] else ""
+        lines.append(f"{mark}{d} · {r['total']} · {_esc(r['employer'] or '—')} · <a href=\"{r['url']}\">{_esc(r['title'][:60])}</a>")
+    lines.append(f"\nИтого: {len(rows)}. Закрыть: кнопки под карточкой, /done <hh_id>, /cleanup [дней].")
+    return "\n".join(lines)
+
+
+def digest_header(count: int, checked: int, when: datetime | None = None, open_before: int = 0) -> str:
     when = when or datetime.now(TZ)
     months = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
     date = f"{when.day} {months[when.month - 1]}"
+    tail = f"\nНеобработанных с прошлых дней: {open_before} (/inbox)" if open_before else ""
     if count == 0:
-        return f"Сегодня лидов не нашлось. Проверено {checked} новых вакансий."
+        return f"Сегодня лидов не нашлось. Проверено {checked} новых вакансий.{tail}"
     noun = "лид" if count % 10 == 1 and count % 100 != 11 else "лида" if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14 else "лидов"
-    return f"<b>Лиды за {date} — {count} {noun}</b> (проверено {checked} вакансий)"
+    return f"<b>Лиды за {date} — {count} {noun}</b> (проверено {checked} вакансий){tail}"
 
 
 def _esc(s: str) -> str:
