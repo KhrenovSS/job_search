@@ -33,7 +33,7 @@ HELP = (
     "/done &lt;hh_id&gt; — отметить «написал», свернуть карточку\n"
     "/cleanup [дней] — свернуть открытые лиды старше N дней (по умолчанию 14)\n"
     "/digest — прислать накопленные лиды сейчас\n"
-    "/crawl — запустить сбор сейчас (весь остаток дневного лимита, сериями с паузами)\n"
+    "/crawl [N] — запустить сбор сейчас: не больше N страниц (без N — весь остаток дневного лимита)\n"
     "/next — когда следующий подход\n"
     "/pause · /resume — приостановить/возобновить автоматические сборы\n"
     "/skipped [N] — последние отсеянные вакансии с причинами\n"
@@ -111,11 +111,12 @@ async def digest_cmd(m: Message, settings: Settings, conn: sqlite3.Connection) -
 
 
 @router.message(Command("crawl"))
-async def crawl_cmd(m: Message, scheduler) -> None:
+async def crawl_cmd(m: Message, command: CommandObject, scheduler) -> None:
     if scheduler.crawl_lock.locked():
         await m.answer("Сбор уже идёт")
         return
-    await scheduler.trigger_manual_crawl()
+    budget = int(command.args) if command.args and command.args.strip().isdigit() else None
+    await scheduler.trigger_manual_crawl(budget)
 
 
 @router.message(Command("next"))

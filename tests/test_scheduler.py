@@ -90,7 +90,7 @@ def test_restore_keeps_v5_plan_and_fills_window_index():
     sch, conn = _scheduler()
     kv_set(conn, "next_crawl_at", _dt(7, 9, day=10).isoformat())  # saved by v5: no idx / date
     kv_set(conn, "crawl_attempts", "0")
-    sch._restore_crawl(now=_dt(19, 0))
+    sch._restore_crawl(now=_dt(22, 30))  # today's windows are over
     assert sch.next_crawl_at() == _dt(7, 9, day=10)
     assert kv_get(conn, "crawl_window_idx") == "0" and kv_get(conn, "crawl_window_date") == "2026-09-10"
 
@@ -111,8 +111,7 @@ def test_restore_after_a_missed_sitting_runs_soon_and_keeps_planned_day():
 
 def test_plan_next_after_todays_sitting_moves_to_next_window():
     sch, conn = _scheduler()
-    kv_set(conn, "crawl_window_idx", "0")
-    kv_set(conn, "crawl_window_date", "2026-09-09")
+    kv_set(conn, "sitting_done", "2026-09-09:0")
     nxt = sch.plan_next_crawl(now=_dt(8, 40))
     assert _in(nxt, (12, 0), (15, 0)) and kv_get(conn, "crawl_window_idx") == "1"
 
@@ -126,3 +125,38 @@ def test_budget_share_splits_remaining_cap_between_sittings_left():
     repo.finish_run(conn, run_id, "ok", page_loads=30)
     kv_set(conn, "crawl_window_idx", "1")
     assert sch._budget_share(_dt(13, 0)) == 45  # (120 - 30) / 2
+
+
+def test_restore_replans_today_when_saved_plan_is_for_a_later_day_and_a_window_is_free():
+    sch, conn = _scheduler()
+    kv_set(conn, "next_crawl_at", _dt(7, 9, day=10).isoformat())  # v5 plan for tomorrow morning, evening window unused
+    sch._restore_crawl(now=_dt(19, 46))
+    when = sch.next_crawl_at()
+    assert when.day == 9 and _in(when, (20, 6), (22, 0))
+    assert kv_get(conn, "crawl_window_idx") == "2" and kv_get(conn, "crawl_window_date") == "2026-09-09"
+
+
+def test_restore_keeps_tomorrow_plan_after_todays_last_sitting():
+    sch, conn = _scheduler()
+    kv_set(conn, "sitting_done", "2026-09-09:2")  # evening sitting ran, planner saved tomorrow
+    kv_set(conn, "next_crawl_at", _dt(7, 9, day=10).isoformat())
+    kv_set(conn, "crawl_window_idx", "0")
+    kv_set(conn, "crawl_window_date", "2026-09-10")
+    sch._restore_crawl(now=_dt(21, 0))
+    assert sch.next_crawl_at() == _dt(7, 9, day=10)
+    # and when less than 20 min of the last window remain, nothing fits today either
+    sch2, conn2 = _scheduler()
+    kv_set(conn2, "next_crawl_at", _dt(7, 9, day=10).isoformat())
+    sch2._restore_crawl(now=_dt(21, 50))
+    assert sch2.next_crawl_at() == _dt(7, 9, day=10)
+
+
+def test_mark_sitting_done_ignores_carried_over_sitting():
+    sch, conn = _scheduler()
+    kv_set(conn, "crawl_window_idx", "2")
+    kv_set(conn, "crawl_window_date", "2026-09-08")  # yesterday's missed evening, run this morning
+    sch._mark_sitting_done(_dt(6, 3))
+    assert kv_get(conn, "sitting_done") is None
+    kv_set(conn, "crawl_window_date", "2026-09-09")
+    sch._mark_sitting_done(_dt(7, 30))
+    assert kv_get(conn, "sitting_done") == "2026-09-09:2"

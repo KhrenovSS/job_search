@@ -2,7 +2,7 @@
 
 Pure helpers (`next_sitting`, `sittings_left`) are unit-tested; `Scheduler` wires them into APScheduler
 and the bot. State survives restarts through the `kv` table (next_crawl_at, crawl_window_idx,
-crawl_window_date, paused). Each sitting gets its share of what is left of today's page-load cap.
+crawl_window_date, sitting_done, paused). Each sitting gets its share of what is left of today's page-load cap.
 """
 
 from __future__ import annotations
@@ -131,10 +131,17 @@ class Scheduler:
         log.info("Подход запланирован на %s", when.strftime("%d.%m %H:%M"))
 
     def _done_idx_today(self, now: datetime) -> int | None:
-        """Index of the sitting already started/skipped today (kv), or None."""
-        if kv_get(self.conn, "crawl_window_date") != now.date().isoformat():
-            return None
-        return self.next_window_idx()
+        """Index of the last sitting started/skipped today (kv `sitting_done` = 'YYYY-MM-DD:idx'), or None."""
+        raw = kv_get(self.conn, "sitting_done") or ""
+        day, _, idx = raw.partition(":")
+        return int(idx) if day == now.date().isoformat() and idx.isdigit() else None
+
+    def _mark_sitting_done(self, now: datetime) -> None:
+        """Remember that today's planned window was used — unless this run is a carried-over sitting from another day."""
+        idx = self.next_window_idx()
+        if idx is not None and kv_get(self.conn, "crawl_window_date") == now.date().isoformat():
+            with self.conn:
+                kv_set(self.conn, "sitting_done", f"{now.date().isoformat()}:{idx}")
 
     def _window_idx_for(self, when: datetime) -> int:
         for idx, (start, end) in enumerate(self.windows):
@@ -151,6 +158,15 @@ class Scheduler:
         if self.next_window_idx() is None or kv_get(self.conn, "crawl_window_date") is None:  # plan saved by v5
             self._set_next_crawl(when, self._window_idx_for(when))
         if when > now:
+            if when.date() > now.date():
+                # plan for a later day while today still has an unused window (old single-sitting plan, or windows
+                # were added in .env): today's sitting must not be lost
+                today, idx = next_sitting(now, self.windows, self._done_idx_today(now), self.rng)
+                if today.date() == now.date():
+                    log.info("План %s отложен: сегодня ещё есть окно — подход в %s", when.strftime("%d.%m %H:%M"), today.strftime("%H:%M"))
+                    self._set_next_crawl(today, idx)
+                    self._schedule_crawl(today)
+                    return
             self._schedule_crawl(when)
         else:
             # missed while the service was down: run soon (see docs/ARCHITECTURE.md)
@@ -182,9 +198,10 @@ class Scheduler:
             log.exception("Дайджест упал")
             await self.notify(f"⚠️ Дайджест не отправлен: {e}")
 
-    async def crawl_job(self, trigger: str = "schedule") -> CrawlReport | None:
+    async def crawl_job(self, trigger: str = "schedule", manual_budget: int | None = None) -> CrawlReport | None:
         now = datetime.now(TZ)
         if trigger == "schedule" and self.paused():
+            self._mark_sitting_done(now)
             when = self.plan_next_crawl(now)
             await self.notify(f"⏸ Подход пропущен: бот на паузе (/resume — возобновить). Следующий: {when.strftime('%d.%m %H:%M')}")
             return None
@@ -192,10 +209,10 @@ class Scheduler:
             await self.notify("Сбор уже идёт")
             return None
         async with self.crawl_lock:
-            budget: int | None = None
+            budget = None if trigger == "schedule" else manual_budget
             if trigger == "schedule":
                 budget = self._budget_share(now)
-                # keep the window index and today's date in kv, clear the time: a restart mid-run must not re-plan this window
+                self._mark_sitting_done(now)  # a restart mid-run must not plan this window again
                 self._set_next_crawl(None, self.next_window_idx())
             await self.notify(f"▶️ Начинаю сбор ({trigger}"
                               + (f", до {budget} страниц" if budget is not None else "")
@@ -224,5 +241,6 @@ class Scheduler:
                 await self.notify(f"⚠️ Автозакрытие лидов не выполнено: {e}")
         return report
 
-    async def trigger_manual_crawl(self) -> None:
-        asyncio.create_task(self.crawl_job(trigger="manual"))
+    async def trigger_manual_crawl(self, budget: int | None = None) -> None:
+        """/crawl [N]: run now; N caps this run's page loads (default: everything left of today's cap)."""
+        asyncio.create_task(self.crawl_job(trigger="manual", manual_budget=budget))
