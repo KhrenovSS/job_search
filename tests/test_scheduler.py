@@ -36,3 +36,14 @@ def test_retry_bounded_by_deadline():
         t = retry_time(late, random.Random(seed))
         assert t is None or t <= datetime(2026, 9, 10, 11, 30, tzinfo=TZ)
     assert retry_time(datetime(2026, 9, 10, 11, 0, tzinfo=TZ), random.Random(0)) is None
+
+
+def test_morning_window_after_noon_digest_goes_to_tomorrow():
+    morning = (time(7, 0), time(8, 30))
+    now = datetime(2026, 9, 9, 12, 0, 30, tzinfo=TZ)  # right after the digest
+    for seed in range(30):
+        t = pick_crawl_time(now, morning, random.Random(seed))
+        assert t.date().day == 10 and time(7, 0) <= t.time() <= time(8, 30)
+    # service restarted at 06:30 with no plan: a manual pick today lands inside today's window
+    t = pick_crawl_time(datetime(2026, 9, 9, 6, 30, tzinfo=TZ), morning, random.Random(1))
+    assert t.date().day == 9 and time(7, 0) <= t.time() <= time(8, 30)

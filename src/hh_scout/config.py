@@ -47,7 +47,7 @@ class Settings(BaseSettings):
 
     # Schedule and limits
     digest_time: str = "12:00"  # Europe/Moscow, HH:MM — digest is sent every day at this time
-    crawl_window: str = "13:00-23:00"  # a random moment inside this window is picked daily for browsing
+    crawl_window: str = "07:00-08:30"  # the crawl START is picked at random inside this window (crawl itself takes hours)
     digest_max_items: int = 20
     search_period_days: int = 2
     db_path: Path = PROJECT_ROOT / "data" / "hh_scout.db"

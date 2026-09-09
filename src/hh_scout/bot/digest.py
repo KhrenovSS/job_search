@@ -10,7 +10,10 @@ from aiogram import Bot
 
 from hh_scout.bot.keyboards import vote_kb
 from hh_scout.config import Settings
+from hh_scout.db import open_db
+from hh_scout.llm.bridge_client import BridgeError
 from hh_scout.llm.cover_letter import CoverLetterWriter
+from hh_scout.llm.evaluator import Evaluator
 from hh_scout.pipeline import repo
 from hh_scout.pipeline.digest_builder import finalize_digest, plan_digest
 from hh_scout.pipeline.ranker import digest_header, format_card, format_letter
@@ -19,7 +22,30 @@ log = logging.getLogger(__name__)
 PAUSE_S = 0.6
 
 
+def _evaluate_pending(settings: Settings) -> tuple[int, int]:
+    """Blocking: score whatever has a description but no evaluation yet, and write letters for new leads.
+
+    Runs in a worker thread with its own connection right before the digest, so a crawl that is still
+    fetching descriptions does not delay today's digest — what is ready gets sent, the rest waits for tomorrow.
+    """
+    conn = open_db(settings.db_path)
+    try:
+        ev = Evaluator(settings, conn).run()
+        lw = CoverLetterWriter(settings, conn).run()
+        return ev.evaluated, lw.written
+    finally:
+        conn.close()
+
+
 async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, chat_id: int, note: str | None = None) -> int:
+    try:
+        evaluated, letters = await asyncio.to_thread(_evaluate_pending, settings)
+        if evaluated or letters:
+            log.info("Перед дайджестом дооценено %d, писем %d", evaluated, letters)
+    except BridgeError as e:
+        log.warning("Перед дайджестом не удалось дооценить (мост): %s", e)
+    except Exception as e:  # noqa: BLE001
+        log.exception("Дооценка перед дайджестом упала: %s", e)
     plan = plan_digest(conn, settings)
     open_before = len(repo.open_leads(conn))
     if not plan.leads:
