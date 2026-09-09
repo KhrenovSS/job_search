@@ -39,7 +39,8 @@ guard() {
 }
 
 need_sudo() {
-  if ! sudo -n true 2>/dev/null; then
+  # probe with a harmless command that IS in the sudoers rule (`true` is not; `sudo -l` says yes even when a password is needed)
+  if ! sudo -n /usr/bin/systemctl daemon-reload 2>/dev/null; then
     echo "ОШИБКА: sudo без пароля не разрешён. Владелец: bash scripts/grant_agent_control.sh" >&2
     exit 4
   fi
