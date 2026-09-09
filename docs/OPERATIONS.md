@@ -6,7 +6,7 @@
 | Firefox ESR владельца с `--marionette` | вручную/из меню (`scripts/setup_firefox.sh` правит копию `.desktop`) | — |
 | Мост Claude `hh-scout-bridge` | systemd, `:8766`, слушает 0.0.0.0 (защита — токен) | `journalctl -u hh-scout-bridge` |
 | Бот + планировщик `hh-scout` | systemd (`scripts/install_service.sh` рендерит `hh-scout.service.template`, sudo) | `journalctl -u hh-scout -f` |
-| Управление сервисом | `bash scripts/svc.sh status\|logs [N]\|restart\|reinstall\|bridge-restart` — без пароля после `grant_agent_control.sh` (ниже) | — |
+| Управление сервисом | `bash scripts/svc.sh status\|logs [N]\|start\|stop\|restart\|reinstall\|bridge-restart` — без пароля после `grant_agent_control.sh` (ниже) | — |
 | Ручные CLI-шаги | из venv | stdout; при `setsid nohup … > data/logs/x.log` — файл |
 
 Логи пишутся в stdout (`logging_setup.py`); под systemd их собирает journald. Каталог `data/` (БД, логи) в .gitignore.
@@ -14,7 +14,7 @@
 ## CLI: ручной запуск шагов (все — из корня репо, `.venv/bin/python -m …`)
 | Команда | Что делает | Браузер | Мост |
 |---|---|---|---|
-| `hh_scout.pipeline.run [--trigger manual] [--gap-scale X]` | **весь прогон**: collect → prefilter → triage → details → evaluate → letters | да | да |
+| `hh_scout.pipeline.run [--trigger manual] [--budget N] [--gap-scale X]` | **весь прогон**: collect → prefilter → triage → details → evaluate → letters | да | да |
 | `hh_scout.pipeline.collector [--budget N] [--gap-scale X] [--no-gaps] [--stale-hours H]` | сбор карточек (3 прохода × запросы) + синк откликов | да | — |
 | `hh_scout.pipeline.prefilter [--dry-run] [--show-skipped]` | правила: `new → triage/skipped` | — | — |
 | `hh_scout.llm.triage [--limit N] [--dry-run]` | ИИ по карточкам: `triage → to_fetch/skipped` | — | да |
@@ -57,6 +57,7 @@ kv `daily_cap:<дата>`) — **за календарный день (Europe/Mo
 | 🚨 За весь день ни одной загрузки | все окна прошли, `page_loads_today=0` | Firefox? пауза? журнал |
 | ⚠️ Прогон висит в статусе running | процесс сбора убит | само снимется через 3 ч (`fail_stale_runs`) |
 | 🦊 Подход в HH:MM: Firefox не отвечает | предпроверка за 30 мин | запустить Firefox с `--marionette` |
+| 🦊 Браузер недоступен | подход начался, а Marionette не ответил (`BrowserUnavailable` в отчёте прогона) | запустить Firefox с `--marionette`, `check_browser.py`; следующий подход придёт сам |
 | 🤖 Подход в HH:MM: мост недоступен / Мост Claude не отвечал | `hh-scout-bridge` лежит | `bash scripts/svc.sh bridge-restart` |
 | 🚫 hh.ru не отдал данные | капча / просит войти | открыть hh.ru в этом Firefox руками; повторяется — снизить лимит, удлинить паузы |
 | 👤 hh.ru видит нас не как соискателя | вылетел логин | войти на hh.ru в Firefox |
@@ -76,8 +77,8 @@ hh-scout-bridge`, `daemon-reload` и `install` двух отрендеренны
 root без пароля для этого пользователя (юнит запускается от root) — приемлемо на личной машине, где он и так в группе
 `sudo`. Отозвать: `sudo rm /etc/sudoers.d/hh-scout`; посмотреть: `sudo -l | grep hh-scout`.
 
-Работать через обёртку `bash scripts/svc.sh …`: `status` (юниты, `/health`, «сбор идёт»), `logs [N]`, `restart`,
-`reinstall` (= `install_service.sh` + рестарт: новые юниты, зависимости), `bridge-restart`. `stop|restart|reinstall`
+Работать через обёртку `bash scripts/svc.sh …`: `status` (юниты, `/health`, «сбор идёт»), `logs [N]`, `start`, `stop`,
+`restart`, `reinstall` (= `install_service.sh` + рестарт: новые юниты, зависимости), `bridge-restart`. `stop|restart|reinstall`
 **отказывают (код 3), пока идёт сбор** — есть `runs.status='running'` или процесс `hh_scout.(pipeline|browser)`;
 обход `--force` только если прогон точно мёртв. Без правила sudoers — код 4 с подсказкой.
 
@@ -85,10 +86,10 @@ root без пароля для этого пользователя (юнит з
 | Симптом | Причина | Что делать |
 |---|---|---|
 | «Уже есть незавершённый прогон» / сбор не стартует | запись `runs.status='running'` от убитого процесса | само пройдёт через 3 ч (`fail_stale_runs`), либо `sqlite3 data/hh_scout.db "update runs set status='failed', error='прерван вручную' where status='running'"` |
-| `/next` → «назначится после текущего сбора», сбор не идёт | `next_crawl_at` пуст, а прогон упал до `plan_next_crawl` (редко) | `sudo systemctl restart hh-scout` — старт с пустым ключом планирует следующий подход сам; или `/crawl` |
+| `/next` → «Сбор идёт сейчас; следующий подход назначится после него», а сбор не идёт | `next_crawl_at` пуст, а прогон упал до `plan_next_crawl` (редко) | сторож перепланирует сам в течение 30 мин (тревога «Подход не был назначен»); быстрее — `bash scripts/svc.sh restart` или `/crawl` |
 | «Marionette не отвечает» | Firefox закрыт или запущен без `--marionette` | запустить Firefox из меню (или `firefox-esr --marionette &`); `check_browser.py`. Ретраев нет — следующий подход придёт сам через несколько часов (время в отчёте и `/next`) |
 | «hh.ru вернул страницу без данных» (HHBlocked) | капча / просит войти | открыть hh.ru в этом Firefox руками, пройти проверку/войти; следующий подход продолжит. Повторяется — снизить `DAILY_PAGE_LOADS_*` и/или удлинить `GAP_MINUTES` |
-| Мост: 401 / недоступен | токены `.env` и `bridge/.env.bridge` не совпадают / сервис упал | `systemctl status hh-scout-bridge`, `curl :8766/health`; `sudo systemctl restart hh-scout-bridge` |
+| Мост: 401 / недоступен | токены `.env` и `bridge/.env.bridge` не совпадают / сервис упал | `systemctl status hh-scout-bridge`, `curl :8766/health`; `bash scripts/svc.sh bridge-restart` |
 | Мост 502 «claude CLI exit» | CLI не авторизован под systemd | `claude setup-token` → `CLAUDE_CODE_OAUTH_TOKEN=` в `bridge/.env.bridge`, рестарт |
 | Пачка триажа «невалидный ответ» дважды | ИИ вернул не JSON | остаётся в `triage`, подхватится следующим прогоном |
 | Лид без письма | письмо отклонено по длине (жёсткая рамка 400–2500 знаков; целевая 1000–1500 задана только промптом) | `/letter <hh_id>` или `cover_letter --hh-id X --force` |
@@ -122,7 +123,7 @@ PRAGMA wal_checkpoint(TRUNCATE);
 читаются целиком, включая их заголовки.
 
 ## Установка с нуля (владелец)
-0. Личные файлы: `cp prompts/candidate_profile.example.md prompts/candidate_profile.md` и заполнить; `prompts/resume.md`
+0. Личные файлы: `cp .env.example .env` (заполнять по шагам 3–4); `cp prompts/candidate_profile.example.md prompts/candidate_profile.md` и заполнить; `prompts/resume.md`
    из PDF-экспорта резюме hh.ru (`pdftotext -layout <файл>.pdf -`, см. `prompts/resume.example.md`). Оба в .gitignore;
    при их отсутствии код выдаёт ошибку `PrivatePromptMissing` с подсказкой.
 1. `virtualenv .venv && .venv/bin/pip install -r requirements-dev.txt -e .` (python3-venv на хосте нет).

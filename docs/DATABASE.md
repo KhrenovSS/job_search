@@ -55,9 +55,10 @@
 устаревшие, всегда 0; `ip_gph_possible` yes/maybe/no; `is_agency`; `employment_hint` staff/project/unknown;
 `company_kind` integrator/manufacturer/end_customer/agency/unknown; `verdict`; `pitch_hint`; `red_flags` JSON; `model_note` (NULL).
 
-## `kv` — 4 ключа
+## `kv` — служебные ключи
 | Ключ | Значение | Кто |
 |---|---|---|
+| `crawl_attempts` | — | устаревший ключ v5 (повторы сбора); удаляется при каждом старте сервиса |
 | `paused` | `"1"` или отсутствует | `/pause`, `/resume`; глушит только плановые сборы, дайджест идёт |
 | `next_crawl_at` | ISO с зоной | старт следующего подхода; пуст во время планового сбора (после него назначается следующий) |
 | `crawl_window_idx` | 0…N−1 | индекс окна `CRAWL_WINDOWS` назначенного/идущего подхода |

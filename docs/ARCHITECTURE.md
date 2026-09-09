@@ -31,7 +31,7 @@
 | 3 | Триаж ИИ | `llm/triage.py` | карточки пачками по 30 → `to_fetch` (+priority 1–3) или `skipped/triage` | мост |
 | 4 | Описания | `pipeline/details.py` | сначала `repo.expire_low_priority`: `to_fetch` с приоритетом 3 старше `LOW_PRIORITY_TTL_DAYS` (3) → `skipped/low_priority_expired`; затем `to_fetch` по приоритету → страница вакансии → `prefiltered` (архив/отклик → `skipped`; страница без `vacancyView` → `evaluation_failed`) | браузер, остаток бюджета прогона |
 | 5 | Оценка | `llm/evaluator.py` | `prefiltered` пачками по 5 → `evaluations` (tech/role/lead, verdict, pitch_hint…) → `evaluated`; total = код | мост |
-| 6 | Письма | `llm/cover_letter.py` | `evaluated` с `total ≥ порог` без письма → `cover_letters` (1 вызов на лид) | мост |
+| 6 | Письма | `llm/cover_letter.py` | `evaluated`/`sent` с `total ≥ порог` без письма (`repo.leads_without_letter`) → `cover_letters` (1 вызов на лид) | мост |
 
 Сбор: задачи = `SEARCH_QUERIES` × проходы (regional: 49 регионов одним запросом; remote: `work_format=REMOTE`;
 project: `employment_form=PROJECT,PART`), в случайном порядке; пагинация до `max_pages_per_query` (6) с ранней
@@ -106,9 +106,10 @@ project: `employment_form=PROJECT,PART`), в случайном порядке; 
 (с пометкой, если кандидат написал компании). Дообучения нет.
 
 ## Команды бота (только `TG_OWNER_CHAT_ID`; чужие апдейты игнорируются, в лог — INFO)
-`/start` `/help` — справка · `/status` — Firefox, мост, автосбор/пауза, идёт ли сбор, следующий сбор, загрузок сегодня,
-последний прогон, счётчики статусов, размер БД · `/digest` — дооценить загруженное (вызовы моста) и прислать лиды сейчас ·
-`/crawl` — прогон сейчас ·
+`/start` `/help` — справка · `/status` — Firefox, мост, автосбор/пауза, идёт ли сбор, следующий подход (окно i из n),
+загрузок сегодня / лимит дня, очередь описаний, последний прогон, счётчики статусов, сторож (последняя проверка, тревог
+сегодня), размер БД · `/digest` — дооценить загруженное (вызовы моста) и прислать лиды сейчас ·
+`/crawl [N]` — подход сейчас (N — потолок загрузок, иначе весь остаток дневного лимита) ·
 `/next` — время следующего сбора · `/pause` `/resume` · `/skipped [N≤50]` — последние отсеянные · `/letter <hh_id>` —
 переписать письмо и прислать карточку с письмом · `/inbox` — открытые лиды · `/done <hh_id>` — отметить «написал» ·
 `/cleanup [дней]` — свернуть устаревшие.

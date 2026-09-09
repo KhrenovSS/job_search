@@ -46,7 +46,7 @@ prompts/  candidate_profile.md  профиль кандидата — прави
 bridge/   hh_scout_bridge.py  мост Claude: FastAPI → `claude -p` под подпиской; hh-scout-bridge.service.template, install.sh, .env.bridge(.example)
 scripts/  install_service.sh (sudo) · install_geckodriver.sh · setup_firefox.sh · check_browser.py · tg_whoami.py
           · tg_alert.sh (Telegram через curl для systemd OnFailure)
-          · svc.sh (status/logs/restart/reinstall/bridge-restart; не рестартует во время сбора) · grant_agent_control.sh
+          · svc.sh (status/logs/start/stop/restart/reinstall/bridge-restart; не рестартует во время сбора) · grant_agent_control.sh
           (владелец, один раз: sudoers-правило из sudoers-hh-scout.template → рестарты без пароля, в т.ч. агентом)
 README.md · .gitignore · hh-scout.service.template + hh-scout-alert.service.template (юниты, рендерит install_service.sh) · pyproject.toml · requirements(-dev).txt
 · pytest.ini · .env.example · LICENSE (MIT)
@@ -64,7 +64,7 @@ src/hh_scout/
                    evaluator.py (лид: техника/роль/лид) · cover_letter.py (письмо на лид)
   pipeline/        repo.py (весь SQL) · budget.py (дневной лимит) · collector.py · prefilter.py · details.py · ranker.py (total, карточка)
                    digest_builder.py · run.py (оркестратор одного прогона)
-  bot/             app.py (только владелец) · handlers.py (команды: /start=/help /status /digest /crawl /next /pause /resume
+  bot/             app.py (только владелец) · handlers.py (команды: /start=/help /status /digest /crawl [N] /next /pause /resume
                    /skipped /letter /inbox /done /cleanup) · digest.py · feedback.py (кнопки 👍/👎/✅/⏸) · lead_actions.py
                    (сворачивание карточек, автозакрытие по откликам) · keyboards.py
 tests/             unit-тесты (`pytest -q`, без сети и браузера); фикстуры — реальные страницы hh.ru и справочник регионов
