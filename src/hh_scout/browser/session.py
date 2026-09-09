@@ -74,12 +74,9 @@ class BrowserSession:
         self._driver: webdriver.Remote | None = None
         self._own_window: str | None = None
         self.page_loads = 0
-        self.page_budget = page_budget if page_budget is not None else settings.max_page_loads_per_run
+        self.page_budget = page_budget if page_budget is not None else settings.daily_page_loads_max
         self._rng = rng or random.Random()
-        self.policy = pacing.PacingPolicy(
-            page_delay_min_s=settings.page_delay_min_s,
-            page_delay_max_s=settings.page_delay_max_s,
-        )
+        self.policy = pacing.policy_from_settings(settings)
 
     # -- lifecycle -----------------------------------------------------------
 

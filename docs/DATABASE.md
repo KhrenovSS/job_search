@@ -37,7 +37,7 @@
 ## `vacancies.skip_reason`
 `applied` (владелец уже откликался) · `archived` · `fly_in_fly_out` (вахта) · `stopword:<слово>` · `no_engineering_title`
 (нет инженерного слова в названии — самый частый) · `triage` (ИИ: не открывать) · `invalid_ai_answer` /
-`missing_in_ai_answer` (оценка) · `no_vacancy_view` (страница без данных). `set_status` в не-skip переходах обнуляет `skip_reason`.
+`missing_in_ai_answer` (оценка) · `no_vacancy_view` (страница без данных) · `low_priority_expired` (приоритет 3 триажа не открыт за `LOW_PRIORITY_TTL_DAYS`). `set_status` в не-skip переходах обнуляет `skip_reason`.
 
 ## Прочие поля `vacancies`
 - `work_format`: remote / hybrid / office / field / unknown (приоритет remote > hybrid > office > field).
@@ -59,8 +59,10 @@
 | Ключ | Значение | Кто |
 |---|---|---|
 | `paused` | `"1"` или отсутствует | `/pause`, `/resume`; глушит только плановые сборы, дайджест идёт |
-| `next_crawl_at` | ISO с зоной | планировщик; нет ключа = сбор не назначен (при старте сервиса до окна и без прогона за сегодня назначается сам, иначе — после дайджеста) |
-| `crawl_attempts` | число | счётчик повторов при недоступном браузере, максимум 3 |
+| `next_crawl_at` | ISO с зоной | старт следующего подхода; пуст во время планового сбора (после него назначается следующий) |
+| `crawl_window_idx` | 0…N−1 | индекс окна `CRAWL_WINDOWS` назначенного/идущего подхода |
+| `crawl_window_date` | YYYY-MM-DD | день этого окна; вместе с idx говорит, какие окна сегодня уже использованы |
+| `daily_cap:<YYYY-MM-DD>` | число | лимит загрузок на день (случайный из `DAILY_PAGE_LOADS_MIN..MAX`); старые ключи удаляются |
 | `preview_marked` | `"1"` | одноразовый флаг первого старта сервиса (`main.py`) |
 
 ## Инварианты

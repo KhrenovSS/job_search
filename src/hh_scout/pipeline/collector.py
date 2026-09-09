@@ -103,8 +103,8 @@ class Collector:
         self.conn = conn
         self.rng = rng or random.Random()
         self.gap_scale = gap_scale
-        self.page_budget = page_budget if page_budget is not None else settings.max_page_loads_per_run
-        self.policy = pacing.PacingPolicy(page_delay_min_s=settings.page_delay_min_s, page_delay_max_s=settings.page_delay_max_s)
+        self.page_budget = page_budget if page_budget is not None else settings.daily_page_loads_max
+        self.policy = pacing.policy_from_settings(settings)
         self._session_factory = session_factory or (lambda budget: BrowserSession(settings, page_budget=budget, rng=self.rng))
         self._should_stop = should_stop or (lambda: False)
         self.stats = CollectStats()
@@ -214,6 +214,7 @@ def main() -> int:
     from hh_scout.config import load_settings
     from hh_scout.db import open_db
     from hh_scout.logging_setup import setup_logging
+    from hh_scout.pipeline.budget import daily_cap
 
     ap = argparse.ArgumentParser(description="Collect vacancies through the owner's Firefox")
     ap.add_argument("--budget", type=int, help="page-load budget for this run (default from .env)")
@@ -233,8 +234,9 @@ def main() -> int:
         log.error("Уже есть незавершённый прогон (runs.status=running) — выходим")
         return 2
     used_today = repo.page_loads_today(conn)
-    budget = args.budget if args.budget is not None else max(0, settings.max_page_loads_per_run - used_today)
-    log.info("Загрузок сегодня уже %d, бюджет на этот прогон %d", used_today, budget)
+    cap = daily_cap(conn, settings)
+    budget = args.budget if args.budget is not None else max(0, cap - used_today)
+    log.info("Загрузок сегодня уже %d из %d, бюджет на этот прогон %d", used_today, cap, budget)
     run_id = repo.start_run(conn, "manual")
     started = time.monotonic()
     collector = Collector(settings, conn, gap_scale=0.0 if args.no_gaps else args.gap_scale, page_budget=budget)

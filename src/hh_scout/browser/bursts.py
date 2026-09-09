@@ -1,4 +1,8 @@
-"""Run browser work in short bursts separated by long pauses (shared by collector and details)."""
+"""Run browser work in time-boxed bursts separated by pauses (shared by collector and details).
+
+A burst lasts `pacing.burst_duration` (about 7–13 min) or until the page budget is spent; then the browser
+window is closed and the loop sleeps `pacing.gap_between_bursts` (about 4–9 min) before the next burst.
+"""
 
 from __future__ import annotations
 
@@ -34,7 +38,7 @@ def run_in_bursts(
     after_burst: Callable[[BurstStats], None] | None = None,
     label: str = "",
 ) -> BurstStats:
-    """Call `step` repeatedly inside bursts until it reports no more work or the budget is spent."""
+    """Call `step` repeatedly inside time-boxed bursts until it reports no more work or the budget is spent."""
     stats = BurstStats()
     more = True
     while more:
@@ -45,15 +49,18 @@ def run_in_bursts(
         if remaining <= 0:
             stats.stopped_reason = "исчерпан дневной лимит загрузок"
             break
-        size = min(pacing.burst_size(policy, rng), remaining)
+        duration = pacing.burst_duration(policy, rng)
         stats.bursts += 1
-        log.info("%sСерия %d: до %d страниц (осталось в бюджете %d)", f"[{label}] " if label else "", stats.bursts, size, remaining)
-        with session_factory(size) as session:
+        log.info("%sСерия %d: ~%.0f мин (осталось в бюджете %d)", f"[{label}] " if label else "", stats.bursts, duration / 60, remaining)
+        deadline = pacing.monotonic() + duration
+        with session_factory(remaining) as session:
             try:
-                while more:
+                while more and pacing.monotonic() < deadline:
+                    if should_stop and should_stop():
+                        break
                     more = step(session)
             except PageBudgetExceeded:
-                pass  # burst budget spent; continue after a gap
+                pass  # daily budget spent inside the burst; the loop above reports it
             finally:
                 stats.page_loads += session.page_loads
         if after_burst:

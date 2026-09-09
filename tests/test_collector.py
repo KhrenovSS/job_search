@@ -73,7 +73,7 @@ def _make(monkeypatch, budget=60):
     conn = connect(":memory:")
     migrate(conn)
     loads = []
-    settings = Settings(_env_file=None, max_page_loads_per_run=budget, max_pages_per_query=4)
+    settings = Settings(_env_file=None, daily_page_loads_min=budget, daily_page_loads_max=budget, max_pages_per_query=4)
     c = Collector(settings, conn, session_factory=lambda b: FakeSession(b, loads), rng=random.Random(0), page_budget=budget)
     return c, conn, loads
 

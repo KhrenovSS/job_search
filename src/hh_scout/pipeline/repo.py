@@ -138,6 +138,19 @@ def list_vacancies(conn: sqlite3.Connection, status: str, limit: int | None = No
     return conn.execute(sql, (status,)).fetchall()
 
 
+def expire_low_priority(conn: sqlite3.Connection, ttl_days: int, min_priority: int = 3) -> int:
+    """Drop `to_fetch` cards of low triage priority that waited longer than ttl_days (skip_reason low_priority_expired)."""
+    from datetime import timedelta
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=ttl_days)).replace(microsecond=0).isoformat()
+    cur = conn.execute(
+        "UPDATE vacancies SET status = 'skipped', skip_reason = 'low_priority_expired', updated_at = ? "
+        "WHERE status = 'to_fetch' AND COALESCE(triage_priority, 3) >= ? AND updated_at < ?",
+        (utcnow(), min_priority, cutoff),
+    )
+    return cur.rowcount
+
+
 # --- cover letters ----------------------------------------------------------------
 
 def leads_without_letter(conn: sqlite3.Connection, threshold: int, limit: int | None = None) -> list[sqlite3.Row]:
@@ -292,15 +305,6 @@ def vacancy_by_id(conn: sqlite3.Connection, vacancy_id: int) -> sqlite3.Row | No
 
 def running_run(conn: sqlite3.Connection) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM runs WHERE status = 'running' ORDER BY id DESC LIMIT 1").fetchone()
-
-
-def runs_today(conn: sqlite3.Connection) -> int:
-    """Number of runs started today (Europe/Moscow), any trigger or status."""
-    start_local = datetime.combine(datetime.now(TZ).date(), time(0, 0), tzinfo=TZ)
-    start_utc = start_local.astimezone(timezone.utc).replace(microsecond=0).isoformat()
-    row = conn.execute("SELECT COUNT(*) AS n FROM runs WHERE started_at >= ?", (start_utc,)).fetchone()
-    return int(row["n"])
-
 
 def fail_stale_runs(conn: sqlite3.Connection, max_age_hours: float = 3.0) -> int:
     """Mark 'running' runs older than max_age_hours as failed (process was killed externally)."""

@@ -1,7 +1,8 @@
 """Open vacancy pages for `to_fetch` vacancies (approved by triage) and store full descriptions.
 
 Order: triage priority 1→3, then newest first. Runs in bursts like the collector; whatever does
-not fit into today's page budget stays `to_fetch` for tomorrow.
+not fit into today's page budget stays `to_fetch` for the next sitting. Priority-3 cards that wait longer than
+`LOW_PRIORITY_TTL_DAYS` are dropped (`repo.expire_low_priority`, called by the orchestrator and the CLI).
 
 CLI:  python -m hh_scout.pipeline.details [--budget N] [--gap-scale X] [--no-gaps]
 """
@@ -47,8 +48,8 @@ class DetailsFetcher:
         self.conn = conn
         self.rng = rng or random.Random()
         self.gap_scale = gap_scale
-        self.page_budget = page_budget if page_budget is not None else settings.max_page_loads_per_run
-        self.policy = pacing.PacingPolicy(page_delay_min_s=settings.page_delay_min_s, page_delay_max_s=settings.page_delay_max_s)
+        self.page_budget = page_budget if page_budget is not None else settings.daily_page_loads_max
+        self.policy = pacing.policy_from_settings(settings)
         self._session_factory = session_factory or (lambda budget: BrowserSession(settings, page_budget=budget, rng=self.rng))
         self._should_stop = should_stop or (lambda: False)
         self.stats = DetailsStats()
@@ -113,6 +114,7 @@ def main() -> int:
     from hh_scout.config import load_settings
     from hh_scout.db import open_db
     from hh_scout.logging_setup import setup_logging
+    from hh_scout.pipeline.budget import daily_cap
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--budget", type=int, help="page-load budget for this run (default: today's remaining)")
@@ -129,8 +131,13 @@ def main() -> int:
         log.error("Уже есть незавершённый прогон — выходим")
         return 2
     used_today = repo.page_loads_today(conn)
-    budget = args.budget if args.budget is not None else max(0, settings.max_page_loads_per_run - used_today)
-    log.info("Загрузок сегодня уже %d, бюджет на этот прогон %d", used_today, budget)
+    cap = daily_cap(conn, settings)
+    budget = args.budget if args.budget is not None else max(0, cap - used_today)
+    log.info("Загрузок сегодня уже %d из %d, бюджет на этот прогон %d", used_today, cap, budget)
+    with conn:
+        expired = repo.expire_low_priority(conn, settings.low_priority_ttl_days)
+    if expired:
+        log.info("Списано слабых карточек (приоритет 3 старше %d дн.): %d", settings.low_priority_ttl_days, expired)
     run_id = repo.start_run(conn, "manual")
     started = time.monotonic()
     fetcher = DetailsFetcher(settings, conn, gap_scale=0.0 if args.no_gaps else args.gap_scale, page_budget=budget)

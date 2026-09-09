@@ -4,7 +4,10 @@ Blocking (Selenium); the bot calls it via asyncio.to_thread with its own DB conn
 Every step is isolated: a browser failure skips the browser steps but the AI steps still run
 on whatever is already in the DB, and vice versa.
 
-CLI:  python -m hh_scout.pipeline.run [--trigger manual] [--gap-scale X]
+A sitting (the scheduler's trigger 'schedule') gets `budget` = its share of what is left of today's cap;
+a manual run takes everything that is left.
+
+CLI:  python -m hh_scout.pipeline.run [--trigger manual] [--budget N] [--gap-scale X]
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from hh_scout.llm.cover_letter import CoverLetterWriter
 from hh_scout.llm.evaluator import Evaluator
 from hh_scout.llm.triage import Triager
 from hh_scout.pipeline import prefilter, repo
+from hh_scout.pipeline.budget import daily_cap
 from hh_scout.pipeline.collector import Collector
 from hh_scout.pipeline.details import DetailsFetcher
 
@@ -34,6 +38,9 @@ log = logging.getLogger(__name__)
 class CrawlReport:
     trigger: str
     page_loads: int = 0
+    used_today: int = 0     # after this run, all processes
+    daily_cap: int = 0
+    expired_low_priority: int = 0
     new_vacancies: int = 0
     prefiltered_pass: int = 0
     triage_open: int = 0
@@ -54,7 +61,8 @@ class CrawlReport:
     def as_text(self) -> str:
         head = "✅ Сбор завершён" if self.ok else "⚠️ Сбор завершён с замечаниями"
         lines = [f"{head} ({self.trigger}, {self.duration_s / 60:.0f} мин)",
-                 f"Страниц: {self.page_loads} · новых вакансий: {self.new_vacancies} · описаний: {self.details}",
+                 f"Страниц: {self.page_loads} (за день {self.used_today}/{self.daily_cap}) · новых вакансий: {self.new_vacancies} · описаний: {self.details}"
+                 + (f" · списано слабых: {self.expired_low_priority}" if self.expired_low_priority else ""),
                  f"Оценено: {self.evaluated} · новых лидов: {self.leads} · писем: {self.letters} · вызовов ИИ: {self.bridge_calls}"]
         if self.browser_error:
             lines.append(f"Браузер: {self.browser_error}")
@@ -64,8 +72,8 @@ class CrawlReport:
         return "\n".join(lines)
 
 
-def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", *, gap_scale: float = 1.0,
-              should_stop: Callable[[], bool] | None = None, stale_hours: float = 3.0) -> CrawlReport:
+def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", *, budget: int | None = None,
+              gap_scale: float = 1.0, should_stop: Callable[[], bool] | None = None, stale_hours: float = 3.0) -> CrawlReport:
     conn = open_db(db_path)
     report = CrawlReport(trigger=trigger)
     started = time.monotonic()
@@ -75,9 +83,12 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
         report.errors.append("уже идёт другой прогон")
         return report
     run_id = repo.start_run(conn, trigger)
+    cap = daily_cap(conn, settings)
     used = repo.page_loads_today(conn)
-    budget = max(0, settings.max_page_loads_per_run - used)
-    log.info("Прогон #%d (%s): загрузок сегодня %d, бюджет %d", run_id, trigger, used, budget)
+    remaining = max(0, cap - used)
+    budget = remaining if budget is None else max(0, min(budget, remaining))
+    report.daily_cap = cap
+    log.info("Прогон #%d (%s): загрузок сегодня %d из %d, бюджет прогона %d", run_id, trigger, used, cap, budget)
     bridge_calls = 0
 
     # 1. collect
@@ -116,8 +127,16 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
         log.exception("Триаж упал")
         report.errors.append(f"триаж: {e}")
 
-    # 4. details (browser)
-    remaining = max(0, settings.max_page_loads_per_run - (used + report.page_loads))
+    # 4. details (browser): drop stale low-priority cards first, then spend what is left of this run's budget
+    try:
+        with conn:
+            report.expired_low_priority = repo.expire_low_priority(conn, settings.low_priority_ttl_days)
+        if report.expired_low_priority:
+            log.info("Списано слабых карточек (приоритет 3 старше %d дн.): %d", settings.low_priority_ttl_days, report.expired_low_priority)
+    except Exception as e:  # noqa: BLE001
+        log.exception("Списание слабых карточек упало")
+        report.errors.append(f"списание: {e}")
+    remaining = max(0, budget - report.page_loads)
     if report.browser_error is None and remaining > 0:
         try:
             d = DetailsFetcher(settings, conn, gap_scale=gap_scale, page_budget=remaining, should_stop=should_stop)
@@ -149,6 +168,7 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
             report.errors.append(f"оценка: {e}")
 
     report.bridge_calls = bridge_calls
+    report.used_today = used + report.page_loads
     report.duration_s = time.monotonic() - started
     status = "ok" if report.ok else "failed"
     err = "; ".join(filter(None, [report.browser_error, report.bridge_error, *report.errors]))[:500] or None
@@ -166,11 +186,12 @@ def main() -> int:
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--trigger", default="manual")
+    ap.add_argument("--budget", type=int, help="page-load budget for this run (default: today's remaining)")
     ap.add_argument("--gap-scale", type=float, default=1.0)
     args = ap.parse_args()
     settings = load_settings()
     setup_logging(settings.log_level)
-    report = run_crawl(settings, settings.db_path, args.trigger, gap_scale=args.gap_scale)
+    report = run_crawl(settings, settings.db_path, args.trigger, budget=args.budget, gap_scale=args.gap_scale)
     print(report.as_text())
     return 0 if report.ok else 1
 

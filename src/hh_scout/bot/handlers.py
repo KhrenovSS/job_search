@@ -26,14 +26,15 @@ router = Router(name="commands")
 
 HELP = (
     "<b>HH-Scout</b> — лиды с hh.ru для сотрудничества по ИП.\n"
-    "Дайджест приходит каждый день в {digest}. Сбор идёт в случайное время в окне {window}.\n\n"
+    "Дайджест приходит каждый день в {digest}. Сбор — три подхода в день, старт в случайное время в окнах {windows}; "
+    "внутри подхода бот листает сериями ~10 мин с паузами ~5 мин.\n\n"
     "/status — состояние: Firefox, мост, последний и следующий сбор, лимиты\n"
     "/inbox — открытые (необработанные) лиды: с чего продолжить\n"
     "/done &lt;hh_id&gt; — отметить «написал», свернуть карточку\n"
     "/cleanup [дней] — свернуть открытые лиды старше N дней (по умолчанию 14)\n"
     "/digest — прислать накопленные лиды сейчас\n"
-    "/crawl — запустить сбор сейчас (30 мин — несколько часов, сериями с паузами)\n"
-    "/next — когда следующий сбор\n"
+    "/crawl — запустить сбор сейчас (весь остаток дневного лимита, сериями с паузами)\n"
+    "/next — когда следующий подход\n"
     "/pause · /resume — приостановить/возобновить автоматические сборы\n"
     "/skipped [N] — последние отсеянные вакансии с причинами\n"
     "/letter &lt;hh_id&gt; — переписать отклик для вакансии\n"
@@ -62,7 +63,7 @@ def _port_open(host: str, port: int) -> bool:
 
 @router.message(Command("start", "help"))
 async def help_cmd(m: Message, settings: Settings) -> None:
-    await m.answer(HELP.format(digest=settings.digest_time, window=settings.crawl_window))
+    await m.answer(HELP.format(digest=settings.digest_time, windows=settings.crawl_windows.replace(",", ", ")))
 
 
 @router.message(Command("status"))
@@ -78,15 +79,19 @@ async def status_cmd(m: Message, settings: Settings, conn: sqlite3.Connection, s
     last = repo.last_run(conn)
     counts = repo.count_by_status(conn)
     used = repo.page_loads_today(conn)
+    cap = scheduler.daily_cap()
     nxt = scheduler.next_crawl_at()
+    idx = scheduler.next_window_idx()
+    n_windows = len(scheduler.windows)
     db_mb = settings.db_path.stat().st_size / 1e6 if settings.db_path.exists() else 0
     lines = [
         "<b>Состояние HH-Scout</b>",
         f"Firefox/Marionette: {'✅ доступен' if ff else '❌ не отвечает (запустите Firefox с --marionette)'}",
         f"Мост Claude: {bridge}",
         f"Автосбор: {'⏸ пауза' if scheduler.paused() else '▶️ включён'} · сбор идёт: {'да' if scheduler.crawl_lock.locked() else 'нет'}",
-        f"Следующий сбор: {nxt.strftime('%d.%m %H:%M') if nxt else '— (назначится после дайджеста в ' + settings.digest_time + ')'}",
-        f"Загрузок страниц сегодня: {used} / {settings.max_page_loads_per_run}",
+        "Следующий подход: " + (f"{nxt.strftime('%d.%m %H:%M')} (окно {idx + 1 if idx is not None else '?'} из {n_windows})" if nxt
+                              else "назначится после текущего сбора"),
+        f"Загрузок страниц сегодня: {used} / {cap} (лимит дня) · в очереди описаний: {counts.get('to_fetch', 0)}",
     ]
     if last:
         lines.append(f"Последний прогон: {_fmt_dt(last['started_at'])} → {last['status']} ({last['trigger']}); "
@@ -116,8 +121,8 @@ async def crawl_cmd(m: Message, scheduler) -> None:
 @router.message(Command("next"))
 async def next_cmd(m: Message, scheduler, settings: Settings) -> None:
     nxt = scheduler.next_crawl_at()
-    await m.answer(f"Следующий сбор: {nxt.strftime('%d.%m в %H:%M')}" if nxt
-                   else f"Сбор пока не назначен — назначится после дайджеста в {settings.digest_time}.")
+    await m.answer(f"Следующий подход: {nxt.strftime('%d.%m в %H:%M')}" if nxt
+                   else "Сбор идёт сейчас; следующий подход назначится после него.")
 
 
 @router.message(Command("pause"))

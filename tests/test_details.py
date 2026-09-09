@@ -84,3 +84,21 @@ def test_page_loads_today_and_run_metrics():
     repo.finish_run(conn, rid, "ok", page_loads=7, prefiltered=3)
     conn.execute("INSERT INTO runs(started_at,status,trigger,page_loads) VALUES ('2020-01-01T00:00:00+00:00','ok','manual',99)")
     assert repo.page_loads_today(conn) == 7
+
+
+def test_expire_low_priority_drops_only_old_priority_3():
+    from datetime import datetime, timedelta, timezone
+
+    conn = connect(":memory:")
+    migrate(conn)
+    old = (datetime.now(timezone.utc) - timedelta(days=4)).isoformat()
+    fresh = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    rows = [("a", 3, old), ("b", 3, fresh), ("c", 1, old), ("d", None, old), ("e", 2, old)]
+    for hh_id, prio, upd in rows:
+        conn.execute("INSERT INTO vacancies(hh_id,title,url,source,search_pass,status,triage_priority,published_at,first_seen_at,updated_at) "
+                     "VALUES (?,?,?,?,?,?,?,?,?,?)", (hh_id, "t", "u", "s", "regional", "to_fetch", prio, "2026-09-08", "t", upd))
+    conn.execute("UPDATE vacancies SET status='sent' WHERE hh_id='e'")
+    assert repo.expire_low_priority(conn, 3) == 2  # a (old, prio 3) and d (old, no priority = 3)
+    got = {r["hh_id"]: (r["status"], r["skip_reason"]) for r in conn.execute("SELECT hh_id, status, skip_reason FROM vacancies")}
+    assert got["a"] == ("skipped", "low_priority_expired") and got["d"] == ("skipped", "low_priority_expired")
+    assert got["b"][0] == "to_fetch" and got["c"][0] == "to_fetch" and got["e"][0] == "sent"

@@ -51,7 +51,7 @@ async def run() -> int:
         log.info("Первый запуск: %d ранее показанных лидов помечены как отправленные", n)
 
     scheduler.start()
-    log.info("HH-Scout запущен: дайджест в %s, окно сбора %s, мост %s", settings.digest_time, settings.crawl_window, settings.bridge_url)
+    log.info("HH-Scout запущен: дайджест в %s, окна сбора %s, мост %s", settings.digest_time, settings.crawl_windows, settings.bridge_url)
     await notify("🟢 HH-Scout запущен. /status — состояние, /help — команды.")
     try:
         await dp.start_polling(bot, handle_signals=True)

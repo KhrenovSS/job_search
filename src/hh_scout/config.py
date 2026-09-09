@@ -29,11 +29,18 @@ class Settings(BaseSettings):
     marionette_host: str = "127.0.0.1"
     marionette_port: int = 2828
     geckodriver_path: str = ""  # empty -> look up "geckodriver" in PATH (incl. ~/.local/bin)
-    page_delay_min_s: float = 4.0  # human-like pause after each page load
-    page_delay_max_s: float = 12.0
-    max_page_loads_per_run: int = 80  # per DAY across all runs (search + vacancy pages)
+    page_delay_min_s: float = 6.0  # human-like "reading" pause after each page load, seconds
+    page_delay_max_s: float = 20.0
+    # Daily page-load cap (search + vacancy pages, all processes): drawn once per day at random from this range
+    # and stored in kv `daily_cap:<date>` so the number differs from day to day.
+    daily_page_loads_min: int = 100
+    daily_page_loads_max: int = 140
+    # Rhythm inside a sitting: browse for burst_minutes, stay quiet for gap_minutes, repeat ("MIN-MAX").
+    burst_minutes: str = "7-13"
+    gap_minutes: str = "4-9"
     items_per_page: int = 50
     max_pages_per_query: int = 6
+    low_priority_ttl_days: int = 3  # triage priority 3 cards still unopened after this many days are dropped
 
     # Claude bridge on the host (bridge/hh_scout_bridge.py)
     bridge_url: str = "http://127.0.0.1:8766"
@@ -47,7 +54,9 @@ class Settings(BaseSettings):
 
     # Schedule and limits
     digest_time: str = "12:00"  # Europe/Moscow, HH:MM — digest is sent every day at this time
-    crawl_window: str = "07:00-08:30"  # the crawl START is picked at random inside this window (crawl itself takes hours)
+    # Sittings: one crawl per window, its START picked at random inside the window; the daily cap is shared between
+    # the sittings still ahead. Comma-separated, sorted, non-overlapping.
+    crawl_windows: str = "07:00-10:00,12:00-15:00,18:00-22:00"
     digest_max_items: int = 20
     search_period_days: int = 2
     db_path: Path = PROJECT_ROOT / "data" / "hh_scout.db"
@@ -75,14 +84,50 @@ class Settings(BaseSettings):
         return _parse_hhmm(self.digest_time)
 
     @property
-    def crawl_window_parsed(self) -> tuple[time, time]:
-        start, end = self.crawl_window.split("-")
-        return _parse_hhmm(start), _parse_hhmm(end)
+    def crawl_windows_parsed(self) -> list[tuple[time, time]]:
+        return parse_windows(self.crawl_windows)
+
+    @property
+    def burst_seconds(self) -> tuple[float, float]:
+        return _parse_minutes_range(self.burst_minutes)
+
+    @property
+    def gap_seconds(self) -> tuple[float, float]:
+        return _parse_minutes_range(self.gap_minutes)
 
 
 def _parse_hhmm(value: str) -> time:
     hh, mm = value.strip().split(":")
     return time(int(hh), int(mm), tzinfo=TZ)
+
+
+def parse_windows(value: str) -> list[tuple[time, time]]:
+    """'07:00-10:00,12:00-15:00' -> sorted, non-overlapping (start, end) pairs; raises ValueError otherwise."""
+    windows: list[tuple[time, time]] = []
+    for chunk in value.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        start, end = chunk.split("-")
+        a, b = _parse_hhmm(start), _parse_hhmm(end)
+        if a >= b:
+            raise ValueError(f"окно сбора {chunk!r}: начало не раньше конца")
+        windows.append((a, b))
+    if not windows:
+        raise ValueError("CRAWL_WINDOWS пуст")
+    windows.sort()
+    for (_, prev_end), (nxt_start, _) in zip(windows, windows[1:]):
+        if nxt_start < prev_end:
+            raise ValueError("окна сбора пересекаются")
+    return windows
+
+
+def _parse_minutes_range(value: str) -> tuple[float, float]:
+    """'7-13' -> (420.0, 780.0) seconds."""
+    lo, hi = (float(x) for x in value.split("-"))
+    if lo <= 0 or hi < lo:
+        raise ValueError(f"диапазон минут {value!r} некорректен")
+    return lo * 60, hi * 60
 
 
 def load_settings() -> Settings:

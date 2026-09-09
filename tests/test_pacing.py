@@ -15,8 +15,18 @@ def test_page_delay_within_policy():
 def test_burst_and_gap_ranges():
     p = pacing.PacingPolicy()
     rng = random.Random(7)
-    assert all(p.burst_min_pages <= pacing.burst_size(p, rng) <= p.burst_max_pages for _ in range(100))
+    assert all(p.burst_min_s <= pacing.burst_duration(p, rng) <= p.burst_max_s for _ in range(100))
     assert all(p.gap_min_s <= pacing.gap_between_bursts(p, rng) <= p.gap_max_s for _ in range(100))
+
+
+def test_policy_from_settings_reads_minutes_ranges():
+    from hh_scout.config import Settings
+
+    s = Settings(_env_file=None, burst_minutes="7-13", gap_minutes="4-9", page_delay_min_s=6, page_delay_max_s=20)
+    p = pacing.policy_from_settings(s)
+    assert (p.burst_min_s, p.burst_max_s) == (7 * 60, 13 * 60)
+    assert (p.gap_min_s, p.gap_max_s) == (4 * 60, 9 * 60)
+    assert (p.page_delay_min_s, p.page_delay_max_s) == (6, 20)
 
 
 class _FakeDriver:

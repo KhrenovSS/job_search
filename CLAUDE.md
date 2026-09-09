@@ -8,8 +8,9 @@
 **не влияют** (только факты в карточке); проектирование, документация, шкафы, эксплуатация — не лиды.
 
 hh.ru закрыл API для соискателей, поэтому бот ходит по сайту **в уже запущенном Firefox владельца** через Marionette
-под его логином, «как человек»: своё окно, серии по 3–7 страниц с паузами 10–40 минут, ≤ 80 загрузок в день,
-один сбор в сутки со случайным стартом в окне 07:00–08:30; дайджест в 12:00 дооценивает загруженное и отправляет.
+под его логином, «как человек»: своё окно, три подхода в день со случайным стартом в окнах 07–10 / 12–15 / 18–22,
+внутри подхода серии ~7–13 мин листания с паузами ~4–9 мин, «чтение» страницы 6–20 с, дневной лимит — случайные
+100–140 загрузок, поделённые между оставшимися подходами; дайджест в 12:00 дооценивает загруженное и отправляет.
 **Только чтение**: никаких откликов и кликов по кнопкам сайта.
 
 ## Где мы сейчас
@@ -47,17 +48,17 @@ scripts/  install_service.sh (sudo) · install_geckodriver.sh · setup_firefox.s
 README.md · .gitignore · hh-scout.service.template (юнит, рендерится install_service.sh) · pyproject.toml · requirements(-dev).txt
 · pytest.ini · .env.example · LICENSE (MIT)
 src/hh_scout/
-  config.py        Settings из .env (порог, веса, лимиты, окно, токены) + константы: SEARCH_QUERIES, REGION_NAMES (49),
+  config.py        Settings из .env (порог, веса, лимиты, окна, ритм, токены) + константы: SEARCH_QUERIES, REGION_NAMES (49),
                    TITLE_STOP/KEEP/REQUIRED_ANY;  logging_setup.py — логи в stdout/journald
   db.py            SQLite, миграции _m001…_m005 (PRAGMA user_version), kv_get/kv_set
   main.py          сервис: aiogram polling + планировщик; первый старт помечает превью как sent
-  scheduler.py     дайджест по cron, случайный сбор в окне, повторы, восстановление из kv
+  scheduler.py     дайджест по cron, три подхода в день (окна, случайный старт, доля лимита), восстановление из kv
   browser/         session.py (geckodriver --connect-existing, своё окно, бюджет) · hh_pages.py (URL, парсеры
-                   HH-Lux-InitialState) · pacing.py (паузы, серии, прокрутка) · bursts.py (цикл серий)
+                   HH-Lux-InitialState) · pacing.py (паузы, длительность серий, прокрутка) · bursts.py (серии по времени)
   hh/              areas.py (регионы из открытого api.hh.ru/areas, кэш) · salary.py (gross→net, только RUR/месяц)
   llm/             bridge_client.py · prompts.py (сборка промптов) · schemas.py · triage.py (карточки → открывать?)
                    evaluator.py (лид: техника/роль/лид) · cover_letter.py (письмо на лид)
-  pipeline/        repo.py (весь SQL) · collector.py · prefilter.py · details.py · ranker.py (total, карточка)
+  pipeline/        repo.py (весь SQL) · budget.py (дневной лимит) · collector.py · prefilter.py · details.py · ranker.py (total, карточка)
                    digest_builder.py · run.py (оркестратор одного прогона)
   bot/             app.py (только владелец) · handlers.py (команды: /start=/help /status /digest /crawl /next /pause /resume
                    /skipped /letter /inbox /done /cleanup) · digest.py · feedback.py (кнопки 👍/👎/✅/⏸) · lead_actions.py
@@ -74,8 +75,9 @@ data/              hh_scout.db (WAL), logs/ — в .gitignore
 ## Правила работы
 1. Этапы и критерии — `docs/ROADMAP.md`. После изменений: сводка владельцу, как проверить руками, обновить доки.
 2. **Браузер — только чтение.** Никаких кликов по элементам сайта, откликов, сообщений.
-3. **Человекоподобие обязательно**: паузы, серии, случайный порядок, ≤ `MAX_PAGE_LOADS_PER_RUN` (=80) загрузок **в день**
-   суммарно по всем процессам. `--no-gaps`/`--gap-scale` — только для отладки, не для ежедневной работы.
+3. **Человекоподобие обязательно**: паузы, серии по времени, случайный порядок, только дневные окна, дневной лимит
+   `DAILY_PAGE_LOADS_MIN..MAX` (100–140, случайный на день, kv `daily_cap:<дата>`) **суммарно по всем процессам**.
+   `--no-gaps`/`--gap-scale` — только для отладки, не для ежедневной работы.
 4. Одна Marionette-сессия: не запускать CLI с браузером параллельно сервису.
 5. Данные — из JSON `HH-Lux-InitialState`; изменилась структура → warning и пропуск, прогон не падает.
 6. Ответы ИИ валидируются pydantic; невалидно → один ретрай → `evaluation_failed`/пачка остаётся в `triage`.
@@ -88,5 +90,5 @@ data/              hh_scout.db (WAL), logs/ — в .gitignore
 
 ## Где лежит истина
 Формат карточки и письма — `pipeline/ranker.py`. Расписание — `scheduler.py`. Запросы/регионы/стоп-слова — `config.py`;
-порог, веса, лимиты, окно, время дайджеста — `.env` (`.env.example` перечисляет всё). Что считается лидом —
+порог, веса, лимиты, окна подходов, ритм серий, время дайджеста — `.env` (`.env.example` перечисляет всё). Что считается лидом —
 `prompts/vacancy_evaluation.md` + `prompts/candidate_profile.md`. Схема БД — `db.py`, перечисления — `docs/DATABASE.md`.
