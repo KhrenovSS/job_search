@@ -139,7 +139,8 @@ def load_settings() -> Settings:
 # Composite hh.ru queries (hh query language: OR, quotes, parentheses).
 # Fewer, broader queries beat dozens of narrow ones: same recall, fewer requests.
 SEARCH_QUERIES: tuple[str, ...] = (
-    '("АСУ ТП" OR ПЛК OR PLC OR CODESYS OR SCADA OR "промышленной автоматизации" OR "промышленной автоматики")',
+    '("АСУ ТП" OR ПЛК OR PLC OR CODESYS OR SCADA OR MasterSCADA OR "Master SCADA" '
+    'OR "промышленной автоматизации" OR "промышленной автоматики")',
     '("инженер по автоматизации" OR "инженер-программист" OR "Automation Engineer" OR "Controls Engineer" '
     'OR "Control Systems Engineer") AND (ПЛК OR PLC OR контроллер OR "технологического оборудования" OR SCADA OR HMI)',
     '(КИПиА OR "шкафов управления" OR "систем управления") AND (программирование OR ПЛК OR PLC OR разработка)',
