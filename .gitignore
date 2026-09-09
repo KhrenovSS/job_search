@@ -15,3 +15,6 @@ data/
 prompts/resume.md
 prompts/candidate_profile.md
 docs/archive/2026-09-08-initial-vision/
+
+# Claude Code worktrees of background agents
+.claude/worktrees/
