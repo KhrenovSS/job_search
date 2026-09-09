@@ -6,6 +6,7 @@
 | Firefox ESR владельца с `--marionette` | вручную/из меню (`scripts/setup_firefox.sh` правит копию `.desktop`) | — |
 | Мост Claude `hh-scout-bridge` | systemd, `:8766`, слушает 0.0.0.0 (защита — токен) | `journalctl -u hh-scout-bridge` |
 | Бот + планировщик `hh-scout` | systemd (`scripts/install_service.sh` рендерит `hh-scout.service.template`, sudo) | `journalctl -u hh-scout -f` |
+| Управление сервисом | `bash scripts/svc.sh status\|logs [N]\|restart\|reinstall\|bridge-restart` — без пароля после `grant_agent_control.sh` (ниже) | — |
 | Ручные CLI-шаги | из venv | stdout; при `setsid nohup … > data/logs/x.log` — файл |
 
 Логи пишутся в stdout (`logging_setup.py`); под systemd их собирает journald. Каталог `data/` (БД, логи) в .gitignore.
@@ -56,15 +57,29 @@ kv `daily_cap:<дата>`) — **за календарный день (Europe/Mo
 | 🚨 За весь день ни одной загрузки | все окна прошли, `page_loads_today=0` | Firefox? пауза? журнал |
 | ⚠️ Прогон висит в статусе running | процесс сбора убит | само снимется через 3 ч (`fail_stale_runs`) |
 | 🦊 Подход в HH:MM: Firefox не отвечает | предпроверка за 30 мин | запустить Firefox с `--marionette` |
-| 🤖 Подход в HH:MM: мост недоступен / Мост Claude не отвечал | `hh-scout-bridge` лежит | `sudo systemctl restart hh-scout-bridge` |
+| 🤖 Подход в HH:MM: мост недоступен / Мост Claude не отвечал | `hh-scout-bridge` лежит | `bash scripts/svc.sh bridge-restart` |
 | 🚫 hh.ru не отдал данные | капча / просит войти | открыть hh.ru в этом Firefox руками; повторяется — снизить лимит, удлинить паузы |
 | 👤 hh.ru видит нас не как соискателя | вылетел логин | войти на hh.ru в Firefox |
 | 🧩 Поиск без карточек / страницы без данных | hh.ru изменил структуру `HH-Lux-InitialState` | обновить парсеры `browser/hh_pages.py` (фикстуры в tests/) |
 | 📊/⚠️ Итог дня | сводка после 22:30 | ⚠️ = подходов меньше, чем окон |
-| 🚨 hh-scout: сервис упал и не смог перезапуститься | 5 падений за 10 мин (systemd OnFailure) | `journalctl -u hh-scout -n 50`, починить, `sudo systemctl restart hh-scout` |
+| 🚨 hh-scout: сервис упал и не смог перезапуститься | 5 падений за 10 мин (systemd OnFailure) | `journalctl -u hh-scout -n 50`, починить, `bash scripts/svc.sh restart` |
 
 Каждая тревога приходит не чаще раза в день. Юнит тревоги устанавливает `scripts/install_service.sh` (повторный запуск
 скрипта безопасен); проверить: `systemctl cat hh-scout | grep OnFailure`, вручную — `scripts/tg_alert.sh "тест"`.
+
+## Управление сервисом без пароля (агент)
+Владелец один раз запускает `bash scripts/grant_agent_control.sh` (спросит пароль sudo). Скрипт рендерит
+`scripts/sudoers-hh-scout.template` (пользователь, путь репо), проверяет его `visudo -cf`, ставит в `/etc/sudoers.d/hh-scout`
+(0440), прогоняет `visudo -c` и при ошибке откатывает, затем проверяет `sudo -n`. После этого пользователю (и ИИ-агенту под
+ним) без пароля разрешены **только**: `systemctl start|stop|restart|reset-failed|enable hh-scout`, `restart|start|stop
+hh-scout-bridge`, `daemon-reload` и `install` двух отрендеренных юнитов из `data/` в `/etc/systemd/system/`. По сути это
+root без пароля для этого пользователя (юнит запускается от root) — приемлемо на личной машине, где он и так в группе
+`sudo`. Отозвать: `sudo rm /etc/sudoers.d/hh-scout`; посмотреть: `sudo -l | grep hh-scout`.
+
+Работать через обёртку `bash scripts/svc.sh …`: `status` (юниты, `/health`, «сбор идёт»), `logs [N]`, `restart`,
+`reinstall` (= `install_service.sh` + рестарт: новые юниты, зависимости), `bridge-restart`. `stop|restart|reinstall`
+**отказывают (код 3), пока идёт сбор** — есть `runs.status='running'` или процесс `hh_scout.(pipeline|browser)`;
+обход `--force` только если прогон точно мёртв. Без правила sudoers — код 4 с подсказкой.
 
 ## Плейбук сбоев
 | Симптом | Причина | Что делать |
@@ -115,3 +130,5 @@ PRAGMA wal_checkpoint(TRUNCATE);
 3. `bash bridge/install.sh` (sudo) → токен → `.env` `BRIDGE_TOKEN`.
 4. BotFather → `TG_BOT_TOKEN` в `.env` → `.venv/bin/python scripts/tg_whoami.py` (написать боту `/start`).
 5. `bash scripts/install_service.sh` (sudo) → `journalctl -u hh-scout -f`.
+6. По желанию: `bash scripts/grant_agent_control.sh` (sudo один раз) — дальше рестарты и переустановка юнитов через
+   `bash scripts/svc.sh …` без пароля, в том числе ИИ-агентом.

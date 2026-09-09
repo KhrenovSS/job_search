@@ -25,8 +25,8 @@ hh.ru закрыл API для соискателей, поэтому бот хо
 cd "$(git rev-parse --show-toplevel)"                 # корень репо
 .venv/bin/python -m pytest -q                        # тесты (без сети, без браузера)
 .venv/bin/python scripts/check_browser.py            # Firefox доступен по Marionette? (одна короткая сессия)
-systemctl status hh-scout-bridge hh-scout --no-pager # мост Claude и сервис бота (hh-scout может быть ещё не установлен)
-curl -s http://127.0.0.1:8766/health                 # мост отвечает?
+bash scripts/svc.sh status                           # юниты hh-scout и моста, /health, «сбор идёт: да/нет»
+bash scripts/svc.sh restart                          # перезапуск без пароля (после grant_agent_control.sh); reinstall — юниты + рестарт
 sqlite3 -column data/hh_scout.db "select status, count(*) from vacancies group by 1;"
 journalctl -u hh-scout -n 50 --no-pager              # логи сервиса, если установлен; иначе data/logs/*.log
 ```
@@ -46,6 +46,8 @@ prompts/  candidate_profile.md  профиль кандидата — прави
 bridge/   hh_scout_bridge.py  мост Claude: FastAPI → `claude -p` под подпиской; hh-scout-bridge.service.template, install.sh, .env.bridge(.example)
 scripts/  install_service.sh (sudo) · install_geckodriver.sh · setup_firefox.sh · check_browser.py · tg_whoami.py
           · tg_alert.sh (Telegram через curl для systemd OnFailure)
+          · svc.sh (status/logs/restart/reinstall/bridge-restart; не рестартует во время сбора) · grant_agent_control.sh
+          (владелец, один раз: sudoers-правило из sudoers-hh-scout.template → рестарты без пароля, в т.ч. агентом)
 README.md · .gitignore · hh-scout.service.template + hh-scout-alert.service.template (юниты, рендерит install_service.sh) · pyproject.toml · requirements(-dev).txt
 · pytest.ini · .env.example · LICENSE (MIT)
 src/hh_scout/

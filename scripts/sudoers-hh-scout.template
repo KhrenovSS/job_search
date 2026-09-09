@@ -1,0 +1,16 @@
+# HH-Scout: let the owner's user (and the AI agent running as this user) manage the service without a password.
+# Rendered by scripts/grant_agent_control.sh (@USER@, @REPO@) and installed to /etc/sudoers.d/hh-scout (0440).
+# Narrow: exact systemctl commands for hh-scout / hh-scout-bridge and copying the two rendered unit files.
+# sudoers matches the whole command line as a string, so both unit-name spellings are listed.
+# Revoke: sudo rm /etc/sudoers.d/hh-scout
+@USER@ ALL=(root) NOPASSWD: \
+  /usr/bin/systemctl restart hh-scout, /usr/bin/systemctl restart hh-scout.service, \
+  /usr/bin/systemctl start hh-scout, /usr/bin/systemctl start hh-scout.service, \
+  /usr/bin/systemctl stop hh-scout, /usr/bin/systemctl stop hh-scout.service, \
+  /usr/bin/systemctl reset-failed hh-scout, /usr/bin/systemctl reset-failed hh-scout.service, \
+  /usr/bin/systemctl enable --now hh-scout, /usr/bin/systemctl enable hh-scout, /usr/bin/systemctl enable hh-scout.service, \
+  /usr/bin/systemctl restart hh-scout-bridge, /usr/bin/systemctl restart hh-scout-bridge.service, \
+  /usr/bin/systemctl start hh-scout-bridge, /usr/bin/systemctl stop hh-scout-bridge, \
+  /usr/bin/systemctl daemon-reload, \
+  /usr/bin/install -m 644 @REPO@/data/hh-scout.service /etc/systemd/system/hh-scout.service, \
+  /usr/bin/install -m 644 @REPO@/data/hh-scout-alert.service /etc/systemd/system/hh-scout-alert.service
