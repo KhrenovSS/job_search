@@ -42,6 +42,10 @@ class CrawlReport:
     daily_cap: int = 0
     expired_low_priority: int = 0
     new_vacancies: int = 0
+    search_pages: int = 0       # for health.analyze_report
+    cards_seen: int = 0
+    not_logged_in: bool = False
+    format_errors: int = 0
     prefiltered_pass: int = 0
     triage_open: int = 0
     details: int = 0
@@ -98,6 +102,7 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
             st = c.run(run_id)
             report.page_loads += st.page_loads
             report.new_vacancies = st.new_vacancies
+            report.search_pages, report.cards_seen, report.not_logged_in = st.page_loads, st.cards_seen, st.not_logged_in
         except BrowserUnavailable as e:
             report.browser_error = str(e)
         except HHBlocked as e:
@@ -143,6 +148,7 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
             ds = d.run(run_id)
             report.page_loads += ds.page_loads
             report.details = ds.outcomes.get("prefiltered", 0)
+            report.format_errors = ds.outcomes.get("format_error", 0)
         except BrowserUnavailable as e:
             report.browser_error = str(e)
         except HHBlocked as e:

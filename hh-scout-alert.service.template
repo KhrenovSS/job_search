@@ -1,0 +1,9 @@
+[Unit]
+Description=HH-Scout — Telegram alert when hh-scout fails (OnFailure hook)
+
+[Service]
+Type=oneshot
+User=@USER@
+WorkingDirectory=@REPO@
+EnvironmentFile=@REPO@/.env
+ExecStart=/bin/bash @REPO@/scripts/tg_alert.sh "🚨 hh-scout: сервис упал и не смог перезапуститься (5 падений за 10 мин). journalctl -u hh-scout -n 50"

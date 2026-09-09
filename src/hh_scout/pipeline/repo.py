@@ -303,6 +303,26 @@ def vacancy_by_id(conn: sqlite3.Connection, vacancy_id: int) -> sqlite3.Row | No
 
 # --- runs -----------------------------------------------------------------------
 
+def _today_start_utc() -> str:
+    start_local = datetime.combine(datetime.now(TZ).date(), time(0, 0), tzinfo=TZ)
+    return start_local.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def run_starts_today(conn: sqlite3.Connection) -> list[datetime]:
+    """Start times (aware, Europe/Moscow) of every run started today, any trigger or status."""
+    rows = conn.execute("SELECT started_at FROM runs WHERE started_at >= ? ORDER BY id", (_today_start_utc(),)).fetchall()
+    return [datetime.fromisoformat(r["started_at"]).astimezone(TZ) for r in rows]
+
+
+def day_totals(conn: sqlite3.Connection, threshold: int) -> dict[str, int]:
+    """Today's totals for the end-of-day summary: page loads, new vacancies, leads scored at or above the threshold."""
+    start = _today_start_utc()
+    r = conn.execute("SELECT COALESCE(SUM(page_loads), 0) AS p, COALESCE(SUM(collected), 0) AS c FROM runs WHERE started_at >= ?",
+                     (start,)).fetchone()
+    leads = conn.execute("SELECT COUNT(*) AS n FROM evaluations WHERE created_at >= ? AND total >= ?", (start, threshold)).fetchone()
+    return {"page_loads": int(r["p"]), "new_vacancies": int(r["c"]), "leads": int(leads["n"])}
+
+
 def running_run(conn: sqlite3.Connection) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM runs WHERE status = 'running' ORDER BY id DESC LIMIT 1").fetchone()
 

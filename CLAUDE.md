@@ -45,14 +45,16 @@ prompts/  candidate_profile.md  профиль кандидата — прави
           card_triage.md · vacancy_evaluation.md · cover_letter.md  системные промпты (часть после `---`)
 bridge/   hh_scout_bridge.py  мост Claude: FastAPI → `claude -p` под подпиской; hh-scout-bridge.service.template, install.sh, .env.bridge(.example)
 scripts/  install_service.sh (sudo) · install_geckodriver.sh · setup_firefox.sh · check_browser.py · tg_whoami.py
-README.md · .gitignore · hh-scout.service.template (юнит, рендерится install_service.sh) · pyproject.toml · requirements(-dev).txt
+          · tg_alert.sh (Telegram через curl для systemd OnFailure)
+README.md · .gitignore · hh-scout.service.template + hh-scout-alert.service.template (юниты, рендерит install_service.sh) · pyproject.toml · requirements(-dev).txt
 · pytest.ini · .env.example · LICENSE (MIT)
 src/hh_scout/
   config.py        Settings из .env (порог, веса, лимиты, окна, ритм, токены) + константы: SEARCH_QUERIES, REGION_NAMES (49),
                    TITLE_STOP/KEEP/REQUIRED_ANY;  logging_setup.py — логи в stdout/journald
   db.py            SQLite, миграции _m001…_m005 (PRAGMA user_version), kv_get/kv_set
   main.py          сервис: aiogram polling + планировщик; первый старт помечает превью как sent
-  scheduler.py     дайджест по cron, три подхода в день (окна, случайный старт, доля лимита), восстановление из kv
+  scheduler.py     дайджест по cron, три подхода в день (окна, случайный старт, доля лимита), восстановление из kv,
+                   сторож каждые 30 мин и предпроверка перед подходом;  health.py — тревоги (чистые проверки + Alerter)
   browser/         session.py (geckodriver --connect-existing, своё окно, бюджет) · hh_pages.py (URL, парсеры
                    HH-Lux-InitialState) · pacing.py (паузы, длительность серий, прокрутка) · bursts.py (серии по времени)
   hh/              areas.py (регионы из открытого api.hh.ru/areas, кэш) · salary.py (gross→net, только RUR/месяц)

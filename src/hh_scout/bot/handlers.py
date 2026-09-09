@@ -17,6 +17,7 @@ from hh_scout.bot.digest import send_digest
 from hh_scout.bot.keyboards import vote_kb
 from hh_scout.bot.lead_actions import cleanup_stale, collapse_lead
 from hh_scout.config import TZ, Settings
+from hh_scout.db import kv_get
 from hh_scout.llm.cover_letter import CoverLetterWriter
 from hh_scout.pipeline import repo
 from hh_scout.pipeline.ranker import format_card, format_inbox, format_letter
@@ -99,6 +100,8 @@ async def status_cmd(m: Message, settings: Settings, conn: sqlite3.Connection, s
                      + (f"; {last['error']}" if last['error'] else ""))
     order = ["new", "triage", "to_fetch", "prefiltered", "evaluated", "sent", "rejected", "skipped", "evaluation_failed"]
     lines.append("Вакансии: " + " · ".join(f"{k} {counts[k]}" for k in order if counts.get(k)))
+    wd = kv_get(conn, "watchdog_last")
+    lines.append(f"Сторож: последняя проверка {_fmt_dt(wd)} · тревог сегодня {scheduler.alerter.count_today(datetime.now(TZ).date())}")
     lines.append(f"БД: {db_mb:.1f} МБ")
     await m.answer("\n".join(lines))
 

@@ -2,6 +2,10 @@
 Description=HH-Scout — Telegram bot, scheduler and hh.ru browsing pipeline
 After=network-online.target hh-scout-bridge.service
 Wants=network-online.target
+# a crash restarts the bot (it then says "🟢 запущен" itself); 5 crashes within 10 min → failed → Telegram alert via curl
+StartLimitIntervalSec=600
+StartLimitBurst=5
+OnFailure=hh-scout-alert.service
 
 [Service]
 User=@USER@

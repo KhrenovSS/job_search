@@ -17,7 +17,9 @@ from typing import Awaitable, Callable
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
+from hh_scout import health
 from hh_scout.config import TZ, Settings
 from hh_scout.db import kv_get, kv_set
 from hh_scout.pipeline import repo
@@ -65,6 +67,25 @@ def sittings_left(now: datetime, windows: list[Window], current_idx: int | None 
     return max(1, n)
 
 
+def _port_open(host: str, port: int) -> bool:
+    import socket
+
+    try:
+        with socket.create_connection((host, port), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
+def _bridge_ok(url: str) -> bool:
+    import httpx
+
+    try:
+        return httpx.get(f"{url}/health", timeout=5).status_code == 200
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _fmt_windows(windows: list[Window]) -> str:
     return ", ".join(f"{a.strftime('%H:%M')}–{b.strftime('%H:%M')}" for a, b in windows)
 
@@ -82,6 +103,9 @@ class Scheduler:
         self.crawl_lock = asyncio.Lock()
         self.last_report: CrawlReport | None = None
         self.windows = settings.crawl_windows_parsed
+        self.alerter = health.Alerter(conn, notify)
+        self.probe_marionette: Callable[[], bool] = lambda: _port_open(settings.marionette_host, settings.marionette_port)
+        self.probe_bridge: Callable[[], bool] = lambda: _bridge_ok(settings.bridge_url)
 
     # -- lifecycle -----------------------------------------------------------------
 
@@ -91,6 +115,8 @@ class Scheduler:
         with self.conn:
             kv_set(self.conn, "crawl_attempts", None)  # v5 leftover
         self._restore_crawl()
+        self.aps.add_job(self.watchdog_job, IntervalTrigger(minutes=health.WATCHDOG_INTERVAL_MIN, timezone=TZ), id="watchdog",
+                         replace_existing=True)
         self.aps.start()
         nxt = self.next_crawl_at()
         log.info("Планировщик запущен: дайджест ежедневно в %s, окна сбора %s, следующий подход %s",
@@ -128,6 +154,9 @@ class Scheduler:
 
     def _schedule_crawl(self, when: datetime) -> None:
         self.aps.add_job(self.crawl_job, DateTrigger(run_date=when), id="crawl", replace_existing=True, kwargs={"trigger": "schedule"})
+        pre = when - timedelta(minutes=health.PRECHECK_LEAD_MIN)
+        if pre > datetime.now(TZ):
+            self.aps.add_job(self.precheck_job, DateTrigger(run_date=pre), id="precheck", replace_existing=True, kwargs={"when": when})
         log.info("Подход запланирован на %s", when.strftime("%d.%m %H:%M"))
 
     def _done_idx_today(self, now: datetime) -> int | None:
@@ -198,6 +227,48 @@ class Scheduler:
             log.exception("Дайджест упал")
             await self.notify(f"⚠️ Дайджест не отправлен: {e}")
 
+    async def watchdog_job(self, now: datetime | None = None) -> list[health.Alert]:
+        """Every 30 min: is the day going to plan? Alerts once per condition per day; re-plans if nothing is planned."""
+        now = now or datetime.now(TZ)
+        try:
+            stale = repo.running_run(self.conn)
+            stale_since = datetime.fromisoformat(stale["started_at"]) if stale and not self.crawl_lock.locked() else None
+            alerts = health.schedule_checks(
+                now, self.windows, repo.run_starts_today(self.conn), next_crawl_at=self.next_crawl_at(),
+                crawl_running=self.crawl_lock.locked(), paused=self.paused(), page_loads_today=repo.page_loads_today(self.conn),
+                stale_running_since=stale_since,
+            )
+            if any(a.key == "noplan" for a in alerts):
+                self.plan_next_crawl(now)
+            last_end = _at(now.date(), self.windows[-1][1]) + timedelta(minutes=health.WINDOW_GRACE_MIN)
+            if (now >= last_end and not self.paused() and not self.crawl_lock.locked()
+                    and not self.alerter.already_sent("day_summary", now.date())):
+                t = repo.day_totals(self.conn, self.s.score_threshold)
+                alerts.append(health.Alert("day_summary", health.day_summary(
+                    now, self.windows, repo.run_starts_today(self.conn), page_loads_today=t["page_loads"], daily_cap=self.daily_cap(),
+                    new_vacancies=t["new_vacancies"], leads=t["leads"])))
+            await self.alerter.send(alerts, now)
+            with self.conn:
+                kv_set(self.conn, "watchdog_last", now.isoformat())
+            if now.hour == 0 or kv_get(self.conn, "alerts_cleaned") != now.date().isoformat():
+                self.alerter.forget_old(now.date())
+                with self.conn:
+                    kv_set(self.conn, "alerts_cleaned", now.date().isoformat())
+            return alerts
+        except Exception as e:  # noqa: BLE001
+            log.exception("Сторож упал")
+            await self.notify(f"⚠️ Сторож расписания упал: {e}")
+            return []
+
+    async def precheck_job(self, when: datetime) -> list[health.Alert]:
+        """30 min before a sitting: Firefox/Marionette and the bridge must be up."""
+        if self.paused():
+            return []
+        m_ok, b_ok = await asyncio.gather(asyncio.to_thread(self.probe_marionette), asyncio.to_thread(self.probe_bridge))
+        alerts = health.precheck(when, marionette_ok=m_ok, bridge_ok=b_ok)
+        await self.alerter.send(alerts)
+        return alerts
+
     async def crawl_job(self, trigger: str = "schedule", manual_budget: int | None = None) -> CrawlReport | None:
         now = datetime.now(TZ)
         if trigger == "schedule" and self.paused():
@@ -233,6 +304,10 @@ class Scheduler:
         if report.browser_error:
             text += "\nПроверьте, что Firefox запущен с --marionette."
         await self.notify(text)
+        try:
+            await self.alerter.send(health.analyze_report(report))
+        except Exception as e:  # noqa: BLE001
+            log.exception("Разбор отчёта упал: %s", e)
         if self.after_crawl is not None:
             try:
                 await self.after_crawl()

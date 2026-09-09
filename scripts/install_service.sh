@@ -13,8 +13,10 @@ command -v geckodriver >/dev/null || bash scripts/install_geckodriver.sh
 
 # render the unit template for this user and checkout location
 REPO="$(pwd)"; USER_NAME="$(id -un)"
-sed -e "s|@USER@|${USER_NAME}|g" -e "s|@REPO@|${REPO}|g" -e "s|@HOME@|${HOME}|g" hh-scout.service.template > /tmp/hh-scout.service
-sudo install -m 644 /tmp/hh-scout.service /etc/systemd/system/hh-scout.service && rm -f /tmp/hh-scout.service
+for unit in hh-scout hh-scout-alert; do
+  sed -e "s|@USER@|${USER_NAME}|g" -e "s|@REPO@|${REPO}|g" -e "s|@HOME@|${HOME}|g" "${unit}.service.template" > "/tmp/${unit}.service"
+  sudo install -m 644 "/tmp/${unit}.service" "/etc/systemd/system/${unit}.service" && rm -f "/tmp/${unit}.service"
+done
 sudo systemctl daemon-reload
 sudo systemctl enable --now hh-scout
 sleep 2
