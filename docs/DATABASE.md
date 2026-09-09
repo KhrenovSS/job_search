@@ -45,8 +45,9 @@
 - `salary_raw`: исходный объект `compensation` hh (JSON); `salary_from`, `salary_to`: рубли net (gross×0.87) **только для
   месячных RUR**; валюта/почасовые хранятся как есть (пометка `Salary.note` в БД не хранится, вычисляется из `salary_raw`).
 - `source`: `search:<idx>` / `similar_to_resume` / `negotiations`; `search_pass`: regional / remote / project / similar / negotiations.
-- `raw_json`: **урезанный** `vacancyView` (`repo.DETAIL_KEYS`: description, keySkills, compensation, workFormats,
-  employmentForm, area, status, publicationDate, workExperience, company{id,name,visibleName,@trusted}, address{city,…}).
+- `raw_json`: **урезанный** `vacancyView` (`repo.DETAIL_KEYS`: vacancyId, name, description, keySkills, compensation,
+  workFormats, employmentForm, area, status, publicationDate, workExperience, workScheduleByDays, workingHours,
+  closedForApplicants, userLabels + company{id,name,visibleName,@trusted}, address{city,street,building,displayName}).
 - `applied`, `has_chat`: из страницы откликов; `triage_priority`, `triage_note`: от триажа.
 
 ## `evaluations`

@@ -1,5 +1,5 @@
 import random
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 from hh_scout.config import TZ
 from hh_scout.scheduler import pick_crawl_time, retry_time
@@ -27,15 +27,16 @@ def test_pick_moves_to_tomorrow_when_window_over():
     assert t.date().day == 10 and time(13, 0) <= t.time() <= time(23, 0)
 
 
-def test_retry_bounded_by_deadline():
-    now = datetime(2026, 9, 9, 22, 0, tzinfo=TZ)
-    t = retry_time(now, random.Random(3))
-    assert t is not None and t <= datetime(2026, 9, 10, 11, 30, tzinfo=TZ) and t > now
-    late = datetime(2026, 9, 10, 10, 30, tzinfo=TZ)
+def test_retry_bounded_by_same_day_deadline():
+    morning_fail = datetime(2026, 9, 9, 8, 0, tzinfo=TZ)
+    for seed in range(30):
+        t = retry_time(morning_fail, random.Random(seed))
+        assert t is not None and morning_fail + timedelta(minutes=60) <= t <= morning_fail + timedelta(minutes=180)
+    late = datetime(2026, 9, 9, 19, 30, tzinfo=TZ)
     for seed in range(30):
         t = retry_time(late, random.Random(seed))
-        assert t is None or t <= datetime(2026, 9, 10, 11, 30, tzinfo=TZ)
-    assert retry_time(datetime(2026, 9, 10, 11, 0, tzinfo=TZ), random.Random(0)) is None
+        assert t is None or t <= datetime(2026, 9, 9, 21, 0, tzinfo=TZ)
+    assert retry_time(datetime(2026, 9, 9, 20, 30, tzinfo=TZ), random.Random(0)) is None
 
 
 def test_morning_window_after_noon_digest_goes_to_tomorrow():

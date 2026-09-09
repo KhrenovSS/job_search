@@ -23,7 +23,7 @@ from hh_scout.pipeline.run import CrawlReport, run_crawl
 log = logging.getLogger(__name__)
 
 MAX_CRAWL_ATTEMPTS = 3
-RETRY_DEADLINE = time(11, 30)  # never retry later than this on the next day
+RETRY_DEADLINE = time(21, 0)  # retries after a browser failure stay within the same day, not later than this
 MIN_LEAD_MINUTES = 20
 
 
@@ -46,12 +46,14 @@ def pick_crawl_time(now: datetime, window: tuple[time, time], rng: random.Random
 
 
 def retry_time(now: datetime, rng: random.Random | None = None) -> datetime | None:
-    """60–180 min from now, but not after 11:30 next day; None if that is impossible."""
+    """60–180 min from now, but not after RETRY_DEADLINE today; None if that is impossible.
+
+    With the morning crawl window a failed crawl is retried during the same day; a late result simply
+    lands in the next day's digest.
+    """
     rng = rng or random.Random()
     candidate = now + timedelta(minutes=rng.uniform(60, 180))
-    deadline = _at(now.date() + timedelta(days=1), RETRY_DEADLINE)
-    if now.time() < RETRY_DEADLINE:  # still before today's deadline → today's deadline applies
-        deadline = _at(now.date(), RETRY_DEADLINE)
+    deadline = _at(now.date(), RETRY_DEADLINE)
     return candidate if candidate <= deadline else None
 
 
@@ -111,7 +113,7 @@ class Scheduler:
         if when > now:
             self._schedule_crawl(when)
         else:
-            # missed while the service was down: run soon, unless the daily digest has already passed it by
+            # missed while the service was down: run soon (no "already ran today" check — see docs/ARCHITECTURE.md)
             soon = now + timedelta(minutes=self.rng.uniform(2, 5))
             log.info("Пропущенный сбор (%s) — запускаю в %s", when.strftime("%d.%m %H:%M"), soon.strftime("%H:%M"))
             self._set_next_crawl(soon)

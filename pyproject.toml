@@ -7,6 +7,8 @@ name = "hh-scout"
 version = "0.1.0"
 description = "Personal AI agent that browses hh.ru in the owner's Firefox and sends vacancy digests to Telegram"
 requires-python = ">=3.12"
+readme = "README.md"
+license = {text = "MIT"}
 dynamic = ["dependencies"]
 
 [tool.setuptools.dynamic]

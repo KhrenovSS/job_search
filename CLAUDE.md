@@ -9,7 +9,8 @@
 
 hh.ru закрыл API для соискателей, поэтому бот ходит по сайту **в уже запущенном Firefox владельца** через Marionette
 под его логином, «как человек»: своё окно, серии по 3–7 страниц с паузами 10–40 минут, ≤ 80 загрузок в день,
-один сбор в сутки в случайное время. **Только чтение**: никаких откликов и кликов по кнопкам сайта.
+один сбор в сутки со случайным стартом в окне 07:00–08:30; дайджест в 12:00 дооценивает загруженное и отправляет.
+**Только чтение**: никаких откликов и кликов по кнопкам сайта.
 
 ## Где мы сейчас
 Актуальное состояние, история этапов и открытые дела — `docs/ROADMAP.md` (раздел «Текущее состояние»).
@@ -35,14 +36,16 @@ journalctl -u hh-scout -n 50 --no-pager              # логи сервиса, 
 CLAUDE.md                      ← вы здесь
 docs/  ARCHITECTURE.md (компоненты и 6 шагов пайплайна) · OPERATIONS.md (runbook) · DATABASE.md (схема, статусы, kv)
        INTEGRATIONS.md (страницы hh.ru, мост, Telegram) · DECISIONS.md (почему) · ROADMAP.md (история, состояние)
-       archive/               локальный (не в git) архив первоначального видения владельца, PDF резюме и пример письма
+       archive/README.md      описание архива; сама папка archive/2026-09-08-initial-vision/ (старые доки, PDF резюме,
+                              переписка с примером письма) — только локально, в .gitignore
 prompts/  candidate_profile.md  профиль кандидата — правит ВЛАДЕЛЕЦ, читается целиком при каждом прогоне; в .gitignore
           resume.md             резюме (из PDF) — правит владелец; источник фактов для писем; в .gitignore
           *.example.md          публичные образцы этих двух файлов (скопировать и заполнить на новой машине)
           card_triage.md · vacancy_evaluation.md · cover_letter.md  системные промпты (часть после `---`)
 bridge/   hh_scout_bridge.py  мост Claude: FastAPI → `claude -p` под подпиской; hh-scout-bridge.service.template, install.sh, .env.bridge(.example)
 scripts/  install_service.sh (sudo) · install_geckodriver.sh · setup_firefox.sh · check_browser.py · tg_whoami.py
-hh-scout.service.template (юнит, рендерится install_service.sh) · pyproject.toml · requirements(-dev).txt · pytest.ini · .env.example · LICENSE (MIT)
+README.md · .gitignore · hh-scout.service.template (юнит, рендерится install_service.sh) · pyproject.toml · requirements(-dev).txt
+· pytest.ini · .env.example · LICENSE (MIT)
 src/hh_scout/
   config.py        Settings из .env (порог, веса, лимиты, окно, токены) + константы: SEARCH_QUERIES, REGION_NAMES (49),
                    TITLE_STOP/KEEP/REQUIRED_ANY;  logging_setup.py — логи в stdout/journald
@@ -56,10 +59,10 @@ src/hh_scout/
                    evaluator.py (лид: техника/роль/лид) · cover_letter.py (письмо на лид)
   pipeline/        repo.py (весь SQL) · collector.py · prefilter.py · details.py · ranker.py (total, карточка)
                    digest_builder.py · run.py (оркестратор одного прогона)
-  bot/             app.py (только владелец) · handlers.py (команды: /status /digest /crawl /next /pause /resume /skipped
-                   /letter /inbox /done /cleanup) · digest.py · feedback.py (кнопки 👍/👎/✅/⏸) · lead_actions.py
+  bot/             app.py (только владелец) · handlers.py (команды: /start=/help /status /digest /crawl /next /pause /resume
+                   /skipped /letter /inbox /done /cleanup) · digest.py · feedback.py (кнопки 👍/👎/✅/⏸) · lead_actions.py
                    (сворачивание карточек, автозакрытие по откликам) · keyboards.py
-tests/             53 теста; фикстуры — реальные страницы hh.ru и справочник регионов
+tests/             unit-тесты (`pytest -q`, без сети и браузера); фикстуры — реальные страницы hh.ru и справочник регионов
 data/              hh_scout.db (WAL), logs/ — в .gitignore
 ```
 

@@ -54,13 +54,13 @@ def _m001_initial(conn: sqlite3.Connection) -> None:
             url            TEXT NOT NULL,
             area_name      TEXT,
             work_format    TEXT,              -- remote / hybrid / office / field / unknown
-            employment     TEXT,              -- full / part / project / unknown (hh employment_form)
+            employment     TEXT,              -- full / part / project / fly_in_fly_out / unknown (hh employment_form)
             salary_from    INTEGER,           -- RUB net, NULL if not stated
             salary_to      INTEGER,
             salary_raw     TEXT,              -- original salary JSON
             published_at   TEXT,
-            source         TEXT NOT NULL,     -- search:<query idx> | similar_to_resume
-            search_pass    TEXT NOT NULL,     -- regional | remote | project | similar
+            source         TEXT NOT NULL,     -- search:<query idx> | similar_to_resume | negotiations
+            search_pass    TEXT NOT NULL,     -- regional | remote | project | similar | negotiations
             raw_json       TEXT,              -- trimmed vacancyView from the vacancy page (see repo.trim_vacancy_view)
             status         TEXT NOT NULL DEFAULT 'new',
                 -- new -> triage -> to_fetch -> prefiltered -> evaluated -> sent | rejected

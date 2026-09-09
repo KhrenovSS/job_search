@@ -57,7 +57,8 @@ initialState, conversationMessagesCount, hasNewMessages, archived, resumeId, cha
 ## 2. Мост Claude (`bridge/`)
 
 Собственный сервис проекта: FastAPI + systemd на хосте, порт **8766** (слушает 0.0.0.0, защита — токен), на каждый запрос запускает
-`claude -p --output-format json --max-turns 1 --tools "" --model <m> --system-prompt <s>` (prompt в stdin)
+`claude -p --output-format json --max-turns 1 --tools "" --model <m> [--system-prompt <s>]` (prompt в stdin;
+`--system-prompt` только при непустом `system_text`)
 под подпиской владельца. Рабочая директория CLI — каталог без CLAUDE.md (по умолчанию системный temp).
 
 ### Контракт
@@ -97,7 +98,9 @@ Body: {
 - aiogram v3, long polling. Бот отдельный, создаётся через @BotFather.
 - `TG_OWNER_CHAT_ID`: если пуст, бот на любое сообщение отвечает «Ваш chat_id: N — впишите его в .env»
   и больше ничего не делает. Все апдейты не от владельца игнорируются без ответа.
-- Клавиатура под вакансией: `👍`/`👎`, callback `fb:<vacancy_id>:up|down`. После 👍 — «✓ учтено».
-  После 👎 — клавиатура причины `fbr:<vacancy_id>:salary|format|stack|agency|skip` → «✓ учтено».
+- Клавиатура под карточкой — два ряда: `[👍] [👎]` (`fb:<vacancy_id>:up|down`) и `[✅ Написал] [⏸ Позже]`
+  (`act:<vacancy_id>:responded|later`); служебный `noop`. 👍 → кнопка «👍 отмечено»; 👎 → клавиатура причины
+  `fbr:<vacancy_id>:salary|format|stack|agency|skip` → карточка сворачивается в строку, письмо удаляется; ✅ → то же
+  с пометкой «✅ Написал»; ⏸ → «⏸ отложено». Подробности — ARCHITECTURE «Жизненный цикл лида».
 - HTML-разметка, превью ссылок отключено; карточка + письмо (`<pre>`) на лид, пауза 0.6 с между сообщениями.
 - Чужие апдейты игнорируются без ответа (строка INFO в лог). При пустом `TG_OWNER_CHAT_ID` бот отвечает chat_id.

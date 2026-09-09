@@ -17,12 +17,12 @@
 | `hh_scout.pipeline.collector [--budget N] [--gap-scale X] [--no-gaps] [--stale-hours H]` | сбор карточек (3 прохода × запросы) + синк откликов | да | — |
 | `hh_scout.pipeline.prefilter [--dry-run] [--show-skipped]` | правила: `new → triage/skipped` | — | — |
 | `hh_scout.llm.triage [--limit N] [--dry-run]` | ИИ по карточкам: `triage → to_fetch/skipped` | — | да |
-| `hh_scout.pipeline.details [--budget N] [--gap-scale X] [--no-gaps]` | страницы вакансий: `to_fetch → prefiltered` | да | — |
+| `hh_scout.pipeline.details [--budget N] [--gap-scale X] [--no-gaps] [--stale-hours H]` | страницы вакансий: `to_fetch → prefiltered` | да | — |
 | `hh_scout.llm.evaluator [--limit N] [--preview] [--send] [--tail]` | оценка: `prefiltered → evaluated`; `--send` шлёт превью в Telegram **напрямую, без кнопок и без записи в digests** — статусы не меняет (лиды остаются `evaluated` и попадут в следующий дайджест) | — | да |
 | `hh_scout.llm.cover_letter [--limit N] [--hh-id X] [--force] [--preview]` | письма для лидов ≥ порога | — | да |
-| `hh_scout.browser.hh_pages --search … [--area N]… [--remote] [--project] [--vacancy ID]` | открыть ОДНУ страницу и распечатать разбор | да | — |
+| `hh_scout.browser.hh_pages --search … [--area N]… [--remote] [--project] [--page N] [--vacancy ID]` | открыть ОДНУ страницу и распечатать разбор | да | — |
 | `scripts/check_browser.py` | проверить подключение к Firefox | да (кратко) | — |
-| `scripts/tg_whoami.py` | одноразово определить chat_id владельца | — | — |
+| `scripts/tg_whoami.py [--timeout 90]` | одноразово определить chat_id владельца | — | — |
 
 Команды бота для работы с лентой: `/inbox` (открытые лиды), `/done <hh_id>`, `/cleanup [дней]` — см. ARCHITECTURE «Жизненный цикл лида».
 Правильный порядок вручную = порядок в `pipeline.run`. Каждый CLI открывает своё соединение с БД и создаёт свою запись
@@ -33,20 +33,23 @@ Marionette принимает **одну** сессию. Взаимно искл
 `collector`, `details`, `hh_pages`, `check_browser.py`. Внутри сервиса защита — `asyncio.Lock`; между процессами —
 только слабая проверка `runs.status='running'` (см. ниже). Перед ручным браузерным шагом: `/status` в боте
 («сбор идёт: нет») или `pgrep -f 'hh_scout.(pipeline|browser)'`.
+Дайджест 12:00 и ручной `/digest` запускают оценку и письма (только мост, без браузера) на отдельном соединении — это
+допустимо параллельно идущему сбору: одна и та же вакансия дважды не оценивается (статус меняется на `evaluated`).
 
 ## Дневной бюджет загрузок
 `MAX_PAGE_LOADS_PER_RUN` (по умолчанию 80; имя историческое, читать как «за день») — **за календарный день
 (Europe/Moscow), суммарно** по всем `runs`
 (`repo.page_loads_today`), включая неудачные и ручные. Внутри прогона пул общий: сначала сбор, остаток — описания.
 Что не влезло, остаётся `to_fetch` на завтра. Один сбор ≈ 15–25 загрузок поиска + до 50–60 описаний.
-Стоимость ИИ (мост, opus): триаж ~$0.08 за пачку 30, оценка ~$0.10 за пачку 5, письмо ~$0.06.
+Стоимость ИИ (мост, opus): триаж ~$0.08 за пачку 30, оценка ~$0.10 за пачку 5, письмо ~$0.06. Дооценка перед
+дайджестом — те же вызовы, что сделал бы сбор, лишних расходов не даёт.
 
 ## Плейбук сбоев
 | Симптом | Причина | Что делать |
 |---|---|---|
 | «Уже есть незавершённый прогон» / сбор не стартует | запись `runs.status='running'` от убитого процесса | само пройдёт через 3 ч (`fail_stale_runs`), либо `sqlite3 data/hh_scout.db "update runs set status='failed', error='прерван вручную' where status='running'"` |
 | `/next` → «не назначен», сбор не идёт | нет `kv.next_crawl_at` (первый старт, пауза, исчерпаны повторы) | до 12:00 назначения не будет; `/crawl` — вручную. После дайджеста назначится само |
-| «Marionette не отвечает» | Firefox закрыт или запущен без `--marionette` | запустить Firefox из меню (или `firefox-esr --marionette &`); `check_browser.py`. Планировщик сам повторит до 3 раз |
+| «Marionette не отвечает» | Firefox закрыт или запущен без `--marionette` | запустить Firefox из меню (или `firefox-esr --marionette &`); `check_browser.py`. Планировщик сам повторит до 3 раз через 60–180 мин, не позже 21:00 |
 | «hh.ru вернул страницу без данных» (HHBlocked) | капча / просит войти | открыть hh.ru в этом Firefox руками, пройти проверку/войти; следующий прогон продолжит |
 | Мост: 401 / недоступен | токены `.env` и `bridge/.env.bridge` не совпадают / сервис упал | `systemctl status hh-scout-bridge`, `curl :8766/health`; `sudo systemctl restart hh-scout-bridge` |
 | Мост 502 «claude CLI exit» | CLI не авторизован под systemd | `claude setup-token` → `CLAUDE_CODE_OAUTH_TOKEN=` в `bridge/.env.bridge`, рестарт |
@@ -83,7 +86,8 @@ PRAGMA wal_checkpoint(TRUNCATE);
 
 ## Установка с нуля (владелец)
 0. Личные файлы: `cp prompts/candidate_profile.example.md prompts/candidate_profile.md` и заполнить; `prompts/resume.md`
-   из PDF (см. `prompts/resume.example.md`). Оба в .gitignore.
+   из PDF-экспорта резюме hh.ru (`pdftotext -layout <файл>.pdf -`, см. `prompts/resume.example.md`). Оба в .gitignore;
+   при их отсутствии код выдаёт ошибку `PrivatePromptMissing` с подсказкой.
 1. `virtualenv .venv && .venv/bin/pip install -r requirements-dev.txt -e .` (python3-venv на хосте нет).
 2. `bash scripts/setup_firefox.sh` → перезапустить Firefox → `.venv/bin/python scripts/check_browser.py`.
 3. `bash bridge/install.sh` (sudo) → токен → `.env` `BRIDGE_TOKEN`.

@@ -4,7 +4,7 @@ Two levels:
 * inside a burst: a pause of a few seconds after every page (occasionally a long "reading" pause);
 * between bursts: tens of minutes. A daily crawl is a handful of small bursts spread over the
   crawl window, never one continuous sweep — the owner's account must look like a person reading
-  vacancies over an afternoon.
+  vacancies over a morning.
 
 Every function takes an optional `rng` so tests stay deterministic.
 """
