@@ -1,6 +1,6 @@
 """Daily schedule: digest at DIGEST_TIME, crawl at a random moment inside CRAWL_WINDOW.
 
-Pure helpers (`pick_crawl_time`, `retry_time`) are unit-tested; `Scheduler` wires them into APScheduler
+Pure helpers (`pick_crawl_time`, `plan_on_start`, `retry_time`) are unit-tested; `Scheduler` wires them into APScheduler
 and the bot. State survives restarts through the `kv` table (next_crawl_at, crawl_attempts, paused).
 """
 
@@ -18,6 +18,7 @@ from apscheduler.triggers.date import DateTrigger
 
 from hh_scout.config import TZ, Settings
 from hh_scout.db import kv_get, kv_set
+from hh_scout.pipeline import repo
 from hh_scout.pipeline.run import CrawlReport, run_crawl
 
 log = logging.getLogger(__name__)
@@ -43,6 +44,19 @@ def pick_crawl_time(now: datetime, window: tuple[time, time], rng: random.Random
         lo, today_end = _at(d, start), _at(d, end)
     span = (today_end - lo).total_seconds()
     return lo + timedelta(seconds=rng.uniform(0, span))
+
+
+def plan_on_start(now: datetime, window: tuple[time, time], runs_today: int, rng: random.Random | None = None) -> datetime | None:
+    """Crawl time for a service start with no saved plan: today's window is still ahead and nothing ran today.
+
+    Fills the gap between installation (or a restart that found an empty `kv.next_crawl_at`) and the next digest,
+    which is otherwise the only place a crawl gets planned. Returns None once today's window is over or a run has
+    already started today (one crawl per day; the digest will plan tomorrow's).
+    """
+    if runs_today > 0:
+        return None
+    when = pick_crawl_time(now, window, rng)
+    return when if when.date() == now.date() else None
 
 
 def retry_time(now: datetime, rng: random.Random | None = None) -> datetime | None:
@@ -105,11 +119,18 @@ class Scheduler:
         self.aps.add_job(self.crawl_job, DateTrigger(run_date=when), id="crawl", replace_existing=True, kwargs={"trigger": "schedule"})
         log.info("Сбор запланирован на %s", when.strftime("%d.%m %H:%M"))
 
-    def _restore_crawl(self) -> None:
+    def _restore_crawl(self, now: datetime | None = None) -> None:
+        now = now or datetime.now(TZ)
         when = self.next_crawl_at()
         if when is None:
+            # no saved plan (fresh install, retries exhausted, restart with an empty kv): use today's window if it
+            # is still ahead and nothing ran today, instead of waiting for the next digest to plan tomorrow
+            when = plan_on_start(now, self.s.crawl_window_parsed, repo.runs_today(self.conn), self.rng)
+            if when is not None:
+                log.info("Сбор на сегодня не был назначен — назначаю на %s", when.strftime("%H:%M"))
+                self._set_next_crawl(when, attempts=0)
+                self._schedule_crawl(when)
             return
-        now = datetime.now(TZ)
         if when > now:
             self._schedule_crawl(when)
         else:

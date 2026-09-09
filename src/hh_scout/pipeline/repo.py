@@ -294,6 +294,14 @@ def running_run(conn: sqlite3.Connection) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM runs WHERE status = 'running' ORDER BY id DESC LIMIT 1").fetchone()
 
 
+def runs_today(conn: sqlite3.Connection) -> int:
+    """Number of runs started today (Europe/Moscow), any trigger or status."""
+    start_local = datetime.combine(datetime.now(TZ).date(), time(0, 0), tzinfo=TZ)
+    start_utc = start_local.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+    row = conn.execute("SELECT COUNT(*) AS n FROM runs WHERE started_at >= ?", (start_utc,)).fetchone()
+    return int(row["n"])
+
+
 def fail_stale_runs(conn: sqlite3.Connection, max_age_hours: float = 3.0) -> int:
     """Mark 'running' runs older than max_age_hours as failed (process was killed externally)."""
     from datetime import datetime, timedelta, timezone
