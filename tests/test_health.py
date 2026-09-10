@@ -138,8 +138,26 @@ async def test_watchdog_end_of_day_summary_once():
         conn.execute("INSERT INTO runs(started_at, status, trigger, page_loads, collected) VALUES (?, 'ok', 'schedule', 30, 10)",
                      (at(h).astimezone(timezone.utc).isoformat(),))
     sch.plan_next_crawl(now=at(22))
+    # quiet mode: a full day (3 of 3) is tallied but not reported — the noon digest carries the work line
+    await sch.watchdog_job(now=at(22, 40))
+    assert not [t for t in sent if "Итог дня" in t]
+    assert sch.alerter.already_sent("day_summary", today)
+    await sch.watchdog_job(now=at(23, 10))
+    assert sent == []
+
+    # a short day (1 of 3) is a problem: one ⚠️ line, not repeated on the next tick
+    conn.execute("DELETE FROM runs WHERE started_at > ?", (at(8).astimezone(timezone.utc).isoformat(),))
+    conn.execute("DELETE FROM kv WHERE key LIKE 'alert:%'")
     await sch.watchdog_job(now=at(22, 40))
     summary = [t for t in sent if "Итог дня" in t]
-    assert len(summary) == 1 and "3 из 3" in summary[0] and "90/120" in summary[0]
+    assert len(summary) == 1 and summary[0].startswith("⚠️") and "1 из 3" in summary[0] and "30/120" in summary[0]
     await sch.watchdog_job(now=at(23, 10))
     assert len([t for t in sent if "Итог дня" in t]) == 1
+
+
+def test_day_summary_alert_only_on_shortfall():
+    full = health.day_summary_alert(_dt(22, 40), WINDOWS, [_dt(7, 9), _dt(13, 0), _dt(19, 30)], page_loads_today=98, daily_cap=111,
+                                    new_vacancies=12, leads=2)
+    short = health.day_summary_alert(_dt(22, 40), WINDOWS, [_dt(7, 9)], page_loads_today=30, daily_cap=111, new_vacancies=5, leads=0)
+    assert full is None
+    assert short is not None and short.key == "day_summary" and short.text.startswith("⚠️")

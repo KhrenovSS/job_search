@@ -6,7 +6,8 @@ Pure checks (unit-tested, no I/O):
 * `analyze_report`   — signs of a block or a markup change in a finished crawl (captcha/login, not an applicant,
                        search pages without cards, vacancy pages without data, bridge down);
 * `precheck`         — Firefox/Marionette and the Claude bridge shortly before a sitting;
-* `day_summary`      — one line for the end of the day: sittings done vs planned, pages, new vacancies, leads.
+* `day_summary`      — one line for the end of the day: sittings done vs planned, pages, new vacancies, leads;
+                       `day_summary_alert` turns it into an Alert only when sittings fell short (a full day is silent).
 
 `Alerter` sends each alert key once per day (kv `alert:<key>:<date>`), so a persistent condition does not spam.
 The process-crash case is covered outside Python: systemd `OnFailure=hh-scout-alert.service` → scripts/tg_alert.sh.
@@ -85,6 +86,14 @@ def day_summary(now: datetime, windows: list[Window], run_starts_today: list[dat
             f"новых вакансий {new_vacancies} · лидов {leads}")
 
 
+def day_summary_alert(now: datetime, windows: list[Window], run_starts_today: list[datetime], *, page_loads_today: int,
+                      daily_cap: int, new_vacancies: int, leads: int) -> Alert | None:
+    """The end-of-day line as an Alert — only when fewer sittings ran than windows; a full day stays quiet."""
+    text = day_summary(now, windows, run_starts_today, page_loads_today=page_loads_today, daily_cap=daily_cap,
+                       new_vacancies=new_vacancies, leads=leads)
+    return Alert("day_summary", text) if text.startswith("⚠️") else None
+
+
 # --- crawl report ----------------------------------------------------------------
 
 def analyze_report(report) -> list[Alert]:
@@ -138,6 +147,11 @@ class Alerter:
 
     def already_sent(self, key: str, today: date) -> bool:
         return kv_get(self.conn, f"alert:{key}:{today.isoformat()}") is not None
+
+    def mark_sent(self, key: str, now: datetime) -> None:
+        """Remember a key for today without sending anything (a check that passed and need not be repeated)."""
+        with self.conn:
+            kv_set(self.conn, f"alert:{key}:{now.date().isoformat()}", now.isoformat())
 
     async def send(self, alerts: list[Alert], now: datetime | None = None) -> int:
         now = now or datetime.now(TZ)

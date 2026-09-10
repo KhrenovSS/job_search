@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
+from datetime import datetime, timedelta
 
 from aiogram import Bot
 
 from hh_scout.bot.keyboards import vote_kb
-from hh_scout.config import Settings
+from hh_scout.config import TZ, Settings
 from hh_scout.db import open_db
 from hh_scout.llm.bridge_client import BridgeError
 from hh_scout.llm.cover_letter import CoverLetterWriter
@@ -48,8 +49,9 @@ async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, ch
         log.exception("Дооценка перед дайджестом упала: %s", e)
     plan = plan_digest(conn, settings)
     open_before = len(repo.open_leads(conn))
+    work = repo.work_totals(conn, datetime.now(TZ) - timedelta(hours=24))
     if not plan.leads:
-        await bot.send_message(chat_id, digest_header(0, plan.checked, open_before=open_before))
+        await bot.send_message(chat_id, digest_header(0, plan.checked, open_before=open_before, work=work))
         finalize_digest(conn, settings, [], plan.checked, note)
         return 0
     # letters for leads that still lack one (e.g. bridge was down during the crawl)
@@ -63,7 +65,7 @@ async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, ch
             log.warning("Не удалось дописать письма перед дайджестом: %s", e)
         plan = plan_digest(conn, settings)
 
-    await bot.send_message(chat_id, digest_header(len(plan.leads), plan.checked, open_before=open_before))
+    await bot.send_message(chat_id, digest_header(len(plan.leads), plan.checked, open_before=open_before, work=work))
     sent: list[tuple[sqlite3.Row, int | None, int | None]] = []
     for i, row in enumerate(plan.leads, 1):
         await asyncio.sleep(PAUSE_S)

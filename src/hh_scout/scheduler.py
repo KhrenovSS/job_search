@@ -253,9 +253,13 @@ class Scheduler:
             if (now >= last_end and not self.paused() and not self.crawl_lock.locked()
                     and not self.alerter.already_sent("day_summary", now.date())):
                 t = repo.day_totals(self.conn, self.s.score_threshold)
-                alerts.append(health.Alert("day_summary", health.day_summary(
+                summary = health.day_summary_alert(
                     now, self.windows, repo.run_starts_today(self.conn), page_loads_today=t["page_loads"], daily_cap=self.daily_cap(),
-                    new_vacancies=t["new_vacancies"], leads=t["leads"])))
+                    new_vacancies=t["new_vacancies"], leads=t["leads"])
+                if summary is not None:
+                    alerts.append(summary)
+                else:  # a full day is routine: remember it was tallied, tell nobody (the noon digest reports the work)
+                    self.alerter.mark_sent("day_summary", now)
             await self.alerter.send(alerts, now)
             with self.conn:
                 kv_set(self.conn, "watchdog_last", now.isoformat())
@@ -283,10 +287,10 @@ class Scheduler:
         if trigger == "schedule" and self.paused():
             self._mark_sitting_done(now)
             when = self.plan_next_crawl(now)
-            await self.notify(f"⏸ Подход пропущен: бот на паузе (/resume — возобновить). Следующий: {when.strftime('%d.%m %H:%M')}")
+            log.info("Подход пропущен: бот на паузе. Следующий: %s", when.strftime("%d.%m %H:%M"))
             return None
         if self.crawl_lock.locked():
-            await self.notify("Сбор уже идёт")
+            log.warning("Сбор уже идёт — новый не стартую")
             return None
         async with self.crawl_lock:
             budget = None if trigger == "schedule" else manual_budget
@@ -298,14 +302,15 @@ class Scheduler:
                 self._set_next_crawl(None, idx)
                 if deadline <= now:  # e.g. restored long after the window closed: the night is for sleeping
                     when = self.plan_next_crawl(now)
-                    await self.notify(f"⏭ Подход пропущен: окно уже закрылось ({deadline:%H:%M}). "
-                                      f"Следующий: {when.strftime('%d.%m %H:%M')}")
+                    log.info("Подход пропущен: окно уже закрылось (%s). Следующий: %s", f"{deadline:%H:%M}", when.strftime("%d.%m %H:%M"))
                     return None
                 budget = self._budget_share(now)
-            await self.notify(f"▶️ Начинаю сбор ({trigger}"
-                              + (f", до {budget} страниц" if budget is not None else "")
-                              + (f", не позже {deadline:%H:%M}" if deadline else "")
-                              + "). Листаю сериями по ~10 мин с паузами ~5 мин.")
+            start_note = (f"Начинаю сбор ({trigger}" + (f", до {budget} страниц" if budget is not None else "")
+                          + (f", не позже {deadline:%H:%M}" if deadline else "") + ")")
+            if trigger == "schedule":
+                log.info("%s", start_note)  # quiet mode: a scheduled sitting is routine, the owner hears only about trouble
+            else:
+                await self.notify("▶️ " + start_note + ". Листаю сериями по ~10 мин с паузами ~5 мин.")
             try:
                 report = await asyncio.to_thread(run_crawl, self.s, self.s.db_path, trigger, budget=budget, deadline=deadline)
             except Exception as e:  # noqa: BLE001
@@ -321,11 +326,15 @@ class Scheduler:
             text += f"\nСледующий подход: {when.strftime('%d.%m %H:%M')}"
         if report.browser_error:
             text += "\nПроверьте, что Firefox запущен с --marionette."
-        await self.notify(text)
+        alerts_sent = 0
         try:
-            await self.alerter.send(health.analyze_report(report))
+            alerts_sent = await self.alerter.send(health.analyze_report(report))
         except Exception as e:  # noqa: BLE001
             log.exception("Разбор отчёта упал: %s", e)
+        # Quiet mode: /crawl always gets its report; a scheduled sitting reports only when something went wrong
+        # and no alert with concrete advice has already covered it (one event — one message).
+        if trigger != "schedule" or (not report.ok and alerts_sent == 0):
+            await self.notify(text)
         if self.after_crawl is not None:
             try:
                 await self.after_crawl()

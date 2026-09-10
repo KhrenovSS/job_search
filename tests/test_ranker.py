@@ -55,3 +55,7 @@ def test_header_plural_forms():
     assert "1 лид</b>" in digest_header(1, 50)
     assert "3 лида</b>" in digest_header(3, 50)
     assert "11 лидов</b>" in digest_header(11, 50)
+    work = {"sittings": 3, "page_loads": 118}
+    assert digest_header(0, 50, work=work).endswith("Работа за сутки: подходов 3 · страниц 118")
+    assert "Работа за сутки: подходов 3 · страниц 118\nНеобработанных" in digest_header(2, 50, open_before=1, work=work)
+    assert "Работа за сутки" not in digest_header(2, 50)

@@ -99,11 +99,14 @@ def format_inbox(rows: list[sqlite3.Row]) -> str:
     return "\n".join(lines)
 
 
-def digest_header(count: int, checked: int, when: datetime | None = None, open_before: int = 0) -> str:
+def digest_header(count: int, checked: int, when: datetime | None = None, open_before: int = 0,
+                  work: dict[str, int] | None = None) -> str:
+    """`work` = repo.work_totals(): the only daily word about how the service itself is doing (quiet mode)."""
     when = when or datetime.now(TZ)
     months = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
     date = f"{when.day} {months[when.month - 1]}"
-    tail = f"\nНеобработанных с прошлых дней: {open_before} (/inbox)" if open_before else ""
+    tail = f"\nРабота за сутки: подходов {work['sittings']} · страниц {work['page_loads']}" if work else ""
+    tail += f"\nНеобработанных с прошлых дней: {open_before} (/inbox)" if open_before else ""
     if count == 0:
         return f"Сегодня лидов не нашлось. Проверено {checked} новых вакансий.{tail}"
     noun = "лид" if count % 10 == 1 and count % 100 != 11 else "лида" if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14 else "лидов"

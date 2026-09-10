@@ -354,6 +354,14 @@ def day_totals(conn: sqlite3.Connection, threshold: int) -> dict[str, int]:
     return {"page_loads": int(r["p"]), "new_vacancies": int(r["c"]), "leads": int(leads["n"])}
 
 
+def work_totals(conn: sqlite3.Connection, since: datetime) -> dict[str, int]:
+    """Work done since `since` (aware) for the digest's one-line report: scheduled sittings and page loads (all runs)."""
+    since_utc = since.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+    r = conn.execute("SELECT COUNT(*) FILTER (WHERE trigger = 'schedule') AS s, COALESCE(SUM(page_loads), 0) AS p "
+                     "FROM runs WHERE started_at >= ?", (since_utc,)).fetchone()
+    return {"sittings": int(r["s"]), "page_loads": int(r["p"])}
+
+
 def running_run(conn: sqlite3.Connection) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM runs WHERE status = 'running' ORDER BY id DESC LIMIT 1").fetchone()
 

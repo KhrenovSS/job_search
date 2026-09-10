@@ -84,6 +84,13 @@ def test_page_loads_today_and_run_metrics():
     repo.finish_run(conn, rid, "ok", page_loads=7, prefiltered=3)
     conn.execute("INSERT INTO runs(started_at,status,trigger,page_loads) VALUES ('2020-01-01T00:00:00+00:00','ok','manual',99)")
     assert repo.page_loads_today(conn) == 7
+    from datetime import datetime, timedelta
+    from hh_scout.config import TZ
+    w = repo.work_totals(conn, datetime.now(TZ) - timedelta(hours=24))
+    assert w == {"sittings": 0, "page_loads": 7}  # manual runs count pages but are not sittings
+    from hh_scout.db import utcnow
+    conn.execute("INSERT INTO runs(started_at,status,trigger,page_loads) VALUES (?, 'ok', 'schedule', 30)", (utcnow(),))
+    assert repo.work_totals(conn, datetime.now(TZ) - timedelta(hours=24)) == {"sittings": 1, "page_loads": 37}
 
 
 def test_expire_low_priority_drops_only_old_priority_3():

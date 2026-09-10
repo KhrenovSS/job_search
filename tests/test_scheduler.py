@@ -210,7 +210,8 @@ async def test_crawl_job_passes_the_window_deadline_and_skips_a_closed_window(mo
     kv_set(conn, "crawl_window_idx", "2")
     kv_set(conn, "crawl_window_date", "2026-09-09")
     await sch.crawl_job("schedule")
-    assert calls and calls[0]["deadline"] == _dt(22, 30) and "не позже 22:30" in notes[0]
+    assert calls and calls[0]["deadline"] == _dt(22, 30)
+    assert notes == []  # quiet mode: a scheduled sitting neither announces its start nor its (absent) report
 
     # the same window restored at 23:40 (service was down): skip, plan tomorrow, do not browse at night
     calls.clear()
@@ -219,5 +220,49 @@ async def test_crawl_job_passes_the_window_deadline_and_skips_a_closed_window(mo
     kv_set(conn, "crawl_window_date", "2026-09-09")
     kv_set(conn, "sitting_done", None)
     await sch.crawl_job("schedule")
-    assert not calls and any("Подход пропущен: окно уже закрылось (22:30)" in n for n in notes)
+    assert not calls and notes == []  # skipped quietly (journal only)
     assert sch.next_crawl_at().day == 10
+
+
+@pytest.mark.asyncio
+async def test_crawl_job_is_quiet_unless_something_went_wrong(monkeypatch):
+    """Scheduled sittings: silence when ok; the report when not ok; an alert instead of the report when health knows why.
+    Manual /crawl: always the start note and the report."""
+    import hh_scout.scheduler as sched_mod
+    from hh_scout.pipeline.run import CrawlReport
+
+    sch, conn = _scheduler()
+    notes = []
+
+    async def notify(text):
+        notes.append(text)
+
+    sch.notify = notify
+    sch.alerter.notify = notify
+    reports = []
+    monkeypatch.setattr(sched_mod, "run_crawl", lambda *a, **kw: reports.pop(0))
+    monkeypatch.setattr(sched_mod, "datetime", _FrozenDatetime.at(_dt(13, 30)))
+
+    def arm(**kw):
+        kv_set(conn, "crawl_window_idx", "1")
+        kv_set(conn, "crawl_window_date", "2026-09-09")
+        kv_set(conn, "sitting_done", None)
+        reports.append(CrawlReport(trigger="schedule", **kw))
+
+    arm(page_loads=40, leads=1)
+    await sch.crawl_job("schedule")
+    assert notes == []
+
+    arm(errors=["уже идёт другой прогон"])
+    await sch.crawl_job("schedule")
+    assert len(notes) == 1 and notes[0].startswith("⚠️ Сбор завершён с замечаниями") and "Следующий подход" in notes[0]
+
+    notes.clear()
+    arm(browser_error="Marionette не отвечает")
+    await sch.crawl_job("schedule")
+    assert len(notes) == 1 and notes[0].startswith("🦊 Браузер недоступен")  # the alert, not a second copy as a report
+
+    notes.clear()
+    reports.append(CrawlReport(trigger="manual", page_loads=5))
+    await sch.crawl_job("manual", manual_budget=5)
+    assert len(notes) == 2 and notes[0].startswith("▶️ Начинаю сбор (manual, до 5 страниц)") and notes[1].startswith("✅ Сбор завершён")
