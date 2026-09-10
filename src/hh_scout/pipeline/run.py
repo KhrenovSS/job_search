@@ -27,7 +27,7 @@ from hh_scout.llm.bridge_client import BridgeError
 from hh_scout.llm.cover_letter import CoverLetterWriter
 from hh_scout.llm.evaluator import Evaluator
 from hh_scout.llm.triage import Triager
-from hh_scout.pipeline import prefilter, repo
+from hh_scout.pipeline import dedup, prefilter, repo
 from hh_scout.pipeline.budget import daily_cap
 from hh_scout.pipeline.collector import Collector
 from hh_scout.pipeline.details import DetailsFetcher
@@ -65,6 +65,7 @@ class CrawlReport:
     profi_orders: int | None = None    # profi.ru: orders seen in the feed (None = source disabled / not reached)
     profi_new: int = 0
     profi_error: str | None = None     # profi.ru feed without the cabinet (login/captcha) — hh.ru is unaffected
+    duplicate_employers: int = 0       # vacancies skipped because the company already has a lead (all stages)
 
     @property
     def ok(self) -> bool:
@@ -75,7 +76,8 @@ class CrawlReport:
         lines = [f"{head} ({self.trigger}, {self.duration_s / 60:.0f} мин)"
                  + (f" · остановлен по концу окна в {self.deadline.astimezone(TZ):%H:%M}" if self.deadline_hit and self.deadline else ""),
                  f"Страниц: {self.page_loads} (за день {self.used_today}/{self.daily_cap}) · новых вакансий: {self.new_vacancies} · описаний: {self.details}"
-                 + (f" · списано слабых: {self.expired_low_priority}" if self.expired_low_priority else ""),
+                 + (f" · списано слабых: {self.expired_low_priority}" if self.expired_low_priority else "")
+                 + (f" · дублей компаний: {self.duplicate_employers}" if self.duplicate_employers else ""),
                  f"Оценено: {self.evaluated} · новых лидов: {self.leads} · писем: {self.letters} · вызовов ИИ: {self.bridge_calls}"]
         if self.profi_orders is not None:
             lines.append(f"profi.ru: заказов в ленте {self.profi_orders} · новых {self.profi_new}")
@@ -165,6 +167,13 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
         log.exception("Префильтр упал")
         report.errors.append(f"префильтр: {e}")
 
+    # 2b. one lead per company: twins of existing leads need no AI triage
+    try:
+        report.duplicate_employers += dedup.skip_covered(conn, settings, "triage")
+    except Exception as e:  # noqa: BLE001
+        log.exception("Отсев дублей компаний упал")
+        report.errors.append(f"дубли: {e}")
+
     # 3. triage (bridge)
     try:
         t = Triager(settings, conn).run()
@@ -193,6 +202,7 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
             report.page_loads += ds.page_loads
             report.details = ds.outcomes.get("prefiltered", 0)
             report.format_errors = ds.outcomes.get("format_error", 0)
+            report.duplicate_employers += ds.outcomes.get("duplicate_employer", 0)
         except BrowserUnavailable as e:
             report.browser_error = str(e)
         except HHBlocked as e:
@@ -207,6 +217,7 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
             ev = Evaluator(settings, conn).run()
             report.evaluated = ev.evaluated
             bridge_calls += ev.bridge_calls
+            report.duplicate_employers += dedup.dedupe_evaluated(conn, settings)  # before letters: no letter for a twin
             report.leads = len(repo.evaluated_leads(conn, settings.score_threshold))
             lw = CoverLetterWriter(settings, conn).run()
             report.letters = lw.written

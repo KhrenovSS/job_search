@@ -155,6 +155,7 @@ class VacancyCard:
     applied: bool = False
     archived: bool = False
     labels: list[str] = field(default_factory=list)
+    employer_id: str | None = None  # hh.ru company.id — stable key for "one lead per company"
 
 
 @dataclass
@@ -172,6 +173,12 @@ def _company_name(company: Any) -> str | None:
         return None
     name = company.get("visibleName") or company.get("name")
     return clean_text(name) or None
+
+
+def _company_id(company: Any) -> str | None:
+    if not isinstance(company, dict) or company.get("id") in (None, ""):
+        return None
+    return str(company["id"])
 
 
 def _card_from_raw(v: dict[str, Any], user_labels_map: dict[str, Any]) -> VacancyCard | None:
@@ -199,6 +206,7 @@ def _card_from_raw(v: dict[str, Any], user_labels_map: dict[str, Any]) -> Vacanc
         applied=_labels_mean_applied(labels),
         archived=bool(v.get("@isArchived") or v.get("isArchived") or v.get("archived")),
         labels=[json.dumps(x, ensure_ascii=False) if not isinstance(x, str) else x for x in labels],
+        employer_id=_company_id(v.get("company")),
     )
 
 
@@ -260,6 +268,7 @@ class VacancyDetail:
     applied: bool
     closed_for_applicants: bool
     raw: dict[str, Any]
+    employer_id: str | None = None
 
 
 def parse_vacancy(state: dict[str, Any]) -> VacancyDetail:
@@ -288,6 +297,7 @@ def parse_vacancy(state: dict[str, Any]) -> VacancyDetail:
         applied=_labels_mean_applied(vv.get("userLabels") or []),
         closed_for_applicants=bool(vv.get("closedForApplicants")),
         raw=vv,
+        employer_id=_company_id(vv.get("company")),
     )
 
 

@@ -29,9 +29,10 @@
 | 1a | profi.ru | `pipeline/profi_collector.py` | при `PROFI_ENABLED`: одна загрузка ленты заказов кабинета → `vacancies(site='profi', status=prefiltered)` — полный текст уже в карточке, стадии 4 не нужно; лента без кабинета → `ProfiBlocked` в `report.profi_error`, hh.ru продолжает | браузер, `min(PROFI_PAGES_PER_RUN, бюджет)` |
 | 1 | Сбор | `pipeline/collector.py` | страницы поиска → `vacancies(new)`; страница откликов → `applied/has_chat` (+`suitableVacancies` как проход `similar`) | браузер |
 | 2 | Правила | `pipeline/prefilter.py` | `new → triage` или `skipped` (applied, archived, fly_in_fly_out, stopword, no_engineering_title) | — |
+| 2b | Одна компания — один лид | `pipeline/dedup.py` | `triage`, чей работодатель уже имеет лид (`sent` за `EMPLOYER_REPEAT_DAYS`, `prefiltered`, `evaluated ≥ порог`) → `skipped/duplicate_employer:<hh_id>` — без триажа ИИ | — |
 | 3 | Триаж ИИ | `llm/triage.py` | карточки пачками по 30 → `to_fetch` (+priority 1–3) или `skipped/triage` | мост |
-| 4 | Описания | `pipeline/details.py` | сначала `repo.expire_low_priority`: `to_fetch` с приоритетом 3 старше `LOW_PRIORITY_TTL_DAYS` (3) → `skipped/low_priority_expired`; затем `to_fetch` по приоритету → страница вакансии → `prefiltered` (архив/отклик → `skipped`; страница без `vacancyView` → `evaluation_failed`) | браузер, остаток бюджета прогона |
-| 5 | Оценка | `llm/evaluator.py` | `prefiltered` пачками по 5 → `evaluations` (tech/role/lead, verdict, pitch_hint…) → `evaluated`; total = код | мост |
+| 4 | Описания | `pipeline/details.py` | сначала `repo.expire_low_priority`: `to_fetch` с приоритетом 3 старше `LOW_PRIORITY_TTL_DAYS` (3) → `skipped/low_priority_expired`; затем `to_fetch` по приоритету → перед каждой загрузкой `dedup.skip_if_covered` (двойник уже имеющегося лида не стоит загрузки) → страница вакансии → `prefiltered` (архив/отклик → `skipped`; страница без `vacancyView` → `evaluation_failed`) | браузер, остаток бюджета прогона |
+| 5 | Оценка | `llm/evaluator.py` | `prefiltered` пачками по 5 → `evaluations` (tech/role/lead, verdict, pitch_hint…) → `evaluated`; total = код. Затем `dedup.dedupe_evaluated`: среди `evaluated ≥ порог` (hh) остаётся лучшая вакансия каждой компании (группировка транзитивна: по `employer_id` или имени), остальные → `skipped/duplicate_employer`; компания с `sent`-лидом в окне повтора не получает нового | мост |
 | 6 | Письма | `llm/cover_letter.py` | `evaluated`/`sent` с `total ≥ порог` без письма (`repo.leads_without_letter`) → `cover_letters` (1 вызов на лид) | мост |
 
 Сбор: задачи = `SEARCH_QUERIES` × проходы (regional: 49 регионов одним запросом; remote: `work_format=REMOTE`;
@@ -110,7 +111,7 @@ profi.ru в том же Firefox). Кабинет — JS-приложение б�
 (проверено M вакансий)» (+ строка «Необработанных с прошлых дней: K (/inbox)», если K > 0) → на каждый лид карточка (`ranker.format_card`, клавиатура из двух рядов — см. ниже) + письмо (`format_letter`, `<pre>`),
 пауза 0.6 с. Затем `sent` + `digests/digest_items`; всё `evaluated` ниже порога → `rejected`. Пусто → «Сегодня лидов не нашлось.
 Проверено M новых вакансий.» M = число оценок с прошлого дайджеста. При первом старте сервиса уже показанные превью
-помечаются `sent` без отправки (`kv.preview_marked`).
+помечаются `sent` без отправки (`kv.preview_marked`). `plan_digest` перед выборкой ещё раз вызывает `dedup.dedupe_evaluated` (страховка: лид мог быть отправлен вчера, двойник оценён сегодня).
 
 ## Жизненный цикл лида в чате (`bot/feedback.py`, `bot/lead_actions.py`)
 Под карточкой два ряда кнопок: `[👍] [👎]` и `[✅ Написал] [⏸ Позже]`. Лид **открыт**, пока `status='sent'` и в

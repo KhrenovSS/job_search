@@ -29,7 +29,7 @@
 | `evaluated` | evaluator | оценена, строка в `evaluations`, кандидат в дайджест |
 | `sent` | digest | отправлена в дайджесте (или помечена при первом старте сервиса — `kv.preview_marked`); открыт/закрыт лид — по `lead_actions` |
 | `rejected` | digest | была `evaluated`, `total < score_threshold` на момент дайджеста |
-| `skipped` | prefilter/collector/triage/details | отсеяна; всегда с `skip_reason` |
+| `skipped` | prefilter/collector/triage/details/dedup/digest | отсеяна; всегда с `skip_reason` |
 | `evaluation_failed` | evaluator (ИИ дважды вернул невалидный ответ / пропустил hh_id) или details (страница без `vacancyView`) | терминальная ошибка, не повторяется |
 
 Лиды выше порога, не влезшие в `DIGEST_MAX_ITEMS` (20), остаются `evaluated` до следующего дайджеста.
@@ -37,7 +37,9 @@
 ## `vacancies.skip_reason`
 `applied` (владелец уже откликался) · `archived` · `fly_in_fly_out` (вахта) · `stopword:<слово>` · `no_engineering_title`
 (нет инженерного слова в названии — самый частый) · `triage` (ИИ: не открывать) · `invalid_ai_answer` /
-`missing_in_ai_answer` (оценка) · `no_vacancy_view` (страница без данных) · `low_priority_expired` (приоритет 3 триажа не открыт за `LOW_PRIORITY_TTL_DAYS`). `set_status` в не-skip переходах обнуляет `skip_reason`.
+`missing_in_ai_answer` (оценка) · `no_vacancy_view` (страница без данных) · `low_priority_expired` (приоритет 3 триажа не открыт за `LOW_PRIORITY_TTL_DAYS`) ·
+`duplicate_employer:<hh_id>` (v8: у компании уже есть лид `<hh_id>` — отправленный за последние `EMPLOYER_REPEAT_DAYS` или ждущий
+дайджест; ставится на любом статусе от `triage` до `evaluated`, см. `pipeline/dedup.py`). `set_status` в не-skip переходах обнуляет `skip_reason`.
 
 ## Прочие поля `vacancies`
 - `work_format`: remote / hybrid / office / field / unknown (приоритет remote > hybrid > office > field).
@@ -53,6 +55,9 @@
   workFormats, employmentForm, area, status, publicationDate, workExperience, workScheduleByDays, workingHours,
   closedForApplicants, userLabels + company{id,name,visibleName,@trusted}, address{city,street,building,displayName}).
 - `applied`, `has_chat`: из страницы откликов; `triage_priority`, `triage_note`: от триажа.
+- `employer_id` (v8, `_m007`): hh.ru `company.id` строкой — ключ «одна компания — один лид»; пишется из карточки поиска и со
+  страницы вакансии, для старых строк заполнен из `raw_json.company.id`; у карточек до v8 и у profi.ru — NULL (тогда сравнение
+  по `employer` через SQL-функцию `casefold`, зарегистрированную в `db.connect`). Индексы `idx_vacancies_employer_id`, `idx_vacancies_employer`.
 
 ## `evaluations`
 `tech_score`, `role_score`, `lead_score` (0–100, от ИИ); `total` (код: 0.55/0.25/0.20); `salary_score`, `format_score` —
@@ -75,6 +80,8 @@
 
 ## Инварианты
 1. Вакансия попадает в дайджест не более одного раза (UNIQUE `hh_id` + статусы `sent`/`rejected`).
+1a. Компания hh.ru получает не больше одного лида за `EMPLOYER_REPEAT_DAYS` (90; 0 — навсегда): остальные её вакансии —
+   `skipped/duplicate_employer:<hh_id>`. profi.ru не дедуплицируется (`employer` там — имя клиента).
 2. `applied=1` никогда не отправляется.
 3. Перезапуск после сбоя продолжает с места остановки: статусы фиксируются после каждого шага.
 4. «Проверено N» в заголовке = число строк `evaluations`, созданных после последнего дайджеста.

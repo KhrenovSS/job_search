@@ -29,7 +29,7 @@ def test_search_page_parses_cards(search_state):
     first = sp.cards[0]
     assert first.hh_id == "136519902"
     assert first.title == "Инженер-программист АСУ ТП (PLC, HMI, частотные преобразователи)"  # nbsp/‑ normalised
-    assert first.employer == "Амперика"
+    assert first.employer == "Амперика" and first.employer_id == "9070507"
     assert first.area_name == "Москва"
     assert first.work_format == "office" and first.employment == "full"
     assert first.compensation["from"] == 140000 and first.compensation["gross"] is True
@@ -71,7 +71,7 @@ def test_parse_search_wrong_page(vacancy_state):
 def test_vacancy_page(vacancy_state):
     d = parse_vacancy(vacancy_state)
     assert d.hh_id == "136519902"
-    assert d.employer == "Амперика" and d.area_name == "Москва"
+    assert d.employer == "Амперика" and d.employer_id == "9070507" and d.area_name == "Москва"
     assert d.work_format == "office" and d.employment == "full"
     assert d.archived is False and d.applied is False and d.closed_for_applicants is False
     assert "CODESYS" in d.key_skills and "SCADA" in d.key_skills

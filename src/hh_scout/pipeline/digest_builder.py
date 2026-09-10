@@ -7,7 +7,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from hh_scout.config import Settings
-from hh_scout.pipeline import repo
+from hh_scout.pipeline import dedup, repo
 
 log = logging.getLogger(__name__)
 
@@ -19,6 +19,7 @@ class DigestPlan:
 
 
 def plan_digest(conn: sqlite3.Connection, settings: Settings) -> DigestPlan:
+    dedup.dedupe_evaluated(conn, settings)  # one lead per company (writes skipped/duplicate_employer; idempotent)
     leads = repo.evaluated_leads(conn, settings.score_threshold, settings.digest_max_items)
     return DigestPlan(leads=leads, checked=repo.evaluations_since_last_digest(conn))
 

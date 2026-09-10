@@ -33,11 +33,11 @@ def insert_card(conn: sqlite3.Connection, card: VacancyCard, source: str, search
     elif card.archived:
         status, reason = ("skipped", "archived")
     conn.execute(
-        """INSERT INTO vacancies(hh_id, title, employer, url, area_name, work_format, employment,
+        """INSERT INTO vacancies(hh_id, title, employer, employer_id, url, area_name, work_format, employment,
                                  salary_from, salary_to, salary_raw, published_at, source, search_pass,
                                  status, skip_reason, applied, first_seen_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (card.hh_id, card.title, card.employer, card.url, card.area_name, card.work_format, card.employment,
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (card.hh_id, card.title, card.employer, card.employer_id, card.url, card.area_name, card.work_format, card.employment,
          sal.from_net, sal.to_net, json.dumps(card.compensation, ensure_ascii=False) if card.compensation else None,
          card.published_at, source, search_pass, status, reason, int(card.applied), now, now),
     )
@@ -131,11 +131,12 @@ def save_details(conn: sqlite3.Connection, detail: VacancyDetail) -> str:
     sal = normalize(detail.compensation)
     conn.execute(
         """UPDATE vacancies SET raw_json = ?, title = COALESCE(NULLIF(?, ''), title), employer = COALESCE(?, employer),
+                  employer_id = COALESCE(?, employer_id),
                   area_name = COALESCE(?, area_name), work_format = ?, employment = ?,
                   salary_from = ?, salary_to = ?, salary_raw = COALESCE(?, salary_raw),
                   applied = MAX(applied, ?), status = ?, skip_reason = ?, updated_at = ?
            WHERE hh_id = ?""",
-        (json.dumps(trim_vacancy_view(detail.raw), ensure_ascii=False), detail.title, detail.employer, detail.area_name,
+        (json.dumps(trim_vacancy_view(detail.raw), ensure_ascii=False), detail.title, detail.employer, detail.employer_id, detail.area_name,
          detail.work_format, detail.employment, sal.from_net, sal.to_net,
          json.dumps(detail.compensation, ensure_ascii=False) if detail.compensation else None,
          int(detail.applied), status, reason, utcnow(), detail.hh_id),
@@ -174,6 +175,45 @@ def expire_low_priority(conn: sqlite3.Connection, ttl_days: int, min_priority: i
         (utcnow(), min_priority, cutoff),
     )
     return cur.rowcount
+
+
+# --- one lead per company -----------------------------------------------------------
+
+def same_employer_sql(alias: str = "v") -> str:
+    """WHERE fragment: `alias` is an hh.ru row of the employer given by params (employer_id, employer_id, employer, employer).
+
+    Match by hh.ru company id, or by name (case-insensitive via the `casefold` function registered in db.connect) —
+    cards collected before v8 carry no id.
+    profi.ru rows never match (their `employer` is a client's first name).
+    """
+    return (f"{alias}.site = 'hh' AND ((? IS NOT NULL AND {alias}.employer_id = ?) "
+            f"OR (? IS NOT NULL AND casefold({alias}.employer) = casefold(?)))")
+
+
+def same_employer_params(employer_id: str | None, employer: str | None) -> list:
+    return [employer_id, employer_id, employer or None, employer or None]
+
+
+def employer_lead(conn: sqlite3.Connection, employer_id: str | None, employer: str | None, *, exclude_id: int | None,
+                  threshold: int, repeat_days: int) -> sqlite3.Row | None:
+    """The vacancy of this employer that already is a lead (sent within `repeat_days`; 0 = ever) or is about to become one
+    (`prefiltered`, or `evaluated` at/above the threshold and waiting for the digest). None if the company is still free."""
+    if employer_id is None and not employer:
+        return None
+    from datetime import timedelta
+
+    cutoff = ((datetime.now(timezone.utc) - timedelta(days=repeat_days)).replace(microsecond=0).isoformat()
+              if repeat_days > 0 else "1970-01-01T00:00:00+00:00")
+    sql = (f"SELECT v.id, v.hh_id, v.status FROM vacancies v WHERE {same_employer_sql('v')} AND v.id IS NOT ? "
+           "AND ((v.status = 'sent' AND v.updated_at >= ?) OR v.status = 'prefiltered' "
+           "     OR (v.status = 'evaluated' AND EXISTS (SELECT 1 FROM evaluations e WHERE e.vacancy_id = v.id AND e.total >= ?))) "
+           "ORDER BY CASE v.status WHEN 'sent' THEN 0 WHEN 'evaluated' THEN 1 ELSE 2 END, v.id LIMIT 1")
+    return conn.execute(sql, same_employer_params(employer_id, employer) + [exclude_id, cutoff, threshold]).fetchone()
+
+
+def skip_as_duplicate(conn: sqlite3.Connection, vacancy_id: int, of_hh_id: str) -> None:
+    conn.execute("UPDATE vacancies SET status = 'skipped', skip_reason = ?, updated_at = ? WHERE id = ?",
+                 (f"duplicate_employer:{of_hh_id}", utcnow(), vacancy_id))
 
 
 # --- cover letters ----------------------------------------------------------------

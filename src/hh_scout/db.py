@@ -31,6 +31,8 @@ def connect(path: Path | str) -> sqlite3.Connection:
     if str(p) != ":memory:":
         conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 5000")
+    # SQLite's lower()/NOCASE fold ASCII only; employer names are Cyrillic (used by repo.same_employer_sql)
+    conn.create_function("casefold", 1, lambda s: s.casefold() if isinstance(s, str) else s, deterministic=True)
     return conn
 
 
@@ -185,6 +187,16 @@ def _m006_site(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX idx_vacancies_site_status ON vacancies(site, status)")
 
 
+def _m007_employer_id(conn: sqlite3.Connection) -> None:
+    """v8: one lead per company. hh.ru `company.id` as a stable employer key; backfilled from the stored vacancyView."""
+    conn.execute("ALTER TABLE vacancies ADD COLUMN employer_id TEXT")
+    conn.execute("UPDATE vacancies SET employer_id = CAST(json_extract(raw_json, '$.company.id') AS TEXT) "
+                 "WHERE site = 'hh' AND raw_json IS NOT NULL AND json_valid(raw_json) "
+                 "AND json_extract(raw_json, '$.company.id') IS NOT NULL")
+    conn.execute("CREATE INDEX idx_vacancies_employer_id ON vacancies(employer_id)")
+    conn.execute("CREATE INDEX idx_vacancies_employer ON vacancies(employer)")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m001_initial,
     _m002_triage_columns,
@@ -192,6 +204,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m004_cover_letters,
     _m005_lead_actions,
     _m006_site,
+    _m007_employer_id,
 ]
 
 

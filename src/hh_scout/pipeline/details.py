@@ -23,7 +23,7 @@ from hh_scout.browser.bursts import run_in_bursts
 from hh_scout.browser.hh_pages import PageFormatError, parse_vacancy, vacancy_url
 from hh_scout.browser.session import BrowserSession, BrowserUnavailable, HHBlocked
 from hh_scout.config import Settings
-from hh_scout.pipeline import repo
+from hh_scout.pipeline import dedup, repo
 
 log = logging.getLogger(__name__)
 
@@ -57,8 +57,13 @@ class DetailsFetcher:
 
     def _next(self) -> sqlite3.Row | None:
         for row in repo.list_vacancies(self.conn, "to_fetch"):
-            if row["hh_id"] not in self._done:
-                return row
+            if row["hh_id"] in self._done:
+                continue
+            with self.conn:  # one lead per company: a twin of an existing lead is not worth a page load
+                if dedup.skip_if_covered(self.conn, self.s, row) is not None:
+                    self.stats.outcomes["duplicate_employer"] += 1
+                    continue
+            return row
         return None
 
     def _step(self, session: BrowserSession) -> bool:

@@ -10,7 +10,7 @@ def _db():
     migrate(conn)
     for i, total in ((1, 90), (2, 40), (3, 70), (4, 65)):
         conn.execute("INSERT INTO vacancies(id,hh_id,title,employer,url,source,search_pass,status,first_seen_at,updated_at) "
-                     "VALUES (?,?,?,?,?,?,?,?,?,?)", (i, str(i), f"Инженер {i}", "ООО", "u", "s", "regional", "evaluated", "t", "t"))
+                     "VALUES (?,?,?,?,?,?,?,?,?,?)", (i, str(i), f"Инженер {i}", f"ООО {i}", "u", "s", "regional", "evaluated", "t", "t"))
         conn.execute("INSERT INTO evaluations(vacancy_id,tech_score,salary_score,format_score,role_score,lead_score,total,"
                      "ip_gph_possible,is_agency,employment_hint,company_kind,verdict,pitch_hint,red_flags,created_at) "
                      "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -34,6 +34,22 @@ def test_plan_and_finalize_digest():
     items = conn.execute("SELECT vacancy_id, position, tg_message_id FROM digest_items ORDER BY position").fetchall()
     assert [tuple(i) for i in items] == [(1, 1, 111), (3, 2, 222)]
     assert repo.evaluations_since_last_digest(conn) == 0
+
+
+def test_plan_digest_keeps_one_lead_per_company():
+    """Same employer in three regions → only the best-scored vacancy goes out, the twins are skipped as duplicates."""
+    s = Settings(_env_file=None)
+    conn = _db()
+    conn.execute("UPDATE vacancies SET employer = 'РУССКИЙ ПРОДУКТ', employer_id = '777', area_name = 'Калуга' WHERE id = 3")
+    conn.execute("UPDATE vacancies SET employer = 'Русский продукт', employer_id = NULL, area_name = 'Воронеж' WHERE id = 4")  # old card: name only
+    conn.execute("UPDATE vacancies SET employer = 'Другая', employer_id = '777', area_name = 'Липецк' WHERE id = 1")  # renamed brand, same id
+    plan = plan_digest(conn, s)
+    assert [r["hh_id"] for r in plan.leads] == ["1"]  # 90 beats 70 and 65 of the same company
+    skipped = {r["hh_id"]: r["skip_reason"] for r in conn.execute("SELECT hh_id, skip_reason FROM vacancies WHERE status = 'skipped'")}
+    assert skipped == {"3": "duplicate_employer:1", "4": "duplicate_employer:1"}
+    assert plan_digest(conn, s).leads[0]["hh_id"] == "1"  # idempotent
+    finalize_digest(conn, s, [(plan.leads[0], 1)], plan.checked)
+    assert repo.count_by_status(conn) == {"sent": 1, "skipped": 2, "rejected": 1}
 
 
 def test_mark_previewed_as_sent():

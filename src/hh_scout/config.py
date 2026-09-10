@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     items_per_page: int = 50
     max_pages_per_query: int = 6
     low_priority_ttl_days: int = 3  # triage priority 3 cards still unopened after this many days are dropped
+    # One lead per company: further vacancies of an employer that already got a lead are skipped (duplicate_employer)
+    # for this many days after the lead was sent; 0 = forever. Same-employer twins inside one digest always collapse to one.
+    employer_repeat_days: int = 90
 
     # Claude bridge on the host (bridge/hh_scout_bridge.py)
     bridge_url: str = "http://127.0.0.1:8766"

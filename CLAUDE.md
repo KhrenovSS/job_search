@@ -6,6 +6,8 @@
 нужен программист ПЛК/SCADA. Вакансия — не «работа, куда идти», а повод написать компании письмо с предложением
 сотрудничества по ИП. К каждому лиду бот прикладывает готовый текст отклика. Зарплата и формат работы на отбор
 **не влияют** (только факты в карточке); проектирование, документация, шкафы, эксплуатация — не лиды.
+**Одна компания — один лид**: письмо пишется HR всей организации, поэтому похожие вакансии одного работодателя в разных
+регионах схлопываются в один лид (`pipeline/dedup.py`, `EMPLOYER_REPEAT_DAYS`).
 В штатном режиме бот **молчит**: о своей работе пишет только при сбоях (тревоги `health.py`), единственный ежедневный
 отчёт — дайджест 12:00 со строкой «Работа за сутки»; ручной `/crawl` по-прежнему отвечает подробно.
 
@@ -69,7 +71,7 @@ src/hh_scout/
   llm/             bridge_client.py · prompts.py (сборка промптов) · schemas.py · triage.py (карточки → открывать?)
                    evaluator.py (лид: техника/роль/лид) · cover_letter.py (письмо на лид)
   pipeline/        repo.py (весь SQL) · budget.py (дневной лимит) · collector.py · prefilter.py · details.py · ranker.py (total, карточка)
-                   digest_builder.py · run.py (оркестратор одного прогона)
+                   digest_builder.py · dedup.py (одна компания — один лид) · run.py (оркестратор одного прогона)
   bot/             app.py (только владелец) · handlers.py (команды: /start=/help /status /digest /crawl [N] /next /pause /resume
                    /skipped /letter /inbox /done /cleanup) · digest.py · feedback.py (кнопки 👍/👎/✅/⏸) · lead_actions.py
                    (сворачивание карточек, автозакрытие по откликам) · keyboards.py
@@ -78,7 +80,8 @@ data/              hh_scout.db (WAL), logs/ — в .gitignore
 ```
 
 ## Статусная машина вакансии (канон — `docs/DATABASE.md`)
-`new → triage → to_fetch → prefiltered → evaluated → sent | rejected`, ветки `skipped` (с `skip_reason`) и `evaluation_failed`.
+`new → triage → to_fetch → prefiltered → evaluated → sent | rejected`, ветки `skipped` (с `skip_reason`, в т.ч.
+`duplicate_employer:<hh_id>` на любом этапе) и `evaluation_failed`.
 Шаги: сбор (new) → правила (triage/skipped) → триаж ИИ по карточкам (to_fetch/skipped) → страница вакансии (prefiltered)
 → оценка ИИ (evaluated) → письмо → дайджест (sent; ниже порога — rejected).
 
