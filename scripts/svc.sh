@@ -71,6 +71,9 @@ show_incidents() {
   echo "--- старты/остановки сервиса за день"
   journalctl -u hh-scout --since "$since" --until "$until" --no-pager -o short-iso 2>/dev/null \
     | grep -E 'HH-Scout запущен|HH-Scout остановлен|Планировщик запущен|SIGTERM' | cut -c1-160 || true
+  echo "--- тревоги из журнала за день (health: Тревога <ключ>: текст)"
+  journalctl -u hh-scout --since "$since" --until "$until" --no-pager -o short-iso 2>/dev/null \
+    | grep -F 'hh_scout.health: Тревога' | sed -E 's/^([^ ]+) .*Тревога /\1  /' | cut -c1-200 || true
   echo "--- прогоны за день (время в БД — UTC; день считается по Москве)"
   if [ -f "$DB" ] && command -v sqlite3 >/dev/null; then
     sqlite3 -column -header "$DB" "select id, status, trigger, page_loads pages, collected, evaluated,
@@ -79,9 +82,6 @@ show_incidents() {
       from runs
       where replace(started_at,'T',' ') >= datetime('$day','-3 hours') and replace(started_at,'T',' ') < datetime('$day','+1 day','-3 hours')
       order by id;" 2>/dev/null || true
-    echo "--- тревоги из журнала за день (health: Тревога <ключ>: текст)"
-    journalctl -u hh-scout --since "$since" --until "$until" --no-pager -o short-iso 2>/dev/null \
-      | grep -F 'hh_scout.health: Тревога' | sed -E 's/^([^ ]+) .*Тревога /\1  /' | cut -c1-200 || true
     echo "--- тревоги в kv alert:<ключ>:<дата> (сторож хранит только текущий день; прошлые дни — см. журнал выше)"
     sqlite3 -column "$DB" "select substr(key,7,length(key)-17) alert, substr(value,12,5) at_msk from kv where key like 'alert:%:$day' order by value;" 2>/dev/null || true
     echo "--- загрузок за день / лимит"
