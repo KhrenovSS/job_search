@@ -79,7 +79,10 @@ show_incidents() {
       from runs
       where replace(started_at,'T',' ') >= datetime('$day','-3 hours') and replace(started_at,'T',' ') < datetime('$day','+1 day','-3 hours')
       order by id;" 2>/dev/null || true
-    echo "--- тревоги, отправленные в Telegram за день (kv alert:<ключ>:<дата>)"
+    echo "--- тревоги из журнала за день (health: Тревога <ключ>: текст)"
+    journalctl -u hh-scout --since "$since" --until "$until" --no-pager -o short-iso 2>/dev/null \
+      | grep -F 'hh_scout.health: Тревога' | sed -E 's/^([^ ]+) .*Тревога /\1  /' | cut -c1-200 || true
+    echo "--- тревоги в kv alert:<ключ>:<дата> (сторож хранит только текущий день; прошлые дни — см. журнал выше)"
     sqlite3 -column "$DB" "select substr(key,7,length(key)-17) alert, substr(value,12,5) at_msk from kv where key like 'alert:%:$day' order by value;" 2>/dev/null || true
     echo "--- загрузок за день / лимит"
     sqlite3 -column "$DB" "select (select coalesce(sum(page_loads),0) from runs where replace(started_at,'T',' ') >= datetime('$day','-3 hours') and replace(started_at,'T',' ') < datetime('$day','+1 day','-3 hours')) loads, (select value from kv where key='daily_cap:$day') cap;" 2>/dev/null || true
