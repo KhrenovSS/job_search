@@ -28,6 +28,7 @@ cd "$(git rev-parse --show-toplevel)"                 # корень репо
 .venv/bin/python scripts/check_browser.py            # Firefox доступен по Marionette? (одна короткая сессия)
 bash scripts/svc.sh status                           # юниты hh-scout и моста, /health, «сбор идёт: да/нет»
 bash scripts/svc.sh restart                          # перезапуск без пароля (после grant_agent_control.sh); reinstall — юниты + рестарт
+bash scripts/svc.sh incidents [YYYY-MM-DD]           # разбор дня: предупреждения/трассировки journald, прогоны, тревоги, упавшие юниты
 sqlite3 -column data/hh_scout.db "select status, count(*) from vacancies group by 1;"
 journalctl -u hh-scout -n 50 --no-pager              # логи сервиса, если установлен; иначе data/logs/*.log
 ```
