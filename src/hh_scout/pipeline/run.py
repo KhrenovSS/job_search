@@ -16,11 +16,12 @@ import argparse
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
 from hh_scout.browser.session import BrowserUnavailable, HHBlocked
-from hh_scout.config import Settings
+from hh_scout.config import TZ, Settings
 from hh_scout.db import open_db
 from hh_scout.llm.bridge_client import BridgeError
 from hh_scout.llm.cover_letter import CoverLetterWriter
@@ -57,6 +58,8 @@ class CrawlReport:
     bridge_error: str | None = None
     errors: list[str] = field(default_factory=list)
     duration_s: float = 0.0
+    deadline: datetime | None = None   # browsing must stop by this time (sitting: window end + grace)
+    deadline_hit: bool = False         # the deadline actually cut the browsing short
 
     @property
     def ok(self) -> bool:
@@ -64,7 +67,8 @@ class CrawlReport:
 
     def as_text(self) -> str:
         head = "✅ Сбор завершён" if self.ok else "⚠️ Сбор завершён с замечаниями"
-        lines = [f"{head} ({self.trigger}, {self.duration_s / 60:.0f} мин)",
+        lines = [f"{head} ({self.trigger}, {self.duration_s / 60:.0f} мин)"
+                 + (f" · остановлен по концу окна в {self.deadline.astimezone(TZ):%H:%M}" if self.deadline_hit and self.deadline else ""),
                  f"Страниц: {self.page_loads} (за день {self.used_today}/{self.daily_cap}) · новых вакансий: {self.new_vacancies} · описаний: {self.details}"
                  + (f" · списано слабых: {self.expired_low_priority}" if self.expired_low_priority else ""),
                  f"Оценено: {self.evaluated} · новых лидов: {self.leads} · писем: {self.letters} · вызовов ИИ: {self.bridge_calls}"]
@@ -77,10 +81,23 @@ class CrawlReport:
 
 
 def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", *, budget: int | None = None,
-              gap_scale: float = 1.0, should_stop: Callable[[], bool] | None = None, stale_hours: float = 3.0) -> CrawlReport:
+              gap_scale: float = 1.0, should_stop: Callable[[], bool] | None = None, stale_hours: float = 3.0,
+              deadline: datetime | None = None) -> CrawlReport:
+    """One crawl. `deadline` (aware datetime) ends browsing — bursts stop, evaluation/letters still run."""
     conn = open_db(db_path)
-    report = CrawlReport(trigger=trigger)
+    report = CrawlReport(trigger=trigger, deadline=deadline)
     started = time.monotonic()
+
+    def stop() -> bool:
+        if should_stop and should_stop():
+            return True
+        if deadline is not None and datetime.now(TZ) >= deadline:
+            if not report.deadline_hit:
+                log.info("Дедлайн подхода %s наступил — браузер больше не открываем", deadline.astimezone(TZ).strftime("%H:%M"))
+            report.deadline_hit = True
+            return True
+        return False
+
     with conn:
         repo.fail_stale_runs(conn, stale_hours)
     if repo.running_run(conn):
@@ -98,7 +115,7 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
     # 1. collect
     if budget > 0:
         try:
-            c = Collector(settings, conn, gap_scale=gap_scale, page_budget=budget, should_stop=should_stop)
+            c = Collector(settings, conn, gap_scale=gap_scale, page_budget=budget, should_stop=stop)
             st = c.run(run_id)
             report.page_loads += st.page_loads
             report.new_vacancies = st.new_vacancies
@@ -144,7 +161,7 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
     remaining = max(0, budget - report.page_loads)
     if report.browser_error is None and remaining > 0:
         try:
-            d = DetailsFetcher(settings, conn, gap_scale=gap_scale, page_budget=remaining, should_stop=should_stop)
+            d = DetailsFetcher(settings, conn, gap_scale=gap_scale, page_budget=remaining, should_stop=stop)
             ds = d.run(run_id)
             report.page_loads += ds.page_loads
             report.details = ds.outcomes.get("prefiltered", 0)

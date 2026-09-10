@@ -29,6 +29,8 @@ from hh_scout.pipeline.run import CrawlReport, run_crawl
 log = logging.getLogger(__name__)
 
 MIN_LEAD_MINUTES = 20
+MIN_SITTING_MINUTES = 60   # a sitting starts no later than this before its window closes
+SITTING_GRACE_MIN = health.WINDOW_GRACE_MIN  # ...and stops this long after the window closes, budget or not
 
 Window = tuple[time, time]
 
@@ -42,20 +44,27 @@ def next_sitting(now: datetime, windows: list[Window], done_idx_today: int | Non
     """Random start inside the next usable window; returns (when, window index).
 
     Usable today: index greater than `done_idx_today` (the sitting already started or skipped today; None = none)
-    and the window still has room after now + 20 min. Otherwise the first window tomorrow.
+    and at least MIN_SITTING_MINUTES of the window remain after now + MIN_LEAD_MINUTES. Otherwise the first window
+    tomorrow. The start is drawn from [window start, window end − MIN_SITTING_MINUTES] so a sitting always has an hour.
     """
     rng = rng or random.Random()
     earliest = now + timedelta(minutes=MIN_LEAD_MINUTES)
+    tail = timedelta(minutes=MIN_SITTING_MINUTES)
     for idx, (start, end) in enumerate(windows):
         if done_idx_today is not None and idx <= done_idx_today:
             continue
-        lo, hi = max(_at(now.date(), start), earliest), _at(now.date(), end)
-        if lo < hi:
+        lo, hi = max(_at(now.date(), start), earliest), _at(now.date(), end) - tail
+        if lo <= hi:
             return lo + timedelta(seconds=rng.uniform(0, (hi - lo).total_seconds())), idx
     d = now.date() + timedelta(days=1)
     start, end = windows[0]
-    lo, hi = _at(d, start), _at(d, end)
+    lo, hi = _at(d, start), max(_at(d, start), _at(d, end) - tail)
     return lo + timedelta(seconds=rng.uniform(0, (hi - lo).total_seconds())), 0
+
+
+def sitting_deadline(day: date, windows: list[Window], idx: int) -> datetime:
+    """When a sitting planned for window `idx` on `day` must stop browsing: window end + SITTING_GRACE_MIN."""
+    return _at(day, windows[idx][1]) + timedelta(minutes=SITTING_GRACE_MIN)
 
 
 def sittings_left(now: datetime, windows: list[Window], current_idx: int | None = None) -> int:
@@ -281,15 +290,24 @@ class Scheduler:
             return None
         async with self.crawl_lock:
             budget = None if trigger == "schedule" else manual_budget
+            deadline: datetime | None = None
             if trigger == "schedule":
-                budget = self._budget_share(now)
+                idx = self.next_window_idx()
+                deadline = sitting_deadline(now.date(), self.windows, idx if idx is not None else self._window_idx_for(now))
                 self._mark_sitting_done(now)  # a restart mid-run must not plan this window again
-                self._set_next_crawl(None, self.next_window_idx())
+                self._set_next_crawl(None, idx)
+                if deadline <= now:  # e.g. restored long after the window closed: the night is for sleeping
+                    when = self.plan_next_crawl(now)
+                    await self.notify(f"⏭ Подход пропущен: окно уже закрылось ({deadline:%H:%M}). "
+                                      f"Следующий: {when.strftime('%d.%m %H:%M')}")
+                    return None
+                budget = self._budget_share(now)
             await self.notify(f"▶️ Начинаю сбор ({trigger}"
                               + (f", до {budget} страниц" if budget is not None else "")
+                              + (f", не позже {deadline:%H:%M}" if deadline else "")
                               + "). Листаю сериями по ~10 мин с паузами ~5 мин.")
             try:
-                report = await asyncio.to_thread(run_crawl, self.s, self.s.db_path, trigger, budget=budget)
+                report = await asyncio.to_thread(run_crawl, self.s, self.s.db_path, trigger, budget=budget, deadline=deadline)
             except Exception as e:  # noqa: BLE001
                 log.exception("Прогон упал")
                 await self.notify(f"❌ Сбор упал: {e}")

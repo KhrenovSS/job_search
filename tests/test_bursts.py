@@ -81,3 +81,23 @@ def test_should_stop_ends_burst_and_loop(monkeypatch):
     stats = run_in_bursts(step, session_factory=FakeSession, budget=100, policy=policy, rng=random.Random(0),
                           should_stop=lambda: calls["n"] >= 3)
     assert calls["n"] == 3 and stats.stopped_reason == "остановлено"
+
+
+def test_should_stop_after_a_burst_skips_the_gap(monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(pacing, "monotonic", clock.monotonic)
+    monkeypatch.setattr(pacing, "sleep", clock.sleep)
+    policy = pacing.PacingPolicy(burst_min_s=600, burst_max_s=600, gap_min_s=300, gap_max_s=300)
+    calls = {"n": 0}
+
+    def step(session):
+        session.open()
+        clock.sleep(60.0)
+        calls["n"] += 1
+        return True
+
+    # the deadline "passes" exactly when the first burst ends: no 5-min gap should be slept before stopping
+    stats = run_in_bursts(step, session_factory=FakeSession, budget=100, policy=policy, rng=random.Random(0),
+                          should_stop=lambda: clock.t >= 600)
+    assert stats.bursts == 1 and calls["n"] == 10 and stats.stopped_reason == "остановлено"
+    assert clock.t == 600.0

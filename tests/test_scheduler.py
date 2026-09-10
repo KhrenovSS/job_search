@@ -160,3 +160,64 @@ def test_mark_sitting_done_ignores_carried_over_sitting():
     kv_set(conn, "crawl_window_date", "2026-09-09")
     sch._mark_sitting_done(_dt(7, 30))
     assert kv_get(conn, "sitting_done") == "2026-09-09:2"
+
+
+def test_next_sitting_leaves_an_hour_before_the_window_closes():
+    from hh_scout.scheduler import MIN_SITTING_MINUTES
+    for seed in range(30):
+        when, idx = next_sitting(_dt(6, 30), WINDOWS, None, random.Random(seed))
+        assert idx == 0 and when <= _dt(10, 0) - timedelta(minutes=MIN_SITTING_MINUTES)
+    # 9:10 + 20 min lead leaves less than an hour of the morning window -> the midday one
+    when, idx = next_sitting(_dt(9, 10), WINDOWS, None, random.Random(3))
+    assert idx == 1 and _in(when, (12, 0), (14, 0))
+    # tomorrow's start also keeps the hour
+    when, idx = next_sitting(_dt(23, 0), WINDOWS, None, random.Random(4))
+    assert idx == 0 and when.day == 10 and _in(when, (7, 0), (9, 0))
+
+
+def test_sitting_deadline_is_window_end_plus_grace():
+    from hh_scout.scheduler import SITTING_GRACE_MIN, sitting_deadline
+    assert sitting_deadline(_dt(20, 0).date(), WINDOWS, 2) == _dt(22, 0) + timedelta(minutes=SITTING_GRACE_MIN)
+    assert sitting_deadline(_dt(8, 0).date(), WINDOWS, 0) == _dt(10, 30)
+
+
+class _FrozenDatetime(datetime):
+    _now = None
+
+    @classmethod
+    def at(cls, when):
+        cls._now = when
+        return cls
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls._now.astimezone(tz) if tz else cls._now
+
+
+@pytest.mark.asyncio
+async def test_crawl_job_passes_the_window_deadline_and_skips_a_closed_window(monkeypatch):
+    import hh_scout.scheduler as sched_mod
+
+    sch, conn = _scheduler()
+    notes, calls = [], []
+
+    async def notify(text):
+        notes.append(text)
+
+    sch.notify = notify
+    monkeypatch.setattr(sched_mod, "run_crawl", lambda *a, **kw: calls.append(kw) or None)
+    monkeypatch.setattr(sched_mod, "datetime", _FrozenDatetime.at(_dt(21, 51)))
+    kv_set(conn, "crawl_window_idx", "2")
+    kv_set(conn, "crawl_window_date", "2026-09-09")
+    await sch.crawl_job("schedule")
+    assert calls and calls[0]["deadline"] == _dt(22, 30) and "не позже 22:30" in notes[0]
+
+    # the same window restored at 23:40 (service was down): skip, plan tomorrow, do not browse at night
+    calls.clear()
+    monkeypatch.setattr(sched_mod, "datetime", _FrozenDatetime.at(_dt(23, 40)))
+    kv_set(conn, "crawl_window_idx", "2")
+    kv_set(conn, "crawl_window_date", "2026-09-09")
+    kv_set(conn, "sitting_done", None)
+    await sch.crawl_job("schedule")
+    assert not calls and any("Подход пропущен: окно уже закрылось (22:30)" in n for n in notes)
+    assert sch.next_crawl_at().day == 10

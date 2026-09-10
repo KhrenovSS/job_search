@@ -124,3 +124,37 @@ def test_run_crawl_budget_share_limits_collector_and_details(monkeypatch, tmp_pa
     # a manual run takes everything that is left of the day
     report2 = run_mod.run_crawl(s, tmp_path / "t.db", "manual")
     assert budgets["collect"] == 80
+
+
+def test_run_crawl_deadline_stops_browsing_and_is_reported(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta
+
+    from hh_scout.config import TZ
+
+    seen = {}
+
+    class FakeCollector:
+        def __init__(self, *a, **kw):
+            seen["stop"] = kw["should_stop"]
+
+        def run(self, run_id):
+            assert seen["stop"]() is True  # the deadline is already in the past -> bursts stop at once
+            return _Stats(page_loads=0, new_vacancies=0, search_pages=0, cards_seen=0, not_logged_in=False)
+
+    class FakeNoop:
+        def __init__(self, *a, **kw):
+            pass
+
+        def run(self, *a):
+            return _Stats(opened=0, bridge_calls=0, page_loads=0, outcomes={}, evaluated=0, written=0)
+
+    monkeypatch.setattr(run_mod, "Collector", FakeCollector)
+    monkeypatch.setattr(run_mod, "Triager", FakeNoop)
+    monkeypatch.setattr(run_mod, "DetailsFetcher", FakeNoop)
+    monkeypatch.setattr(run_mod, "Evaluator", FakeNoop)
+    monkeypatch.setattr(run_mod, "CoverLetterWriter", FakeNoop)
+    monkeypatch.setattr(run_mod.prefilter, "run", lambda conn, s: {"passed": 0})
+    settings = Settings(_env_file=None, prompts_dir=tmp_path, daily_page_loads_min=50, daily_page_loads_max=50)
+    deadline = datetime.now(TZ) - timedelta(minutes=1)
+    report = run_mod.run_crawl(settings, tmp_path / "t.db", "schedule", budget=10, deadline=deadline)
+    assert report.deadline_hit and "остановлен по концу окна" in report.as_text()

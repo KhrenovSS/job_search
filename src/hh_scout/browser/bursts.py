@@ -65,6 +65,9 @@ def run_in_bursts(
                 stats.page_loads += session.page_loads
         if after_burst:
             after_burst(stats)
+        if more and should_stop and should_stop():
+            stats.stopped_reason = "остановлено"  # e.g. the sitting's deadline passed: no point in sleeping the gap
+            break
         if more:
             gap = pacing.gap_between_bursts(policy, rng) * gap_scale
             log.info("%sПауза между сериями %.0f мин", f"[{label}] " if label else "", gap / 60)
