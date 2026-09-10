@@ -21,7 +21,7 @@ from pydantic import ValidationError
 from hh_scout.browser.hh_pages import strip_html
 from hh_scout.config import Settings
 from hh_scout.db import utcnow
-from hh_scout.hh.salary import normalize
+from hh_scout.hh.salary import human_from_raw
 from hh_scout.llm.bridge_client import BridgeClient, BridgeError, extract_json
 from hh_scout.llm.prompts import render
 from hh_scout.llm.schemas import EvaluationBatch, VacancyEvaluation
@@ -68,20 +68,34 @@ def vacancy_payload(row: sqlite3.Row) -> dict:
     skills = raw.get("keySkills")
     if isinstance(skills, dict):
         skills = skills.get("keySkill")
-    sal = normalize(json.loads(row["salary_raw"]) if row["salary_raw"] else None)
-    return {
+    salary_raw = json.loads(row["salary_raw"]) if row["salary_raw"] else None
+    site = row_site(row)
+    payload = {
         "hh_id": row["hh_id"],
+        "site": site,
+        "kind": "order" if site == "profi" else "vacancy",
         "title": row["title"],
         "employer": row["employer"],
         "area": row["area_name"],
         "work_format": row["work_format"],
         "employment": row["employment"],
-        "salary_raw": json.loads(row["salary_raw"]) if row["salary_raw"] else None,
-        "salary_net_human": sal.human(),
+        "salary_raw": salary_raw,
+        "salary_net_human": human_from_raw(salary_raw),
         "experience": raw.get("workExperience"),
         "key_skills": skills or [],
         "description": strip_html(raw.get("description"))[:MAX_DESCRIPTION_CHARS],
     }
+    if site == "profi":
+        payload.update({"client": raw.get("client"), "budget": raw.get("budget"), "when": raw.get("when"),
+                        "posted": raw.get("posted")})
+    return payload
+
+
+def row_site(row: sqlite3.Row) -> str:
+    return row["site"] if "site" in row.keys() and row["site"] else "hh"
+
+
+EVAL_PROMPTS = {"hh": "vacancy_evaluation.md", "profi": "profi_order_evaluation.md"}
 
 
 class Evaluator:
@@ -96,9 +110,15 @@ class Evaluator:
         if not rows:
             log.info("Оценивать нечего (нет prefiltered)")
             return self.stats
-        system_text = render(self.s.prompts_dir, "vacancy_evaluation.md", feedback_block=feedback_block(self.conn))
-        for i in range(0, len(rows), BATCH):
-            batch = rows[i:i + BATCH]
+        fb = feedback_block(self.conn)
+        by_site: dict[str, list[sqlite3.Row]] = {}
+        for r in rows:
+            by_site.setdefault(row_site(r), []).append(r)
+        batches: list[tuple[str, list[sqlite3.Row]]] = []
+        for site, site_rows in by_site.items():  # never mix vacancies and orders in one prompt
+            system_text = render(self.s.prompts_dir, EVAL_PROMPTS.get(site, EVAL_PROMPTS["hh"]), feedback_block=fb)
+            batches += [(system_text, site_rows[i:i + BATCH]) for i in range(0, len(site_rows), BATCH)]
+        for system_text, batch in batches:
             results = self._evaluate_batch(system_text, batch)
             by_id = {r["hh_id"]: r for r in batch}
             with self.conn:
@@ -171,7 +191,7 @@ def build_digest_preview(conn: sqlite3.Connection, settings: Settings, checked: 
         messages.append(format_card(i, r, r))
         letter = repo.get_cover_letter(conn, r["id"])
         if letter:
-            messages.append(format_letter(r["employer"], letter))
+            messages.append(format_letter(r["employer"], letter, row_site(r)))
     if with_tail:
         below = [r for r in rows if r["total"] < settings.score_threshold]
         if below:

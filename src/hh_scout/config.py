@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     prompts_dir: Path = PROJECT_ROOT / "prompts"
     log_level: str = "INFO"
 
+    # profi.ru — second source: client orders from the owner's specialist cabinet (needs login in the same Firefox).
+    # Off by default. One feed load per sitting, read-only; the site's terms forbid parsing — keep the footprint tiny.
+    profi_enabled: bool = False
+    profi_orders_url: str = "https://profi.ru/backoffice/n.php"
+    profi_pages_per_run: int = 1
+
     # AI triage of search cards before opening vacancy pages
     triage_batch_size: int = 30
 

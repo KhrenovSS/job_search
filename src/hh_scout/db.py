@@ -179,12 +179,19 @@ def _m005_lead_actions(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE digest_items ADD COLUMN letter_message_id INTEGER")
 
 
+def _m006_site(conn: sqlite3.Connection) -> None:
+    """v7: second source. `site` = hh | profi; profi rows use hh_id = 'profi:<order id>' (the UNIQUE stays valid)."""
+    conn.execute("ALTER TABLE vacancies ADD COLUMN site TEXT NOT NULL DEFAULT 'hh'")
+    conn.execute("CREATE INDEX idx_vacancies_site_status ON vacancies(site, status)")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m001_initial,
     _m002_triage_columns,
     _m003_lead_scoring,
     _m004_cover_letters,
     _m005_lead_actions,
+    _m006_site,
 ]
 
 

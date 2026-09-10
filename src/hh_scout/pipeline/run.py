@@ -31,6 +31,8 @@ from hh_scout.pipeline import prefilter, repo
 from hh_scout.pipeline.budget import daily_cap
 from hh_scout.pipeline.collector import Collector
 from hh_scout.pipeline.details import DetailsFetcher
+from hh_scout.pipeline.profi_collector import ProfiCollector
+from hh_scout.profi.pages import ProfiBlocked
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +62,9 @@ class CrawlReport:
     duration_s: float = 0.0
     deadline: datetime | None = None   # browsing must stop by this time (sitting: window end + grace)
     deadline_hit: bool = False         # the deadline actually cut the browsing short
+    profi_orders: int | None = None    # profi.ru: orders seen in the feed (None = source disabled / not reached)
+    profi_new: int = 0
+    profi_error: str | None = None     # profi.ru feed without the cabinet (login/captcha) — hh.ru is unaffected
 
     @property
     def ok(self) -> bool:
@@ -72,6 +77,10 @@ class CrawlReport:
                  f"Страниц: {self.page_loads} (за день {self.used_today}/{self.daily_cap}) · новых вакансий: {self.new_vacancies} · описаний: {self.details}"
                  + (f" · списано слабых: {self.expired_low_priority}" if self.expired_low_priority else ""),
                  f"Оценено: {self.evaluated} · новых лидов: {self.leads} · писем: {self.letters} · вызовов ИИ: {self.bridge_calls}"]
+        if self.profi_orders is not None:
+            lines.append(f"profi.ru: заказов в ленте {self.profi_orders} · новых {self.profi_new}")
+        if self.profi_error:
+            lines.append(f"profi.ru: {self.profi_error}")
         if self.browser_error:
             lines.append(f"Браузер: {self.browser_error}")
         if self.bridge_error:
@@ -112,10 +121,28 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
     log.info("Прогон #%d (%s): загрузок сегодня %d из %d, бюджет прогона %d", run_id, trigger, used, cap, budget)
     bridge_calls = 0
 
-    # 1. collect
-    if budget > 0:
+    # 1a. profi.ru orders feed (one page, read-only) — before hh.ru so a rare order is never starved by the budget
+    if settings.profi_enabled and budget > 0:
         try:
-            c = Collector(settings, conn, gap_scale=gap_scale, page_budget=budget, should_stop=stop)
+            pc = ProfiCollector(settings, conn, gap_scale=gap_scale, page_budget=min(settings.profi_pages_per_run, budget),
+                                should_stop=stop)
+            ps = pc.run(run_id)
+            report.page_loads += ps.page_loads
+            report.profi_orders, report.profi_new = ps.orders_seen, ps.new_orders
+        except BrowserUnavailable as e:
+            report.browser_error = str(e)
+        except ProfiBlocked as e:
+            report.profi_error = str(e)
+            report.page_loads += 1  # the feed page was loaded even though it had no cabinet
+        except Exception as e:  # noqa: BLE001
+            log.exception("profi.ru упал")
+            report.errors.append(f"profi.ru: {e}")
+
+    # 1. collect
+    hh_budget = max(0, budget - report.page_loads)
+    if hh_budget > 0 and report.browser_error is None:
+        try:
+            c = Collector(settings, conn, gap_scale=gap_scale, page_budget=hh_budget, should_stop=stop)
             st = c.run(run_id)
             report.page_loads += st.page_loads
             report.new_vacancies = st.new_vacancies

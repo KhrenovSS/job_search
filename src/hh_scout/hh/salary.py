@@ -49,6 +49,13 @@ class Salary:
         return core + suffix
 
 
+def human_from_raw(raw: dict | None) -> str:
+    """Human string for a stored `salary_raw`: profi.ru order budgets are shown as written, hh.ru via `normalize`."""
+    if raw and raw.get("profi_budget"):
+        return f"бюджет {raw['profi_budget']}"
+    return normalize(raw).human()
+
+
 def normalize(compensation: dict | None) -> Salary:
     if not compensation or "noCompensation" in compensation:
         return Salary(None, None, None, None, None, None)

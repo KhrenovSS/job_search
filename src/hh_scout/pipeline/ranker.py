@@ -10,7 +10,7 @@ import sqlite3
 from datetime import datetime
 
 from hh_scout.config import TZ, Settings
-from hh_scout.hh.salary import normalize
+from hh_scout.hh.salary import human_from_raw
 
 WORK_FORMAT_RU = {"remote": "🏠 удалёнка", "hybrid": "гибрид", "office": "🏢 офис", "field": "🚗 разъездная", "unknown": None}
 EMPLOYMENT_RU = {"full": "штат", "part": "частичная занятость", "project": "📄 проектная работа", "fly_in_fly_out": "вахта", "unknown": None}
@@ -25,11 +25,13 @@ def total_score(settings: Settings, tech: int, role: int, lead: int) -> int:
 
 def format_card(position: int, v: sqlite3.Row, e: sqlite3.Row) -> str:
     """One digest message (Telegram HTML)."""
-    sal = normalize(json.loads(v["salary_raw"]) if v["salary_raw"] else None)
+    salary_raw = json.loads(v["salary_raw"]) if v["salary_raw"] else None
+    profi = row_site(v) == "profi"
     kind = COMPANY_RU.get(e["company_kind"] or "unknown")
-    head = f"<b>{position}. {_esc(v['title'])}</b> — {_esc(v['employer'] or 'компания не указана')}" + (f" ({kind})" if kind else "")
-    facts = [f"💰 {sal.human()}", WORK_FORMAT_RU.get(v["work_format"]), f"📍 {v['area_name']}" if v["area_name"] else None,
-             EMPLOYMENT_RU.get(v["employment"] or "unknown")]
+    who = v["employer"] or ("заказчик не указан" if profi else "компания не указана")
+    head = f"<b>{position}. {_esc(v['title'])}</b> — {_esc(who)}" + (f" ({kind})" if kind and not profi else "")
+    facts = ["🛠 заказ на profi.ru" if profi else None, f"💰 {human_from_raw(salary_raw)}", WORK_FORMAT_RU.get(v["work_format"]),
+             f"📍 {v['area_name']}" if v["area_name"] else None, EMPLOYMENT_RU.get(v["employment"] or "unknown")]
     lead_bits = [f"🤝 ИП/ГПХ: {IP_RU.get(e['ip_gph_possible'], e['ip_gph_possible'])}"]
     if e["is_agency"]:
         lead_bits.append("🏷 агентство")
@@ -49,9 +51,19 @@ def format_card(position: int, v: sqlite3.Row, e: sqlite3.Row) -> str:
     return "\n".join(lines)
 
 
-def format_letter(employer: str | None, text: str) -> str:
-    """Cover letter as a separate Telegram message; <pre> gives one-tap copy in Telegram clients."""
+def format_letter(employer: str | None, text: str, site: str = "hh") -> str:
+    """Cover letter (or a profi.ru bid) as a separate Telegram message; <pre> gives one-tap copy in Telegram clients."""
+    if site == "profi":
+        return f"✉️ Предложение для «{_esc(employer or 'заказчика')}» (profi.ru):\n<pre>{_esc(text)}</pre>"
     return f"✉️ Отклик для «{_esc(employer or 'компании')}»:\n<pre>{_esc(text)}</pre>"
+
+
+def row_site(row: sqlite3.Row) -> str:
+    """`vacancies.site` with a fallback for rows built without the column (old fixtures, ad-hoc SELECTs)."""
+    try:
+        return row["site"] or "hh"
+    except (IndexError, KeyError):
+        return "hh"
 
 
 COLLAPSED_LABELS = {

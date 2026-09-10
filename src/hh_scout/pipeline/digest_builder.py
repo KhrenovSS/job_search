@@ -24,10 +24,11 @@ def plan_digest(conn: sqlite3.Connection, settings: Settings) -> DigestPlan:
 
 
 def finalize_digest(conn: sqlite3.Connection, settings: Settings, sent: list[tuple],
-                    checked: int, note: str | None = None) -> int:
-    """Record the digest, mark sent leads `sent` and everything below threshold `rejected`.
+                    checked: int, note: str | None = None, reject: bool = True) -> int:
+    """Record the digest, mark sent leads `sent` and (unless `reject=False`) everything below threshold `rejected`.
 
     `sent` items are (row, card_message_id) or (row, card_message_id, letter_message_id).
+    `reject=False` is for instant sends between digests: the noon digest still owns the below-threshold cleanup.
     """
     with conn:
         digest_id = repo.create_digest(conn, len(sent), checked, note)
@@ -35,7 +36,7 @@ def finalize_digest(conn: sqlite3.Connection, settings: Settings, sent: list[tup
             row, msg_id = item[0], item[1]
             letter_id = item[2] if len(item) > 2 else None
             repo.add_digest_item(conn, digest_id, row["id"], pos, msg_id, letter_id)
-        rejected = repo.reject_below(conn, settings.score_threshold)
+        rejected = repo.reject_below(conn, settings.score_threshold) if reject else 0
     log.info("Дайджест #%d: отправлено %d, отклонено ниже порога %d, проверено %d", digest_id, len(sent), rejected, checked)
     return digest_id
 

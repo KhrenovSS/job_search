@@ -17,6 +17,7 @@
 | `hh_scout.pipeline.run [--trigger manual] [--budget N] [--gap-scale X]` | **весь прогон**: collect → prefilter → triage → details → evaluate → letters | да | да |
 | `hh_scout.pipeline.collector [--budget N] [--gap-scale X] [--no-gaps] [--stale-hours H]` | сбор карточек (3 прохода × запросы) + синк откликов | да | — |
 | `hh_scout.pipeline.prefilter [--dry-run] [--show-skipped]` | правила: `new → triage/skipped` | — | — |
+| `scripts/profi_snapshot.py` | сохранить HTML уже открытых вкладок profi.ru из Firefox в `data/profi_snapshot_*.html` (ничего не загружает; для разбора разметки) | да (только чтение вкладок) | — |
 | `hh_scout.llm.triage [--limit N] [--dry-run]` | ИИ по карточкам: `triage → to_fetch/skipped` | — | да |
 | `hh_scout.pipeline.details [--budget N] [--gap-scale X] [--no-gaps] [--stale-hours H]` | страницы вакансий: `to_fetch → prefiltered` | да | — |
 | `hh_scout.llm.evaluator [--limit N] [--preview] [--send] [--tail]` | оценка: `prefiltered → evaluated`; `--send` шлёт превью в Telegram **напрямую, без кнопок и без записи в digests** — статусы не меняет (лиды остаются `evaluated` и попадут в следующий дайджест) | — | да |
@@ -58,6 +59,7 @@ kv `daily_cap:<дата>`) — **за календарный день (Europe/Mo
 | ⚠️ Прогон висит в статусе running | процесс сбора убит | само снимется через 3 ч (`fail_stale_runs`) |
 | 🦊 Подход в HH:MM: Firefox не отвечает | предпроверка за 30 мин | запустить Firefox с `--marionette` |
 | 🦊 Браузер недоступен | подход начался, а Marionette не ответил (`BrowserUnavailable` в отчёте прогона) | запустить Firefox с `--marionette`, `check_browser.py`; следующий подход придёт сам |
+| 🚫 profi.ru: … | лента заказов без кабинета: вышли из аккаунта, капча или сменилась разметка (`ProfiBlocked`) | открыть profi.ru в этом Firefox и войти; повторяется при входе — снять снимок `scripts/profi_snapshot.py`, сравнить с `tests/fixtures/profi_orders.html`, обновить `profi/pages.py` |
 | 🤖 Подход в HH:MM: мост недоступен / Мост Claude не отвечал | `hh-scout-bridge` лежит | `bash scripts/svc.sh bridge-restart` |
 | 🚫 hh.ru не отдал данные | капча / просит войти | открыть hh.ru в этом Firefox руками; повторяется — снизить лимит, удлинить паузы |
 | 👤 hh.ru видит нас не как соискателя | вылетел логин | войти на hh.ru в Firefox |
@@ -119,6 +121,7 @@ PRAGMA wal_checkpoint(TRUNCATE);
 | Поисковые запросы, регионы, стоп-слова, обязательные слова | `config.py`: `SEARCH_QUERIES`, `REGION_NAMES`, `TITLE_STOP_WORDS`, `TITLE_KEEP_WORDS`, `TITLE_REQUIRED_ANY` |
 | Порог, веса total, размер дайджеста, лимит загрузок, паузы, окно сбора, время дайджеста | `.env` (см. `.env.example`) — все поля `Settings` переопределяемы |
 | Модель Claude | `bridge/.env.bridge` `BRIDGE_MODEL` (по умолчанию для моста) или `.env` `BRIDGE_MODEL` (переопределяет на каждый запрос) |
+| Заказы с profi.ru: включить/выключить, адрес ленты, страниц за подход | `.env`: `PROFI_ENABLED`, `PROFI_ORDERS_URL`, `PROFI_PAGES_PER_RUN`; критерии — `prompts/profi_order_evaluation.md`, текст предложения — `prompts/profi_bid.md` |
 Правило промптов: файлы с `---` — модели уходит только текст после разделителя; `candidate_profile.md` и `resume.md`
 читаются целиком, включая их заголовки.
 

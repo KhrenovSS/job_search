@@ -44,6 +44,7 @@ prompts/  candidate_profile.md  профиль кандидата — прави
           resume.md             резюме (из PDF) — правит владелец; источник фактов для писем; в .gitignore
           *.example.md          публичные образцы этих двух файлов (скопировать и заполнить на новой машине)
           card_triage.md · vacancy_evaluation.md · cover_letter.md  системные промпты (часть после `---`)
+          profi_order_evaluation.md · profi_bid.md  то же для заказов profi.ru (оценка заказа, короткое предложение клиенту)
 bridge/   hh_scout_bridge.py  мост Claude: FastAPI → `claude -p` под подпиской; hh-scout-bridge.service.template, install.sh, .env.bridge(.example)
 scripts/  install_service.sh (sudo) · install_geckodriver.sh · setup_firefox.sh · check_browser.py · tg_whoami.py
           · tg_alert.sh (Telegram через curl для systemd OnFailure)
@@ -60,7 +61,8 @@ src/hh_scout/
                    сторож каждые 30 мин и предпроверка перед подходом;  health.py — тревоги (чистые проверки + Alerter)
   browser/         session.py (geckodriver --connect-existing, своё окно, бюджет) · hh_pages.py (URL, парсеры
                    HH-Lux-InitialState) · pacing.py (паузы, длительность серий, прокрутка) · bursts.py (серии по времени)
-  hh/              areas.py (регионы из открытого api.hh.ru/areas, кэш) · salary.py (gross→net, только RUR/месяц)
+  hh/              areas.py (регионы из открытого api.hh.ru/areas, кэш) · salary.py (gross→net, только RUR/месяц; human_from_raw)
+  profi/           pages.py — лента заказов profi.ru из DOM кабинета (OrderCard, parse_orders, ProfiBlocked); v7, PROFI_ENABLED
   llm/             bridge_client.py · prompts.py (сборка промптов) · schemas.py · triage.py (карточки → открывать?)
                    evaluator.py (лид: техника/роль/лид) · cover_letter.py (письмо на лид)
   pipeline/        repo.py (весь SQL) · budget.py (дневной лимит) · collector.py · prefilter.py · details.py · ranker.py (total, карточка)
@@ -79,7 +81,8 @@ data/              hh_scout.db (WAL), logs/ — в .gitignore
 
 ## Правила работы
 1. Этапы и критерии — `docs/ROADMAP.md`. После изменений: сводка владельцу, как проверить руками, обновить доки.
-2. **Браузер — только чтение.** Никаких кликов по элементам сайта, откликов, сообщений.
+2. **Браузер — только чтение.** Никаких кликов по элементам сайта, откликов, сообщений. Для profi.ru (v7) — тем более:
+   его правила запрещают парсинг, поэтому одна загрузка ленты за подход, никаких страниц заказов и откликов.
 3. **Человекоподобие обязательно**: паузы, серии по времени, случайный порядок, только дневные окна, дневной лимит
    `DAILY_PAGE_LOADS_MIN..MAX` (100–140, случайный на день, kv `daily_cap:<дата>`) **суммарно по всем процессам**.
    `--no-gaps`/`--gap-scale` — только для отладки, не для ежедневной работы.

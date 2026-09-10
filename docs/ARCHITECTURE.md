@@ -26,6 +26,7 @@
 
 | # | Шаг | Модуль | Вход → выход | Ресурс |
 |---|---|---|---|---|
+| 1a | profi.ru | `pipeline/profi_collector.py` | при `PROFI_ENABLED`: одна загрузка ленты заказов кабинета → `vacancies(site='profi', status=prefiltered)` — полный текст уже в карточке, стадии 4 не нужно; лента без кабинета → `ProfiBlocked` в `report.profi_error`, hh.ru продолжает | браузер, `min(PROFI_PAGES_PER_RUN, бюджет)` |
 | 1 | Сбор | `pipeline/collector.py` | страницы поиска → `vacancies(new)`; страница откликов → `applied/has_chat` (+`suitableVacancies` как проход `similar`) | браузер |
 | 2 | Правила | `pipeline/prefilter.py` | `new → triage` или `skipped` (applied, archived, fly_in_fly_out, stopword, no_engineering_title) | — |
 | 3 | Триаж ИИ | `llm/triage.py` | карточки пачками по 30 → `to_fetch` (+priority 1–3) или `skipped/triage` | мост |
@@ -41,6 +42,22 @@ project: `employment_form=PROJECT,PART`), в случайном порядке; 
 кончилась работа или бюджет прогона. Между сериями Firefox свободен. Окно бота помечено `window.name=hh-scout-bot` и закрывается при следующем подключении, если осталось.
 
 Итог прогона — `CrawlReport.as_text()` одним сообщением владельцу; метрики в `runs`.
+
+## Второй источник — profi.ru (`profi/pages.py`, `pipeline/profi_collector.py`, v7)
+Заказы клиентов из кабинета специалиста (`PROFI_ORDERS_URL`, по умолчанию `profi.ru/backoffice/n.php`; нужен вход на
+profi.ru в том же Firefox). Кабинет — JS-приложение без встроенного JSON, парсим DOM: карточка `<a data-testid="<id>_order-snippet">`
+даёт заголовок (`aria-label`/`h3`), бюджет («до 5000 ₽»), полный текст («Пожелания и особенности: …»), формат и город
+(`li[aria-label="Дистанционно:"]` → `remote`; «У клиента» → `field`; «У специалиста» → `office`), удобное время, имя клиента,
+«Вчера в 12:09» → `published_at`. Строка `vacancies`: `hh_id='profi:<id>'` (глобальный `UNIQUE` сохраняется), `site='profi'`,
+`employer`=имя клиента, `employment='project'`, `source=search_pass='profi'`, `raw_json={description, budget, when, client, …}`,
+`salary_raw={"profi_budget": "до 5000 ₽", to, …}` (`hh/salary.human_from_raw` показывает бюджет как написано).
+Дальше — общий пайплайн: оценка (`prompts/profi_order_evaluation.md`, пачки по сайтам не смешиваются, `ip_gph_possible=yes`),
+предложение клиенту вместо письма (`prompts/profi_bid.md`, 150–1200 знаков), карточка с пометкой «🛠 заказ на profi.ru»,
+те же кнопки. **Доставка сразу**: `Scheduler.after_crawl` → `bot/digest.send_instant_leads(site='profi')` — карточка + предложение
+сразу после прогона, запись в `digests` с `note='instant:profi'` без отсева ниже порога (это делает дневной дайджест).
+`/done profi:<id>`, `/letter profi:<id>` работают; автозакрытие по откликам — только hh.ru (`applied` у заказов всегда 0).
+Правила profi.ru запрещают парсинг — источник выключен по умолчанию, след минимальный (1 страница за подход, только чтение),
+тревога `profi_blocked` раз в день. Снимок ленты для парсера/фикстур — `scripts/profi_snapshot.py` (читает уже открытые вкладки).
 
 ## Расписание (`scheduler.py`)
 - **digest** — cron `DIGEST_TIME` (12:00): `send_digest()` (внутри — сначала `_evaluate_pending`: дооценить всё

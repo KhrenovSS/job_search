@@ -35,6 +35,21 @@ def test_card_shows_lead_fields_and_hides_salary_weight():
     assert "⚠️ агентство" in card and card.endswith("https://hh.ru/vacancy/1")
 
 
+def test_profi_order_card_and_bid_wording():
+    from hh_scout.pipeline.ranker import format_letter
+
+    assert format_letter("Клиент А", "текст", "profi").startswith("✉️ Предложение для «Клиент А» (profi.ru):")
+    assert format_letter("ООО Ромашка", "текст").startswith("✉️ Отклик для «ООО Ромашка»:")
+    v = _row(hh_id="profi:1", site="profi", title="Программирование овен", employer="Клиент А", area_name="Москва",
+             work_format="remote", employment="project", url="https://profi.ru/backoffice/n.php?o=1",
+             salary_raw='{"profi_budget": "до 5000 ₽", "to": 5000, "currencyCode": "RUR", "gross": false, "mode": "PROJECT"}')
+    e = _row(total=80, tech_score=90, role_score=85, lead_score=60, company_kind="end_customer", ip_gph_possible="yes",
+             is_agency=0, verdict="Дописать обмен с ИПП120", pitch_hint="", red_flags=None)
+    card = format_card(1, v, e)
+    assert "🛠 заказ на profi.ru" in card and "💰 бюджет до 5000 ₽" in card and "🏠 удалёнка" in card
+    assert "(конечный заказчик)" not in card and card.endswith("https://profi.ru/backoffice/n.php?o=1")
+
+
 def test_header_plural_forms():
     assert digest_header(0, 50).startswith("Сегодня лидов не нашлось")
     assert "1 лид</b>" in digest_header(1, 50)

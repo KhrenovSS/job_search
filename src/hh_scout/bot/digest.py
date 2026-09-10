@@ -16,7 +16,7 @@ from hh_scout.llm.cover_letter import CoverLetterWriter
 from hh_scout.llm.evaluator import Evaluator
 from hh_scout.pipeline import repo
 from hh_scout.pipeline.digest_builder import finalize_digest, plan_digest
-from hh_scout.pipeline.ranker import digest_header, format_card, format_letter
+from hh_scout.pipeline.ranker import digest_header, format_card, format_letter, row_site
 
 log = logging.getLogger(__name__)
 PAUSE_S = 0.6
@@ -71,8 +71,41 @@ async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, ch
         letter_id = None
         if row["letter"]:
             await asyncio.sleep(PAUSE_S)
-            letter_msg = await bot.send_message(chat_id, format_letter(row["employer"], row["letter"]))
+            letter_msg = await bot.send_message(chat_id, format_letter(row["employer"], row["letter"], row_site(row)))
             letter_id = letter_msg.message_id
         sent.append((row, msg.message_id, letter_id))
     finalize_digest(conn, settings, sent, plan.checked, note)
+    return len(sent)
+
+
+async def send_instant_leads(bot: Bot, conn: sqlite3.Connection, settings: Settings, chat_id: int, site: str = "profi") -> int:
+    """Right after a crawl: send new leads of `site` at once (profi.ru orders are taken within hours).
+
+    Same card, buttons and bid text as in the digest; recorded as a digest with note 'instant:<site>' so feedback,
+    collapsing and /inbox work. Nothing below the threshold is rejected here — that is the noon digest's job.
+    """
+    leads = repo.evaluated_leads(conn, settings.score_threshold, site=site)
+    if not leads:
+        return 0
+    missing = [r for r in leads if not r["letter"]]
+    if missing:
+        try:
+            writer = CoverLetterWriter(settings, conn)
+            for r in missing:
+                await asyncio.to_thread(writer.write_for, r)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Не удалось написать предложение для заказа: %s", e)
+        leads = repo.evaluated_leads(conn, settings.score_threshold, site=site)
+    await bot.send_message(chat_id, f"⚡ Новые заказы на profi.ru: {len(leads)}. Отклики там платные и разбирают быстро.")
+    sent: list[tuple[sqlite3.Row, int | None, int | None]] = []
+    for i, row in enumerate(leads, 1):
+        await asyncio.sleep(PAUSE_S)
+        msg = await bot.send_message(chat_id, format_card(i, row, row), reply_markup=vote_kb(row["id"]))
+        letter_id = None
+        if row["letter"]:
+            await asyncio.sleep(PAUSE_S)
+            letter_msg = await bot.send_message(chat_id, format_letter(row["employer"], row["letter"], row_site(row)))
+            letter_id = letter_msg.message_id
+        sent.append((row, msg.message_id, letter_id))
+    finalize_digest(conn, settings, sent, checked=0, note=f"instant:{site}", reject=False)
     return len(sent)

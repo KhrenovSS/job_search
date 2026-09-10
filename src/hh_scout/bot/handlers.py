@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import socket
 import sqlite3
 from datetime import datetime
@@ -20,13 +21,13 @@ from hh_scout.config import TZ, Settings
 from hh_scout.db import kv_get
 from hh_scout.llm.cover_letter import CoverLetterWriter
 from hh_scout.pipeline import repo
-from hh_scout.pipeline.ranker import format_card, format_inbox, format_letter
+from hh_scout.pipeline.ranker import format_card, format_inbox, format_letter, row_site
 
 log = logging.getLogger(__name__)
 router = Router(name="commands")
 
 HELP = (
-    "<b>HH-Scout</b> — лиды с hh.ru для сотрудничества по ИП.\n"
+    "<b>HH-Scout</b> — лиды с hh.ru (и заказы с profi.ru, если включено) для сотрудничества по ИП.\n"
     "Дайджест приходит каждый день в {digest}. Сбор — три подхода в день, старт в случайное время в окнах {windows}; "
     "внутри подхода бот листает сериями ~10 мин с паузами ~5 мин.\n\n"
     "/status — состояние: Firefox, мост, последний и следующий сбор, лимиты\n"
@@ -100,6 +101,8 @@ async def status_cmd(m: Message, settings: Settings, conn: sqlite3.Connection, s
                      + (f"; {last['error']}" if last['error'] else ""))
     order = ["new", "triage", "to_fetch", "prefiltered", "evaluated", "sent", "rejected", "skipped", "evaluation_failed"]
     lines.append("Вакансии: " + " · ".join(f"{k} {counts[k]}" for k in order if counts.get(k)))
+    lines.append("profi.ru: " + (f"✅ включён · заказов в базе {repo.count_site(conn, 'profi')}" if settings.profi_enabled
+                                else "выключен (PROFI_ENABLED=false)"))
     wd = kv_get(conn, "watchdog_last")
     lines.append(f"Сторож: последняя проверка {_fmt_dt(wd)} · тревог сегодня {scheduler.alerter.count_today(datetime.now(TZ).date())}")
     lines.append(f"БД: {db_mb:.1f} МБ")
@@ -161,8 +164,8 @@ async def inbox_cmd(m: Message, conn: sqlite3.Connection) -> None:
 @router.message(Command("done"))
 async def done_cmd(m: Message, command: CommandObject, conn: sqlite3.Connection) -> None:
     hh_id = (command.args or "").strip()
-    if not hh_id.isdigit():
-        await m.answer("Использование: /done &lt;hh_id&gt;")
+    if not _valid_id(hh_id):
+        await m.answer("Использование: /done &lt;id&gt; — число из ссылки hh.ru/vacancy/… или profi:&lt;номер заказа&gt;")
         return
     row = repo.lead_by_hh_id(conn, hh_id)
     if row is None:
@@ -186,8 +189,8 @@ async def cleanup_cmd(m: Message, command: CommandObject, conn: sqlite3.Connecti
 @router.message(Command("letter"))
 async def letter_cmd(m: Message, command: CommandObject, settings: Settings, conn: sqlite3.Connection) -> None:
     hh_id = (command.args or "").strip()
-    if not hh_id.isdigit():
-        await m.answer("Использование: /letter &lt;hh_id&gt; (число из ссылки hh.ru/vacancy/…)")
+    if not _valid_id(hh_id):
+        await m.answer("Использование: /letter &lt;id&gt; — число из ссылки hh.ru/vacancy/… или profi:&lt;номер заказа&gt;")
         return
     row = repo.lead_by_hh_id(conn, hh_id)
     if row is None:
@@ -204,4 +207,11 @@ async def letter_cmd(m: Message, command: CommandObject, settings: Settings, con
         return
     row = repo.lead_by_hh_id(conn, hh_id)
     await m.answer(format_card(1, row, row), reply_markup=vote_kb(row["id"]))
-    await m.answer(format_letter(row["employer"], text))
+    await m.answer(format_letter(row["employer"], text, row_site(row)))
+
+
+_ID_RE = re.compile(r"^[A-Za-z0-9:_.-]{1,64}$")
+
+
+def _valid_id(value: str) -> bool:
+    return bool(_ID_RE.match(value))

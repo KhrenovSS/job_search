@@ -44,7 +44,11 @@
 - `employment`: full / part (в т.ч. SIDE_JOB) / project / fly_in_fly_out / unknown.
 - `salary_raw`: исходный объект `compensation` hh (JSON); `salary_from`, `salary_to`: рубли net (gross×0.87) **только для
   месячных RUR**; валюта/почасовые хранятся как есть (пометка `Salary.note` в БД не хранится, вычисляется из `salary_raw`).
-- `source`: `search:<idx>` / `similar_to_resume` / `negotiations`; `search_pass`: regional / remote / project / similar / negotiations.
+- `site` (v7, `_m006`): `hh` (по умолчанию) / `profi`. Заказы profi.ru: `hh_id = 'profi:<номер заказа>'` — глобальный `UNIQUE`
+  остаётся, коллизий с hh нет; `employer` = имя клиента, `employment = project`, `raw_json = {description, budget, when, client,
+  posted, work_format, city, site}`, `salary_raw = {"profi_budget": "до 5000 ₽", from, to, …}`; статус сразу `prefiltered`.
+- `source`: `search:<idx>` / `similar_to_resume` / `negotiations` / `profi`; `search_pass`: regional / remote / project / similar /
+  negotiations / profi.
 - `raw_json`: **урезанный** `vacancyView` (`repo.DETAIL_KEYS`: vacancyId, name, description, keySkills, compensation,
   workFormats, employmentForm, area, status, publicationDate, workExperience, workScheduleByDays, workingHours,
   closedForApplicants, userLabels + company{id,name,visibleName,@trusted}, address{city,street,building,displayName}).

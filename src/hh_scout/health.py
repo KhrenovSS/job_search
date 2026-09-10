@@ -109,6 +109,9 @@ def analyze_report(report) -> list[Alert]:
     if report.bridge_error:
         alerts.append(Alert("bridge_down", f"🤖 Мост Claude не отвечал: {report.bridge_error}. systemctl status hh-scout-bridge; "
                                            "curl :8766/health"))
+    pe = getattr(report, "profi_error", None)
+    if pe:
+        alerts.append(Alert("profi_blocked", f"🚫 profi.ru: {pe}. Заказы подождут следующего подхода; hh.ru это не затронуло."))
     return alerts
 
 

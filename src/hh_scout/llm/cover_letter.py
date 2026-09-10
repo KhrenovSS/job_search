@@ -25,6 +25,13 @@ log = logging.getLogger(__name__)
 MIN_CHARS = 400
 MAX_CHARS = 2500
 MAX_DESCRIPTION_CHARS = 6000
+# profi.ru orders get a short bid, not a cover letter
+LETTER_PROMPTS = {"hh": "cover_letter.md", "profi": "profi_bid.md"}
+LENGTH_LIMITS = {"hh": (MIN_CHARS, MAX_CHARS), "profi": (150, 1200)}
+
+
+def row_site(row: sqlite3.Row) -> str:
+    return row["site"] if "site" in row.keys() and row["site"] else "hh"
 
 
 @dataclass
@@ -41,6 +48,19 @@ def letter_payload(row: sqlite3.Row) -> dict:
         skills = skills.get("keySkill")
     desc = strip_html(raw.get("description"))
     asks_salary = any(w in desc.lower() for w in ("ожидаемый уровень", "зарплатные ожидания", "укажите желаемую", "ожидания по зарплате"))
+    if row_site(row) == "profi":
+        return {
+            "kind": "order",
+            "title": row["title"],
+            "client": row["employer"],
+            "description": desc[:MAX_DESCRIPTION_CHARS],
+            "budget": raw.get("budget"),
+            "when": raw.get("when"),
+            "work_format": row["work_format"],
+            "city": row["area_name"],
+            "verdict": row["verdict"],
+            "pitch_hint": row["pitch_hint"],
+        }
     return {
         "title": row["title"],
         "employer": row["employer"],
@@ -76,7 +96,8 @@ class CoverLetterWriter:
         self.stats = LetterStats()
 
     def write_for(self, row: sqlite3.Row, system_text: str | None = None) -> str | None:
-        system_text = system_text or self._system()
+        site = row_site(row)
+        system_text = system_text or self._system(site)
         user_text = json.dumps(letter_payload(row), ensure_ascii=False)
         try:
             answer = self.bridge.complete(system_text, user_text)
@@ -84,8 +105,9 @@ class CoverLetterWriter:
             log.error("Письмо для %s: мост недоступен: %s", row["hh_id"], e)
             raise
         text = _clean(answer)
-        if not (MIN_CHARS <= len(text) <= MAX_CHARS):
-            log.warning("Письмо для %s отклонено по длине (%d символов)", row["hh_id"], len(text))
+        lo, hi = LENGTH_LIMITS.get(site, LENGTH_LIMITS["hh"])
+        if not (lo <= len(text) <= hi):
+            log.warning("Письмо для %s отклонено по длине (%d символов, допустимо %d–%d)", row["hh_id"], len(text), lo, hi)
             self.stats.failed += 1
             return None
         with self.conn:
@@ -99,16 +121,20 @@ class CoverLetterWriter:
         if not rows:
             log.info("Все лиды уже с письмами")
             return self.stats
-        system_text = self._system()
+        systems: dict[str, str] = {}
         for row in rows:
-            self.write_for(row, system_text)
+            site = row_site(row)
+            if site not in systems:
+                systems[site] = self._system(site)
+            self.write_for(row, systems[site])
         self.stats.bridge_calls = self.bridge.calls
         log.info("Письма: написано %d, отклонено %d, вызовов моста %d, cost $%.3f",
                  self.stats.written, self.stats.failed, self.stats.bridge_calls, self.bridge.cost_usd)
         return self.stats
 
-    def _system(self) -> str:
-        return render(self.s.prompts_dir, "cover_letter.md", resume=read_private(self.s.prompts_dir, "resume.md"))
+    def _system(self, site: str = "hh") -> str:
+        template = LETTER_PROMPTS.get(site, LETTER_PROMPTS["hh"])
+        return render(self.s.prompts_dir, template, resume=read_private(self.s.prompts_dir, "resume.md"))
 
 
 def main() -> int:

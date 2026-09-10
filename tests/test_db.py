@@ -13,6 +13,16 @@ def test_migrations_create_schema_and_are_idempotent():
     assert migrate(conn) == len(MIGRATIONS)
 
 
+def test_m006_adds_site_with_hh_default():
+    conn = connect(":memory:")
+    assert migrate(conn) == 6
+    cols = {r[1]: r for r in conn.execute("PRAGMA table_info(vacancies)")}
+    assert cols["site"][4] == "'hh'"  # default value
+    conn.execute("INSERT INTO vacancies(hh_id, title, url, source, search_pass, status, first_seen_at, updated_at) "
+                 "VALUES ('1','t','u','search:0','regional','new','x','x')")
+    assert conn.execute("SELECT site FROM vacancies").fetchone()[0] == "hh"
+
+
 def test_kv_roundtrip():
     conn = connect(":memory:")
     migrate(conn)

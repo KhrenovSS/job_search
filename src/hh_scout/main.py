@@ -7,7 +7,7 @@ import logging
 import sys
 
 from hh_scout.bot.app import Notifier, create_bot, create_dispatcher
-from hh_scout.bot.digest import send_digest
+from hh_scout.bot.digest import send_digest, send_instant_leads
 from hh_scout.bot.lead_actions import collapse_auto_responded
 from hh_scout.config import load_settings
 from hh_scout.db import kv_get, kv_set, open_db
@@ -35,10 +35,19 @@ async def run() -> int:
         return await send_digest(bot, conn, settings, settings.tg_owner_chat_id)
 
     async def after_crawl() -> None:
-        if settings.tg_owner_chat_id is not None:
-            n = await collapse_auto_responded(bot, conn, settings.tg_owner_chat_id)
-            if n:
-                await notify(f"✅ Свернул {n} лид(ов): вы уже откликнулись на них на hh.ru")
+        if settings.tg_owner_chat_id is None:
+            return
+        n = await collapse_auto_responded(bot, conn, settings.tg_owner_chat_id)
+        if n:
+            await notify(f"✅ Свернул {n} лид(ов): вы уже откликнулись на них на hh.ru")
+        if settings.profi_enabled:
+            try:
+                k = await send_instant_leads(bot, conn, settings, settings.tg_owner_chat_id, site="profi")
+                if k:
+                    log.info("profi.ru: отправлено сразу %d заказ(ов)", k)
+            except Exception as e:  # noqa: BLE001
+                log.exception("Мгновенная отправка заказов profi.ru упала")
+                await notify(f"⚠️ Заказы profi.ru не отправлены: {e}")
 
     scheduler = Scheduler(settings, conn, notify, digest, after_crawl)
     dp = create_dispatcher(settings, conn, scheduler)

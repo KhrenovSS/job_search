@@ -209,11 +209,11 @@ class BrowserSession:
 
     # -- browsing ------------------------------------------------------------
 
-    def open(self, url: str) -> dict[str, Any]:
-        """Load a hh.ru page in our own window like a person would and return its initial state.
+    def open_raw(self, url: str) -> str:
+        """Load any page in our own window like a person would and return its rendered HTML.
 
-        Counts against the page budget, waits a human-like pause, scrolls a bit.
-        Raises PageBudgetExceeded / HHBlocked; the caller decides how to stop softly.
+        Counts against the page budget, lets the SPA settle, scrolls a bit, then waits a human-like "reading" pause.
+        Raises PageBudgetExceeded; site-specific checks are up to the caller (see `open()` for hh.ru).
         """
         if self.page_loads >= self.page_budget:
             raise PageBudgetExceeded(f"лимит {self.page_budget} загрузок страниц за прогон исчерпан")
@@ -232,13 +232,22 @@ class BrowserSession:
         pacing.sleep(self._rng.uniform(1.5, 3.5))  # let the SPA settle
         pacing.scroll_like_human(d, self._rng)
         source = d.page_source
+        delay = pacing.page_delay(self.policy, self._rng)
+        log.debug("Загрузка %d/%d: %s — пауза %.0f с", self.page_loads, self.page_budget, url, delay)
+        pacing.sleep(delay)
+        return source
+
+    def open(self, url: str) -> dict[str, Any]:
+        """Load a hh.ru page and return its HH-Lux initial state (see `open_raw` for the browsing part).
+
+        Raises PageBudgetExceeded / HHBlocked; the caller decides how to stop softly.
+        """
+        source = self.open_raw(url)
         state = extract_initial_state(source)
         if state is None:
+            d = self.driver
             title = d.title
             cur = d.current_url
             log.warning("Нет HH-Lux-InitialState: title=%r url=%s", title, cur)
             raise HHBlocked(f"hh.ru вернул страницу без данных (заголовок: {title!r}, адрес: {cur}) — возможно капча или требуется вход")
-        delay = pacing.page_delay(self.policy, self._rng)
-        log.debug("Загрузка %d/%d: %s — пауза %.0f с", self.page_loads, self.page_budget, url, delay)
-        pacing.sleep(delay)
         return state

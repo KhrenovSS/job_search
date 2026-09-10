@@ -158,3 +158,58 @@ def test_run_crawl_deadline_stops_browsing_and_is_reported(monkeypatch, tmp_path
     deadline = datetime.now(TZ) - timedelta(minutes=1)
     report = run_mod.run_crawl(settings, tmp_path / "t.db", "schedule", budget=10, deadline=deadline)
     assert report.deadline_hit and "остановлен по концу окна" in report.as_text()
+
+
+def _noop_bridge_steps(monkeypatch):
+    class FakeNoop:
+        def __init__(self, *a, **kw):
+            pass
+
+        def run(self, *a):
+            return _Stats(opened=0, bridge_calls=0, page_loads=0, outcomes={}, evaluated=0, written=0)
+
+    for name in ("Triager", "DetailsFetcher", "Evaluator", "CoverLetterWriter"):
+        monkeypatch.setattr(run_mod, name, FakeNoop)
+    monkeypatch.setattr(run_mod.prefilter, "run", lambda conn, s: {"passed": 0})
+
+
+def test_profi_stage_runs_first_shares_the_budget_and_does_not_block_hh(monkeypatch, tmp_path):
+    from hh_scout.profi.pages import ProfiBlocked
+
+    budgets = {}
+
+    class FakeProfi:
+        def __init__(self, *a, page_budget=None, **kw):
+            budgets["profi"] = page_budget
+
+        def run(self, run_id):
+            return _Stats(page_loads=1, orders_seen=2, new_orders=1)
+
+    class FakeCollector:
+        def __init__(self, *a, page_budget=None, **kw):
+            budgets["hh"] = page_budget
+
+        def run(self, run_id):
+            return _Stats(page_loads=3, new_vacancies=5, search_pages=1, cards_seen=5, not_logged_in=False)
+
+    _noop_bridge_steps(monkeypatch)
+    monkeypatch.setattr(run_mod, "ProfiCollector", FakeProfi)
+    monkeypatch.setattr(run_mod, "Collector", FakeCollector)
+    s = Settings(_env_file=None, prompts_dir=tmp_path, daily_page_loads_min=50, daily_page_loads_max=50, profi_enabled=True)
+    report = run_mod.run_crawl(s, tmp_path / "t.db", "schedule", budget=10)
+    assert budgets == {"profi": 1, "hh": 9}  # profi takes its page first, hh gets the rest
+    assert report.page_loads == 4 and report.profi_orders == 2 and report.profi_new == 1
+    assert "profi.ru: заказов в ленте 2 · новых 1" in report.as_text() and report.ok
+
+    # the cabinet is logged out: profi is reported, hh still crawls; profi disabled -> never constructed
+    class BlockedProfi(FakeProfi):
+        def run(self, run_id):
+            raise ProfiBlocked("нет кабинета")
+
+    monkeypatch.setattr(run_mod, "ProfiCollector", BlockedProfi)
+    report2 = run_mod.run_crawl(s, tmp_path / "t2.db", "schedule", budget=10)
+    assert report2.profi_error == "нет кабинета" and budgets["hh"] == 9 and report2.browser_error is None
+    budgets.clear()
+    s_off = Settings(_env_file=None, prompts_dir=tmp_path, daily_page_loads_min=50, daily_page_loads_max=50)
+    report3 = run_mod.run_crawl(s_off, tmp_path / "t3.db", "manual", budget=10)
+    assert "profi" not in budgets and budgets["hh"] == 10 and report3.profi_orders is None

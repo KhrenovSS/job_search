@@ -44,6 +44,31 @@ def insert_card(conn: sqlite3.Connection, card: VacancyCard, source: str, search
     return True
 
 
+def insert_order(conn: sqlite3.Connection, order: "OrderCard") -> bool:
+    """Insert a profi.ru order as a `prefiltered` row (full text is already in the feed card). False if known."""
+    if vacancy_exists(conn, order.ext_id):
+        return False
+    now = utcnow()
+    raw = {"description": order.description, "budget": order.budget_text, "when": order.when, "client": order.client,
+           "posted": order.posted_text, "work_format": order.work_format, "city": order.city, "site": "profi"}
+    salary_raw = {"profi_budget": order.budget_text, "from": order.budget_from, "to": order.budget_to,
+                  "currencyCode": "RUR", "gross": False, "mode": "PROJECT"} if order.budget_text else None
+    conn.execute(
+        """INSERT INTO vacancies(hh_id, site, title, employer, url, area_name, work_format, employment,
+                                 salary_from, salary_to, salary_raw, published_at, source, search_pass, raw_json,
+                                 status, skip_reason, applied, first_seen_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (order.ext_id, "profi", order.title, order.client or "частный заказчик", order.url, order.city, order.work_format,
+         "project", order.budget_from, order.budget_to, json.dumps(salary_raw, ensure_ascii=False) if salary_raw else None,
+         order.published_at or now, "profi", "profi", json.dumps(raw, ensure_ascii=False), "prefiltered", None, 0, now, now),
+    )
+    return True
+
+
+def count_site(conn: sqlite3.Connection, site: str) -> int:
+    return int(conn.execute("SELECT COUNT(*) FROM vacancies WHERE site = ?", (site,)).fetchone()[0])
+
+
 def mark_applied(conn: sqlite3.Connection, hh_id: str, *, has_chat: bool, title: str | None = None,
                  employer: str | None = None, url: str | None = None) -> None:
     """Flag a vacancy the owner already responded to; creates a stub row if unknown."""
@@ -186,11 +211,17 @@ LEAD_SELECT = """SELECT v.*, e.tech_score, e.role_score, e.lead_score, e.total, 
                  FROM vacancies v JOIN evaluations e ON e.vacancy_id = v.id"""
 
 
-def evaluated_leads(conn: sqlite3.Connection, threshold: int, limit: int | None = None) -> list[sqlite3.Row]:
-    sql = LEAD_SELECT + " WHERE v.status = 'evaluated' AND e.total >= ? ORDER BY e.total DESC, v.published_at DESC"
+def evaluated_leads(conn: sqlite3.Connection, threshold: int, limit: int | None = None,
+                    site: str | None = None) -> list[sqlite3.Row]:
+    sql = LEAD_SELECT + " WHERE v.status = 'evaluated' AND e.total >= ?"
+    params: list = [threshold]
+    if site:
+        sql += " AND v.site = ?"
+        params.append(site)
+    sql += " ORDER BY e.total DESC, v.published_at DESC"
     if limit:
         sql += f" LIMIT {int(limit)}"
-    return conn.execute(sql, (threshold,)).fetchall()
+    return conn.execute(sql, params).fetchall()
 
 
 def lead_by_hh_id(conn: sqlite3.Connection, hh_id: str) -> sqlite3.Row | None:
