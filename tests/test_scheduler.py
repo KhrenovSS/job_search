@@ -266,3 +266,29 @@ async def test_crawl_job_is_quiet_unless_something_went_wrong(monkeypatch):
     reports.append(CrawlReport(trigger="manual", page_loads=5))
     await sch.crawl_job("manual", manual_budget=5)
     assert len(notes) == 2 and notes[0].startswith("▶️ Начинаю сбор (manual, до 5 страниц)") and notes[1].startswith("✅ Сбор завершён")
+
+
+@pytest.mark.asyncio
+async def test_watchdog_bookkeeping_lock_is_journal_only(monkeypatch):
+    """`watchdog_last` colliding with a crawl thread's batch write (database is locked) is not an incident."""
+    import sqlite3
+
+    import hh_scout.scheduler as sched_mod
+
+    sch, conn = _scheduler()
+    notes = []
+
+    async def notify(text):
+        notes.append(text)
+
+    sch.notify = notify
+    sch.alerter.notify = notify
+    sch._restore_crawl(now=_dt(6, 58))  # a sitting is planned in the first window: nothing to alert about
+
+    def locked(*a, **kw):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(sched_mod, "kv_set", locked)
+    alerts = await sch.watchdog_job(now=_dt(7, 30))
+    assert alerts == [] and notes == []  # checks ran, nothing to report, the failed kv write stayed in the journal
+    assert kv_get(conn, "watchdog_last") is None

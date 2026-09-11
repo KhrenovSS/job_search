@@ -11,6 +11,7 @@ import asyncio
 import logging
 import math
 import random
+import sqlite3
 from datetime import date, datetime, time, timedelta
 from typing import Awaitable, Callable
 
@@ -261,17 +262,18 @@ class Scheduler:
                 else:  # a full day is routine: remember it was tallied, tell nobody (the noon digest reports the work)
                     self.alerter.mark_sent("day_summary", now)
             await self.alerter.send(alerts, now)
-            with self.conn:
-                kv_set(self.conn, "watchdog_last", now.isoformat())
-            if now.hour == 0 or kv_get(self.conn, "alerts_cleaned") != now.date().isoformat():
-                self.alerter.forget_old(now.date())
-                with self.conn:
-                    kv_set(self.conn, "alerts_cleaned", now.date().isoformat())
-            return alerts
         except Exception as e:  # noqa: BLE001
             log.exception("Сторож упал")
             await self.notify(f"⚠️ Сторож расписания упал: {e}")
             return []
+        try:  # bookkeeping: a crawl thread writing a big batch may hold the lock past busy_timeout — journal only
+            kv_set(self.conn, "watchdog_last", now.isoformat())
+            if now.hour == 0 or kv_get(self.conn, "alerts_cleaned") != now.date().isoformat():
+                self.alerter.forget_old(now.date())
+                kv_set(self.conn, "alerts_cleaned", now.date().isoformat())
+        except sqlite3.OperationalError as e:
+            log.warning("Сторож: отметка в kv не записана (%s), повторим через 30 мин", e)
+        return alerts
 
     async def precheck_job(self, when: datetime) -> list[health.Alert]:
         """30 min before a sitting: Firefox/Marionette and the bridge must be up."""

@@ -18,6 +18,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from hh_scout.config import TITLE_KEEP_WORDS, TITLE_REQUIRED_ANY, TITLE_STOP_WORDS, Settings
+from hh_scout.db import transaction
 from hh_scout.pipeline import repo
 
 log = logging.getLogger(__name__)
@@ -72,7 +73,7 @@ def run(conn: sqlite3.Connection, settings: Settings, *, dry_run: bool = False) 
     """Move `new` → `triage` or `skipped`. Returns a Counter of outcomes ('passed' or reason)."""
     outcomes: Counter = Counter()
     rows = repo.list_vacancies(conn, "new")
-    with conn:
+    with transaction(conn):  # one commit for the whole batch, not one disk sync per card
         for row in rows:
             reason = decide(_facts(row), settings.min_salary_net)
             key = reason or "passed"

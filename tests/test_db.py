@@ -48,3 +48,27 @@ def test_m007_backfills_employer_id_from_stored_vacancy_view():
     got = {r[0]: r[1] for r in conn.execute("SELECT hh_id, employer_id FROM vacancies")}
     assert got == {"1": "9070507", "profi:5": None, "2": None}
 
+
+
+def test_transaction_commits_a_batch_and_rolls_back_on_error():
+    from hh_scout.db import transaction
+
+    conn = connect(":memory:")
+    migrate(conn)
+    with transaction(conn):
+        kv_set(conn, "a", "1")
+        assert conn.in_transaction  # a real BEGIN, unlike `with conn:` under isolation_level=None
+        with transaction(conn):  # nested: joins the outer one, no "cannot start a transaction within a transaction"
+            kv_set(conn, "b", "2")
+        assert conn.in_transaction
+    assert not conn.in_transaction
+    assert (kv_get(conn, "a"), kv_get(conn, "b")) == ("1", "2")
+
+    try:
+        with transaction(conn):
+            kv_set(conn, "a", "changed")
+            raise RuntimeError("boom")
+    except RuntimeError:
+        pass
+    assert not conn.in_transaction
+    assert kv_get(conn, "a") == "1"

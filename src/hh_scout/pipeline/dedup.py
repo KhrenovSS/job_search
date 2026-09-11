@@ -17,6 +17,7 @@ import logging
 import sqlite3
 
 from hh_scout.config import Settings
+from hh_scout.db import transaction
 from hh_scout.pipeline import repo
 
 log = logging.getLogger(__name__)
@@ -47,7 +48,7 @@ def skip_if_covered(conn: sqlite3.Connection, settings: Settings, row: sqlite3.R
 def skip_covered(conn: sqlite3.Connection, settings: Settings, status: str) -> int:
     """All rows in `status` whose employer already has a lead → skipped/duplicate_employer. Returns how many."""
     n = 0
-    with conn:
+    with transaction(conn):
         for row in repo.list_vacancies(conn, status):
             if skip_if_covered(conn, settings, row) is not None:
                 n += 1
@@ -68,7 +69,7 @@ def dedupe_evaluated(conn: sqlite3.Connection, settings: Settings) -> int:
     rows = repo.evaluated_leads(conn, settings.score_threshold, site="hh")  # ordered by total DESC, published DESC
     groups: list[list[sqlite3.Row]] = []  # groups[i][0] is the kept lead; a row joins a group if it matches ANY member
     n = 0
-    with conn:
+    with transaction(conn):
         for row in rows:
             group = next((g for g in groups if any(_same_company(m, row) for m in g)), None)
             if group is not None:

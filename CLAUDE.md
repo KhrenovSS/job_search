@@ -60,7 +60,7 @@ README.md · .gitignore · hh-scout.service.template + hh-scout-alert.service.te
 src/hh_scout/
   config.py        Settings из .env (порог, веса, лимиты, окна, ритм, токены) + константы: SEARCH_QUERIES, REGION_NAMES (49),
                    TITLE_STOP/KEEP/REQUIRED_ANY;  logging_setup.py — логи в stdout/journald
-  db.py            SQLite, миграции _m001…_m005 (PRAGMA user_version), kv_get/kv_set
+  db.py            SQLite (автокоммит, WAL), миграции _m001…_m007 (PRAGMA user_version), kv_get/kv_set, transaction() для пакетных записей
   main.py          сервис: aiogram polling + планировщик; первый старт помечает превью как sent
   scheduler.py     дайджест по cron, три подхода в день (окна, случайный старт, доля лимита), восстановление из kv,
                    сторож каждые 30 мин и предпроверка перед подходом;  health.py — тревоги (чистые проверки + Alerter)

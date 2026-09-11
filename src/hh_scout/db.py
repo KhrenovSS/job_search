@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,9 +32,34 @@ def connect(path: Path | str) -> sqlite3.Connection:
     if str(p) != ":memory:":
         conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 5000")
+    if str(p) != ":memory:":
+        # WAL + NORMAL: durable against crashes of the process, fsync only on checkpoint, not on every commit.
+        # On the owner's HDD a FULL-sync commit costs ~90 ms; hundreds of them in a row starve the bot's connection.
+        conn.execute("PRAGMA synchronous = NORMAL")
     # SQLite's lower()/NOCASE fold ASCII only; employer names are Cyrillic (used by repo.same_employer_sql)
     conn.create_function("casefold", 1, lambda s: s.casefold() if isinstance(s, str) else s, deterministic=True)
     return conn
+
+
+@contextmanager
+def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """One real write transaction for a batch of statements.
+
+    Connections run in autocommit (`isolation_level=None`), so `with conn:` commits nothing — every statement is
+    its own commit with its own disk sync, and a loop of hundreds of them holds the database lock for seconds,
+    long enough to starve another connection past its busy_timeout. Wrap batch writes in this instead.
+    Nested use joins the outer transaction (the outer commit/rollback wins).
+    """
+    if conn.in_transaction:
+        yield conn
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield conn
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
 
 
 def _m001_initial(conn: sqlite3.Connection) -> None:

@@ -32,6 +32,7 @@ from hh_scout.browser.hh_pages import (
 )
 from hh_scout.browser.session import BrowserSession, BrowserUnavailable, HHBlocked, PageBudgetExceeded
 from hh_scout.config import SEARCH_QUERIES, Settings
+from hh_scout.db import transaction
 from hh_scout.hh.areas import resolve_region_ids
 from hh_scout.pipeline import repo
 
@@ -182,7 +183,7 @@ class Collector:
 
     def _store_cards(self, cards: list[VacancyCard], source: str, search_pass: str) -> int:
         new = 0
-        with self.conn:
+        with transaction(self.conn):
             for card in cards:
                 self.stats.cards_seen += 1
                 if repo.insert_card(self.conn, card, source, search_pass):
@@ -194,7 +195,7 @@ class Collector:
         state = session.open(NEGOTIATIONS_URL)
         self._note_user_type(user_type(state))
         items = parse_negotiations(state)
-        with self.conn:
+        with transaction(self.conn):
             for n in items:
                 repo.mark_applied(self.conn, n.hh_id, has_chat=n.has_messages, title=n.title, employer=n.employer)
         self.stats.applied_synced = len(items)
