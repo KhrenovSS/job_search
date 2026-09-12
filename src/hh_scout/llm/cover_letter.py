@@ -23,7 +23,7 @@ from hh_scout.pipeline import repo
 log = logging.getLogger(__name__)
 
 MIN_CHARS = 400
-MAX_CHARS = 2800  # v8.3: the mandatory money paragraph adds ~250 chars to letters that averaged 1860
+MAX_CHARS = 3200  # v8.5: the experience block is the core and runs 4–6 bullets; the cap only guards against rambling
 MAX_DESCRIPTION_CHARS = 6000
 # the vacancy asks the applicant to name a figure; the letter answers "по объёму задач", never a number
 ASKS_SALARY_PHRASES = (
