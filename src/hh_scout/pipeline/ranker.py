@@ -14,7 +14,8 @@ from hh_scout.hh.salary import human_from_raw
 
 WORK_FORMAT_RU = {"remote": "🏠 удалёнка", "hybrid": "гибрид", "office": "🏢 офис", "field": "🚗 разъездная", "unknown": None}
 EMPLOYMENT_RU = {"full": "штат", "part": "частичная занятость", "project": "📄 проектная работа", "fly_in_fly_out": "вахта", "unknown": None}
-IP_RU = {"yes": "да", "maybe": "возможно", "no": "нет"}
+IP_RU = {"yes": "да", "maybe": "не указано", "no": "нет"}  # "maybe" = the vacancy says nothing, not "probably yes"
+CONTRACT_RU = {"INDIVIDUAL_ENTREPRENEUR": "ИП", "SELF_EMPLOYED": "самозанятый", "INDIVIDUAL_PERSON": "физлицо"}
 COMPANY_RU = {"integrator": "интегратор", "manufacturer": "производитель оборудования", "end_customer": "конечный заказчик",
               "agency": "агентство", "unknown": None}
 
@@ -32,7 +33,11 @@ def format_card(position: int, v: sqlite3.Row, e: sqlite3.Row) -> str:
     head = f"<b>{position}. {_esc(v['title'])}</b> — {_esc(who)}" + (f" ({kind})" if kind and not profi else "")
     facts = ["🛠 заказ на profi.ru" if profi else None, f"💰 {human_from_raw(salary_raw)}", WORK_FORMAT_RU.get(v["work_format"]),
              f"📍 {v['area_name']}" if v["area_name"] else None, EMPLOYMENT_RU.get(v["employment"] or "unknown")]
-    lead_bits = [f"🤝 ИП/ГПХ: {IP_RU.get(e['ip_gph_possible'], e['ip_gph_possible'])}"]
+    lead_bits = []
+    hh_note = hh_contract_note(v)
+    if hh_note:
+        lead_bits.append(hh_note)
+    lead_bits.append(f"🤝 ИП/ГПХ: {IP_RU.get(e['ip_gph_possible'], e['ip_gph_possible'])}")
     if e["is_agency"]:
         lead_bits.append("🏷 агентство")
     flags = json.loads(e["red_flags"]) if e["red_flags"] else []
@@ -56,6 +61,25 @@ def format_letter(employer: str | None, text: str, site: str = "hh") -> str:
     if site == "profi":
         return f"✉️ Предложение для «{_esc(employer or 'заказчика')}» (profi.ru):\n<pre>{_esc(text)}</pre>"
     return f"✉️ Отклик для «{_esc(employer or 'компании')}»:\n<pre>{_esc(text)}</pre>"
+
+
+def _row_get(row: sqlite3.Row, column: str):
+    """Column value, or None for rows built without it (old fixtures, ad-hoc SELECTs)."""
+    try:
+        return row[column]
+    except (IndexError, KeyError):
+        return None
+
+
+def hh_contract_note(row: sqlite3.Row) -> str | None:
+    """What hh itself says about the contract form — a fact from the site, not the model's guess."""
+    raw = _row_get(row, "civil_law_contracts")
+    forms = [CONTRACT_RU[c] for c in (json.loads(raw) if raw else []) if c in CONTRACT_RU]
+    if forms:
+        return "✅ hh: оформление — " + ", ".join(forms)
+    if _row_get(row, "accept_temporary"):
+        return "✅ hh: оформление по ГПХ/совместительству"
+    return None
 
 
 def row_site(row: sqlite3.Row) -> str:

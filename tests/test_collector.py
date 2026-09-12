@@ -15,12 +15,14 @@ def _card(i, applied=False):
                        published_at="2026-09-08T10:00:00+03:00", applied=applied)
 
 
-def _search_state(ids, has_next, page=0, user="applicant"):
+def _search_state(ids, has_next, page=0, user="applicant", accept_temporary=False):
     return {"userType": user, "vacancySearchResult": {
         "criteria": {"page": page}, "totalResults": 999,
         "paging": {"next": {"page": page + 1, "disabled": not has_next}} if has_next else None,
         "vacancies": [{"vacancyId": i, "name": f"Инженер {i}", "company": {"name": "ООО"}, "area": {"name": "Москва"},
                        "workFormats": [{"workFormatsElement": ["ON_SITE"]}], "employmentForm": "FULL",
+                       "acceptTemporary": accept_temporary,
+                       "civilLawContracts": [{"civilLawContractsElement": ["INDIVIDUAL_ENTREPRENEUR"]}] if accept_temporary else [{}],
                        "compensation": {"noCompensation": {}}, "publicationTime": {"$": "2026-09-08T10:00:00+03:00"}} for i in ids]}}
 
 
@@ -52,6 +54,8 @@ class FakeSession:
         if "negotiations" in url:
             return NEGOTIATIONS_STATE
         page = int(url.split("&page=")[1].split("&")[0]) if "&page=" in url else 0
+        if "accept_temporary=true" in url:  # gph pass: hh's own "ГПХ или совместительство" filter
+            return _search_state([4001], has_next=False, accept_temporary=True)
         if "employment_form" in url:  # project pass: single page, includes an already-known id
             return _search_state([77, 3001, 3002], has_next=False)
         if "work_format=REMOTE" in url:
@@ -78,18 +82,20 @@ def _make(monkeypatch, budget=60):
     return c, conn, loads
 
 
-def test_plan_tasks_covers_three_passes_per_query():
+def test_plan_tasks_covers_four_passes_per_query():
     tasks = plan_tasks([1, 2019], queries=("a", "b"), rng=random.Random(1))
-    assert len(tasks) == 6
-    assert {t.search_pass for t in tasks} == {"regional", "remote", "project"}
+    assert len(tasks) == 8
+    assert {t.search_pass for t in tasks} == {"regional", "remote", "project", "gph"}
     assert all(t.areas == (1, 2019) for t in tasks if t.search_pass == "regional")
+    gph = [t for t in tasks if t.search_pass == "gph"]
+    assert len(gph) == 2 and all(t.accept_temporary for t in gph)
 
 
 def test_collect_dedups_stops_early_and_syncs_negotiations(monkeypatch):
     c, conn, loads = _make(monkeypatch)
     stats = c.run()
-    # negotiations + regional pages 0,1,2 + remote + project = 6 loads; page 2 had nothing new -> stop
-    assert stats.page_loads == 6 and stats.bursts >= 1
+    # negotiations + regional pages 0,1,2 + remote + project + gph = 7 loads; page 2 had nothing new -> stop
+    assert stats.page_loads == 7 and stats.bursts >= 1
     assert sum("negotiations" in u for u in loads) == 1
     assert stats.applied_synced == 2
     rows = {r["hh_id"]: r for r in conn.execute("SELECT * FROM vacancies")}
@@ -99,8 +105,12 @@ def test_collect_dedups_stops_early_and_syncs_negotiations(monkeypatch):
     assert rows["77"]["status"] == "skipped" and rows["77"]["search_pass"] == "negotiations"
     assert rows["5000"]["search_pass"] == "similar" and rows["5000"]["status"] == "new"
     assert rows["1002"]["status"] == "new" and rows["2001"]["search_pass"] == "remote"
+    # the gph pass stores hh's own ГПХ flag; vacancies from other passes keep 0
+    assert rows["4001"]["search_pass"] == "gph" and rows["4001"]["accept_temporary"] == 1
+    assert rows["4001"]["civil_law_contracts"] == '["INDIVIDUAL_ENTREPRENEUR"]'
+    assert rows["2001"]["accept_temporary"] == 0 and rows["2001"]["civil_law_contracts"] is None
     assert rows["3001"]["search_pass"] == "project"
-    assert stats.new_vacancies == 7  # 1002,1003,1004 + 2001 + 3001,3002 + 5000 (1001 and 77 came in as applied stubs)
+    assert stats.new_vacancies == 8  # 1002,1003,1004 + 2001 + 3001,3002 + 4001 + 5000 (1001 and 77 came in as applied stubs)
     # second run adds nothing
     c2, _, _ = _make(monkeypatch)
     c2.conn = conn

@@ -17,12 +17,17 @@
   страница; иначе `pages[] {page, selected}`, `next`), `vacancies[]`:
   `vacancyId`, `name`, `compensation {from, to, currencyCode, gross, mode}`, `area {@id, name}`,
   `company {id, name, visibleName, @trusted}`, `workFormats[] {workFormatsElement[]}` (ON_SITE/REMOTE/HYBRID/FIELD_WORK),
-  `employmentForm` (FULL/PART/PROJECT/…), `publicationTime {$ iso, @timestamp}`, `links.desktop`,
+  `employmentForm` (FULL/PART/PROJECT/…), `acceptTemporary` (bool), `civilLawContracts[] {civilLawContractsElement[]}`
+  (SELF_EMPLOYED/INDIVIDUAL_ENTREPRENEUR/INDIVIDUAL_PERSON), `publicationTime {$ iso, @timestamp}`, `links.desktop`,
   `userLabels[]` (метки пользователя; признак отклика ищет `hh_pages._labels_mean_applied`), `responsesCount`.
 
 **Вакансия** `https://hh.ru/vacancy/{id}` → `vacancyView`: `description` (HTML), `keySkills.keySkill[]`,
 `status {active, archived, disabled}`, `compensation`, `workFormats[]` (плоский список), `employmentForm`,
-`area {@id, name}`, `publicationDate`, `company`, `userLabels`, `address`, `workExperience`.
+`civilLawContracts[]` (плоский список), `acceptLaborContract`, `area {@id, name}`, `publicationDate`, `company`,
+`userLabels`, `address`, `workExperience`.
+**Внимание:** `acceptTemporary` в `vacancyView` **нет** — он лежит в
+`applicantVacancyResponseStatuses.<id>.shortVacancy.acceptTemporary` (там же полная короткая карточка).
+`hh_pages._accept_temporary` читает оттуда, а при отсутствии блока выводит флаг из непустого `civilLawContracts`.
 
 **Отклики** `https://hh.ru/applicant/negotiations?filter=all` (проверено в залогиненном браузере 2026-09-08):
 `userType == "applicant"`; `applicantNegotiations.topicList[] {vacancyId, lastState (RESPONSE/INTERVIEW/DISCARD/…),
@@ -36,6 +41,8 @@ initialState, conversationMessagesCount, hasNewMessages, archived, resumeId, cha
 - `text` — язык запросов hh: `OR`, `AND`, кавычки, скобки; `no_magic=true` — не переписывать запрос.
 - `area` — id региона, **повторяемый** (`area=1&area=2019`).
 - `work_format=REMOTE|HYBRID|ON_SITE|FIELD_WORK`; `employment_form=FULL|PART|PROJECT|FLY_IN_FLY_OUT|SIDE_JOB` (повторяемые).
+- `accept_temporary=true` — фильтр hh «Оформление по ГПХ или по совместительству» (проход `gph`, v8.2).
+  Название и параметр подтверждены эхом фильтров на странице поиска: `accept_temporary.groups.true.title`.
 - `search_period=2` (дней), `order_by=publication_time`, `items_on_page=50`, `page=0..`.
 - `search_field=name|company_name|description` (по умолчанию все).
 

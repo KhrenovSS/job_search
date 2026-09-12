@@ -88,6 +88,11 @@ def vacancy_payload(row: sqlite3.Row) -> dict:
     if site == "profi":
         payload.update({"client": raw.get("client"), "budget": raw.get("budget"), "when": raw.get("when"),
                         "posted": raw.get("posted")})
+    else:
+        # hh's own "Оформление по ГПХ или по совместительству" flag and the pass that found the vacancy
+        payload.update({"accept_temporary": bool(row["accept_temporary"]),
+                        "civil_law_contracts": json.loads(row["civil_law_contracts"] or "[]"),
+                        "search_pass": row["search_pass"]})
     return payload
 
 

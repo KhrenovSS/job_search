@@ -4,7 +4,8 @@
 `PRAGMA user_version`; применённые не редактировать, только добавлять: `_m001_initial` (таблицы),
 `_m002_triage_columns` (`vacancies.triage_priority`, `triage_note`), `_m003_lead_scoring` (`evaluations.role_score`,
 `lead_score`, `company_kind`, `pitch_hint`), `_m004_cover_letters`, `_m005_lead_actions` (`lead_actions`,
-`digest_items.letter_message_id`). Время — TEXT ISO-8601 UTC.
+`digest_items.letter_message_id`), `_m006_site`, `_m007_employer_id`, `_m008_accept_temporary`
+(`vacancies.accept_temporary`, `civil_law_contracts`). Время — TEXT ISO-8601 UTC.
 Весь SQL — в `src/hh_scout/pipeline/repo.py`.
 
 | Таблица | Назначение |
@@ -49,11 +50,17 @@
 - `site` (v7, `_m006`): `hh` (по умолчанию) / `profi`. Заказы profi.ru: `hh_id = 'profi:<номер заказа>'` — глобальный `UNIQUE`
   остаётся, коллизий с hh нет; `employer` = имя клиента, `employment = project`, `raw_json = {description, budget, when, client,
   posted, work_format, city, site}`, `salary_raw = {"profi_budget": "до 5000 ₽", from, to, …}`; статус сразу `prefiltered`.
-- `source`: `search:<idx>` / `similar_to_resume` / `negotiations` / `profi`; `search_pass`: regional / remote / project / similar /
-  negotiations / profi.
+- `source`: `search:<idx>` / `similar_to_resume` / `negotiations` / `profi`; `search_pass`: regional / remote / project / **gph**
+  (v8.2, поиск с фильтром hh `accept_temporary=true`) / similar / negotiations / profi.
+- `accept_temporary`, `civil_law_contracts` (v8.2, `_m008`) — **что о форме оформления говорит сам hh.ru**, а не ИИ по тексту:
+  `accept_temporary` 0/1 — отметка «Оформление по ГПХ или по совместительству» (`acceptTemporary`);
+  `civil_law_contracts` — JSON-список форм помимо ТК РФ (`INDIVIDUAL_ENTREPRENEUR` — ИП, `SELF_EMPLOYED` — самозанятый,
+  `INDIVIDUAL_PERSON` — физлицо) или NULL. Пишутся из карточки поиска и со страницы вакансии (`accept_temporary` через
+  `MAX`, список через `COALESCE` — флаг, увиденный однажды, не теряется). **Бэкфилла нет**: до v8.2 поля не сохранялись,
+  старые строки остаются 0/NULL и наполняются при новом сборе. У profi.ru — всегда 0/NULL (поля hh, к заказам не относятся).
 - `raw_json`: **урезанный** `vacancyView` (`repo.DETAIL_KEYS`: vacancyId, name, description, keySkills, compensation,
   workFormats, employmentForm, area, status, publicationDate, workExperience, workScheduleByDays, workingHours,
-  closedForApplicants, userLabels + company{id,name,visibleName,@trusted}, address{city,street,building,displayName}).
+  closedForApplicants, userLabels, civilLawContracts + company{id,name,visibleName,@trusted}, address{city,street,building,displayName}).
 - `applied`, `has_chat`: из страницы откликов; `triage_priority`, `triage_note`: от триажа.
 - `employer_id` (v8, `_m007`): hh.ru `company.id` строкой — ключ «одна компания — один лид»; пишется из карточки поиска и со
   страницы вакансии, для старых строк заполнен из `raw_json.company.id`; у карточек до v8 и у profi.ru — NULL (тогда сравнение

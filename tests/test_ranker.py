@@ -19,6 +19,22 @@ def _row(**kw):
     return conn.execute(f"SELECT {', '.join('? AS ' + k for k in kw)}", list(kw.values())).fetchone()
 
 
+def test_card_shows_hh_gph_flag_when_set():
+    """hh said "Оформление по ГПХ или по совместительству" — show it as a fact, above the model's guess."""
+    v = _row(title="Программист ПЛК", employer="ООО", work_format="remote", employment="project",
+             area_name="Москва", url="https://hh.ru/vacancy/2", salary_raw=None, accept_temporary=1,
+             civil_law_contracts=json.dumps(["INDIVIDUAL_ENTREPRENEUR", "SELF_EMPLOYED"]))
+    e = _row(total=80, tech_score=90, role_score=80, lead_score=60, ip_gph_possible="yes", is_agency=0,
+             company_kind="integrator", verdict="Нужен программист", pitch_hint=None, red_flags=None)
+    card = format_card(1, v, e)
+    assert "✅ hh: оформление — ИП, самозанятый · 🤝 ИП/ГПХ: да" in card
+
+    # flag without the explicit list falls back to the generic wording
+    bare = _row(title="Программист ПЛК", employer="ООО", work_format="remote", employment="project",
+                area_name="Москва", url="https://hh.ru/vacancy/3", salary_raw=None, accept_temporary=1)
+    assert "✅ hh: оформление по ГПХ/совместительству" in format_card(1, bare, e)
+
+
 def test_card_shows_lead_fields_and_hides_salary_weight():
     v = _row(title="Инженер-программист АСУ ТП", employer="Компания <X>", work_format="office", employment="full",
              area_name="Королёв", url="https://hh.ru/vacancy/1",
@@ -29,7 +45,8 @@ def test_card_shows_lead_fields_and_hides_salary_weight():
     card = format_card(1, v, e)
     assert "<b>1. Инженер-программист АСУ ТП</b> — Компания &lt;X&gt; (интегратор)" in card
     assert "120–160 тыс. ₽ на руки" in card and "🏢 офис" in card and "штат" in card
-    assert "🤝 ИП/ГПХ: возможно · 🏷 агентство" in card
+    assert "🤝 ИП/ГПХ: не указано · 🏷 агентство" in card  # "maybe" = the vacancy says nothing
+    assert "оформление по ГПХ" not in card  # no hh flag -> no line
     assert "⭐ Лид: <b>78/100</b> (техника 90 · роль 80 · лид 50)" in card
     assert "✉️ Зацепка: Предложить доработку программ" in card
     assert "⚠️ агентство" in card and card.endswith("https://hh.ru/vacancy/1")

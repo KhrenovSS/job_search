@@ -4,6 +4,7 @@ from hh_scout.browser.hh_pages import (
     PageFormatError,
     build_search_url,
     extract_initial_state,
+    normalize_civil_law_contracts,
     normalize_employment,
     normalize_work_format,
     parse_negotiations,
@@ -41,6 +42,15 @@ def test_search_page_parses_cards(search_state):
     assert any(c.employment == "part" for c in sp.cards)  # SIDE_JOB -> part
 
 
+def test_cards_carry_hh_contract_forms(search_state):
+    """What hh itself says about the contract form — the only machine-readable ГПХ/ИП signal."""
+    cards = {c.hh_id: c for c in parse_search(search_state).cards}
+    assert cards["136519902"].accept_temporary is True
+    assert cards["136519902"].civil_law_contracts == ("INDIVIDUAL_ENTREPRENEUR", "SELF_EMPLOYED", "INDIVIDUAL_PERSON")
+    assert cards["137047565"].accept_temporary is False  # the fixture has both values
+    assert cards["137047565"].civil_law_contracts == ()
+
+
 def test_search_page_criteria_echo(search_state):
     sp = parse_search(search_state)
     assert sp.criteria.get("text") == "CODESYS"
@@ -73,6 +83,9 @@ def test_vacancy_page(vacancy_state):
     assert d.hh_id == "136519902"
     assert d.employer == "Амперика" and d.employer_id == "9070507" and d.area_name == "Москва"
     assert d.work_format == "office" and d.employment == "full"
+    # the page keeps the flag outside vacancyView, in the response-status block
+    assert d.accept_temporary is True
+    assert d.civil_law_contracts == ("INDIVIDUAL_ENTREPRENEUR", "SELF_EMPLOYED", "INDIVIDUAL_PERSON")
     assert d.archived is False and d.applied is False and d.closed_for_applicants is False
     assert "CODESYS" in d.key_skills and "SCADA" in d.key_skills
     assert "<" not in d.description_text and len(d.description_text) > 1000
@@ -90,6 +103,14 @@ def test_normalizers():
     assert normalize_employment("PROJECT") == "project"
     assert normalize_employment({"@type": "FULL"}) == "full"
     assert normalize_employment("WEIRD") == "unknown"
+
+
+def test_normalize_civil_law_contracts():
+    # the vacancy page states them flat, search cards wrap them like workFormats
+    assert normalize_civil_law_contracts(["SELF_EMPLOYED", "INDIVIDUAL_ENTREPRENEUR"]) == ("INDIVIDUAL_ENTREPRENEUR", "SELF_EMPLOYED")
+    assert normalize_civil_law_contracts([{"civilLawContractsElement": ["INDIVIDUAL_PERSON"]}]) == ("INDIVIDUAL_PERSON",)
+    assert normalize_civil_law_contracts([{}]) == ()
+    assert normalize_civil_law_contracts(None) == ()
 
 
 def test_clean_text():
@@ -111,6 +132,8 @@ def test_build_search_url():
     assert "employment_form=PROJECT&employment_form=PART" in url
     assert "search_period=2" in url and "items_on_page=50" in url and "page=1" in url
     assert "no_magic=true" in url and "order_by=publication_time" in url
+    assert "accept_temporary" not in url  # not requested -> not in the query
+    assert "accept_temporary=true" in build_search_url("x", accept_temporary=True)
     assert "&page=" not in build_search_url("x")
     assert vacancy_url(42) == "https://hh.ru/vacancy/42"
 

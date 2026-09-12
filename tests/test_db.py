@@ -15,7 +15,7 @@ def test_migrations_create_schema_and_are_idempotent():
 
 def test_m006_adds_site_with_hh_default():
     conn = connect(":memory:")
-    assert migrate(conn) == 7
+    assert migrate(conn) == len(MIGRATIONS)
     cols = {r[1]: r for r in conn.execute("PRAGMA table_info(vacancies)")}
     assert cols["site"][4] == "'hh'"  # default value
     conn.execute("INSERT INTO vacancies(hh_id, title, url, source, search_pass, status, first_seen_at, updated_at) "
@@ -44,9 +44,23 @@ def test_m007_backfills_employer_id_from_stored_vacancy_view():
                  "VALUES ('profi:5','profi','t','Сергей','u','profi','profi','evaluated','{\"client\": \"Сергей\"}','x','x')")
     conn.execute("INSERT INTO vacancies(hh_id, title, employer, url, source, search_pass, status, first_seen_at, updated_at) "
                  "VALUES ('2','t','ООО','u','s','regional','to_fetch','x','x')")
-    assert migrate(conn) == 7
+    assert migrate(conn) == len(MIGRATIONS)
     got = {r[0]: r[1] for r in conn.execute("SELECT hh_id, employer_id FROM vacancies")}
     assert got == {"1": "9070507", "profi:5": None, "2": None}
+
+
+def test_m008_adds_accept_temporary_without_backfill():
+    """The flag was never stored before v8.2, so old rows stay 0 and fill in on the next crawl."""
+    conn = connect(":memory:")
+    for step in MIGRATIONS[:7]:
+        step(conn)
+    conn.execute("PRAGMA user_version = 7")
+    conn.execute("INSERT INTO vacancies(hh_id, title, url, source, search_pass, status, first_seen_at, updated_at) "
+                 "VALUES ('1','t','u','s','regional','evaluated','x','x')")
+    assert migrate(conn) == len(MIGRATIONS)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(vacancies)")}
+    assert {"accept_temporary", "civil_law_contracts"} <= cols
+    assert conn.execute("SELECT accept_temporary, civil_law_contracts FROM vacancies").fetchone()[:] == (0, None)
 
 
 

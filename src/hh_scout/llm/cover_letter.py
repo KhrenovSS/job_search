@@ -66,6 +66,8 @@ def letter_payload(row: sqlite3.Row) -> dict:
         "employer": row["employer"],
         "company_kind": row["company_kind"],
         "employment": row["employment"],
+        "accept_temporary": bool(row["accept_temporary"]),
+        "civil_law_contracts": json.loads(row["civil_law_contracts"] or "[]"),
         "ip_gph_possible": row["ip_gph_possible"],
         "description": desc[:MAX_DESCRIPTION_CHARS],
         "key_skills": skills or [],

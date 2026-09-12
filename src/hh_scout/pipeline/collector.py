@@ -41,6 +41,7 @@ log = logging.getLogger(__name__)
 PASS_REGIONAL = "regional"
 PASS_REMOTE = "remote"
 PASS_PROJECT = "project"
+PASS_GPH = "gph"          # hh filter "Оформление по ГПХ или по совместительству"
 PASS_SIMILAR = "similar"
 
 
@@ -52,6 +53,7 @@ class SearchTask:
     areas: tuple[int, ...] = ()
     work_formats: tuple[str, ...] = ()
     employment_forms: tuple[str, ...] = ()
+    accept_temporary: bool = False
     next_page: int = 0
     done: bool = False
 
@@ -84,6 +86,7 @@ def plan_tasks(region_ids: list[int], queries: tuple[str, ...] | None = None, rn
         tasks.append(SearchTask(PASS_REGIONAL, i, q, areas=tuple(region_ids)))
         tasks.append(SearchTask(PASS_REMOTE, i, q, work_formats=("REMOTE",)))
         tasks.append(SearchTask(PASS_PROJECT, i, q, employment_forms=("PROJECT", "PART")))
+        tasks.append(SearchTask(PASS_GPH, i, q, accept_temporary=True))
     rng.shuffle(tasks)
     return tasks
 
@@ -160,6 +163,7 @@ class Collector:
         task = pending[0]
         url = build_search_url(
             task.query, areas=task.areas, work_formats=task.work_formats, employment_forms=task.employment_forms,
+            accept_temporary=task.accept_temporary,
             period_days=self.s.search_period_days, page=task.next_page, items_on_page=self.s.items_per_page,
         )
         state = session.open(url)  # may raise PageBudgetExceeded -> handled by run_in_bursts

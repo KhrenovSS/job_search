@@ -223,6 +223,18 @@ def _m007_employer_id(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX idx_vacancies_employer ON vacancies(employer)")
 
 
+def _m008_accept_temporary(conn: sqlite3.Connection) -> None:
+    """v8.2: what hh itself says about the contract form, instead of guessing it from the description.
+
+    `accept_temporary` — the hh search filter "Оформление по ГПХ или по совместительству";
+    `civil_law_contracts` — JSON list of forms besides ТК РФ the employer accepts
+    (SELF_EMPLOYED / INDIVIDUAL_ENTREPRENEUR / INDIVIDUAL_PERSON).
+    No backfill: neither was ever stored, old rows stay empty and fill in on the next crawl.
+    """
+    conn.execute("ALTER TABLE vacancies ADD COLUMN accept_temporary INTEGER NOT NULL DEFAULT 0")
+    conn.execute("ALTER TABLE vacancies ADD COLUMN civil_law_contracts TEXT")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m001_initial,
     _m002_triage_columns,
@@ -231,6 +243,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m005_lead_actions,
     _m006_site,
     _m007_employer_id,
+    _m008_accept_temporary,
 ]
 
 

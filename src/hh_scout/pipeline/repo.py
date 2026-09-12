@@ -34,10 +34,12 @@ def insert_card(conn: sqlite3.Connection, card: VacancyCard, source: str, search
         status, reason = ("skipped", "archived")
     conn.execute(
         """INSERT INTO vacancies(hh_id, title, employer, employer_id, url, area_name, work_format, employment,
+                                 accept_temporary, civil_law_contracts,
                                  salary_from, salary_to, salary_raw, published_at, source, search_pass,
                                  status, skip_reason, applied, first_seen_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (card.hh_id, card.title, card.employer, card.employer_id, card.url, card.area_name, card.work_format, card.employment,
+         int(card.accept_temporary), _contracts_json(card.civil_law_contracts),
          sal.from_net, sal.to_net, json.dumps(card.compensation, ensure_ascii=False) if card.compensation else None,
          card.published_at, source, search_pass, status, reason, int(card.applied), now, now),
     )
@@ -108,7 +110,7 @@ def save_triage(conn: sqlite3.Connection, hh_id: str, *, open_it: bool, priority
 
 DETAIL_KEYS = ("vacancyId", "name", "description", "keySkills", "compensation", "workFormats", "employmentForm",
                "area", "status", "publicationDate", "workExperience", "workScheduleByDays", "workingHours",
-               "closedForApplicants", "userLabels")
+               "closedForApplicants", "userLabels", "civilLawContracts")
 
 
 def trim_vacancy_view(raw: dict[str, Any]) -> dict[str, Any]:
@@ -118,6 +120,11 @@ def trim_vacancy_view(raw: dict[str, Any]) -> dict[str, Any]:
     addr = raw.get("address") if isinstance(raw.get("address"), dict) else {}
     out["address"] = {k: addr.get(k) for k in ("city", "street", "building", "displayName") if k in addr}
     return out
+
+
+def _contracts_json(values: tuple[str, ...]) -> str | None:
+    """hh's `civilLawContracts` as stored text; None keeps whatever an earlier page already saw."""
+    return json.dumps(list(values), ensure_ascii=False) if values else None
 
 
 def save_details(conn: sqlite3.Connection, detail: VacancyDetail) -> str:
@@ -133,11 +140,14 @@ def save_details(conn: sqlite3.Connection, detail: VacancyDetail) -> str:
         """UPDATE vacancies SET raw_json = ?, title = COALESCE(NULLIF(?, ''), title), employer = COALESCE(?, employer),
                   employer_id = COALESCE(?, employer_id),
                   area_name = COALESCE(?, area_name), work_format = ?, employment = ?,
+                  accept_temporary = MAX(accept_temporary, ?),
+                  civil_law_contracts = COALESCE(?, civil_law_contracts),
                   salary_from = ?, salary_to = ?, salary_raw = COALESCE(?, salary_raw),
                   applied = MAX(applied, ?), status = ?, skip_reason = ?, updated_at = ?
            WHERE hh_id = ?""",
         (json.dumps(trim_vacancy_view(detail.raw), ensure_ascii=False), detail.title, detail.employer, detail.employer_id, detail.area_name,
-         detail.work_format, detail.employment, sal.from_net, sal.to_net,
+         detail.work_format, detail.employment,
+         int(detail.accept_temporary), _contracts_json(detail.civil_law_contracts), sal.from_net, sal.to_net,
          json.dumps(detail.compensation, ensure_ascii=False) if detail.compensation else None,
          int(detail.applied), status, reason, utcnow(), detail.hh_id),
     )

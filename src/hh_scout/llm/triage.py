@@ -48,6 +48,8 @@ def card_payload(row: sqlite3.Row) -> dict:
         "area": row["area_name"],
         "work_format": row["work_format"],
         "employment": row["employment"],
+        "accept_temporary": bool(row["accept_temporary"]),
+        "civil_law_contracts": json.loads(row["civil_law_contracts"] or "[]"),
         "salary": normalize(json.loads(row["salary_raw"]) if row["salary_raw"] else None).human(),
         "search_pass": row["search_pass"],
         "published_at": (row["published_at"] or "")[:10],

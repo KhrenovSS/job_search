@@ -59,6 +59,7 @@ def build_search_url(
     areas: Iterable[int] = (),
     work_formats: Iterable[str] = (),
     employment_forms: Iterable[str] = (),
+    accept_temporary: bool = False,
     period_days: int = 2,
     page: int = 0,
     items_on_page: int = 50,
@@ -73,6 +74,8 @@ def build_search_url(
     params += [("area", str(a)) for a in areas]
     params += [("work_format", w) for w in work_formats]
     params += [("employment_form", e) for e in employment_forms]
+    if accept_temporary:
+        params.append(("accept_temporary", "true"))
     if page:
         params.append(("page", str(page)))
     return f"{BASE_URL}/search/vacancy?{urlencode(params)}"
@@ -104,6 +107,25 @@ def normalize_work_format(raw: Any) -> str:
         if key in values:
             return _WORK_FORMAT_NAMES[key]
     return "unknown"
+
+
+# ИП first: that is the owner's own form, and the order below is the order shown in the digest card
+_CIVIL_LAW_CONTRACTS = ("INDIVIDUAL_ENTREPRENEUR", "SELF_EMPLOYED", "INDIVIDUAL_PERSON")
+
+
+def normalize_civil_law_contracts(raw: Any) -> tuple[str, ...]:
+    """Contract forms besides ТК РФ the employer accepts.
+
+    hh states them as ['SELF_EMPLOYED', ...] on the vacancy page and as
+    [{'civilLawContractsElement': [...]}] in search cards — same shape trick as `workFormats`.
+    """
+    values: set[str] = set()
+    for item in raw or []:
+        if isinstance(item, str):
+            values.add(item)
+        elif isinstance(item, dict):
+            values.update(v for v in item.get("civilLawContractsElement", []) if isinstance(v, str))
+    return tuple(k for k in _CIVIL_LAW_CONTRACTS if k in values)
 
 
 def normalize_employment(raw: Any) -> str:
@@ -156,6 +178,8 @@ class VacancyCard:
     archived: bool = False
     labels: list[str] = field(default_factory=list)
     employer_id: str | None = None  # hh.ru company.id — stable key for "one lead per company"
+    accept_temporary: bool = False  # hh filter "Оформление по ГПХ или по совместительству"
+    civil_law_contracts: tuple[str, ...] = ()  # SELF_EMPLOYED / INDIVIDUAL_ENTREPRENEUR / INDIVIDUAL_PERSON
 
 
 @dataclass
@@ -207,6 +231,8 @@ def _card_from_raw(v: dict[str, Any], user_labels_map: dict[str, Any]) -> Vacanc
         archived=bool(v.get("@isArchived") or v.get("isArchived") or v.get("archived")),
         labels=[json.dumps(x, ensure_ascii=False) if not isinstance(x, str) else x for x in labels],
         employer_id=_company_id(v.get("company")),
+        accept_temporary=bool(v.get("acceptTemporary")),
+        civil_law_contracts=normalize_civil_law_contracts(v.get("civilLawContracts")),
     )
 
 
@@ -269,6 +295,17 @@ class VacancyDetail:
     closed_for_applicants: bool
     raw: dict[str, Any]
     employer_id: str | None = None
+    accept_temporary: bool = False  # hh filter "Оформление по ГПХ или по совместительству"
+    civil_law_contracts: tuple[str, ...] = ()  # SELF_EMPLOYED / INDIVIDUAL_ENTREPRENEUR / INDIVIDUAL_PERSON
+
+
+def _accept_temporary(state: dict[str, Any], vv: dict[str, Any], hh_id: str) -> bool:
+    """hh keeps the flag in the response-status block, not in `vacancyView`; the contract list is the fallback."""
+    statuses = state.get("applicantVacancyResponseStatuses")
+    short = ((statuses or {}).get(hh_id) or {}).get("shortVacancy") if isinstance(statuses, dict) else None
+    if isinstance(short, dict) and "acceptTemporary" in short:
+        return bool(short["acceptTemporary"])
+    return bool(normalize_civil_law_contracts(vv.get("civilLawContracts")))
 
 
 def parse_vacancy(state: dict[str, Any]) -> VacancyDetail:
@@ -298,6 +335,8 @@ def parse_vacancy(state: dict[str, Any]) -> VacancyDetail:
         closed_for_applicants=bool(vv.get("closedForApplicants")),
         raw=vv,
         employer_id=_company_id(vv.get("company")),
+        accept_temporary=_accept_temporary(state, vv, str(vv["vacancyId"])),
+        civil_law_contracts=normalize_civil_law_contracts(vv.get("civilLawContracts")),
     )
 
 

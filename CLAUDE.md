@@ -70,7 +70,8 @@ src/hh_scout/
   profi/           pages.py — лента заказов profi.ru из DOM кабинета (OrderCard, parse_orders, ProfiBlocked); v7, PROFI_ENABLED
   llm/             bridge_client.py · prompts.py (сборка промптов) · schemas.py · triage.py (карточки → открывать?)
                    evaluator.py (лид: техника/роль/лид) · cover_letter.py (письмо на лид)
-  pipeline/        repo.py (весь SQL) · budget.py (дневной лимит) · collector.py · prefilter.py · details.py · ranker.py (total, карточка)
+  pipeline/        repo.py (весь SQL) · budget.py (дневной лимит) · collector.py (4 прохода: regional/remote/project/gph) ·
+                   prefilter.py · details.py · ranker.py (total, карточка)
                    digest_builder.py · dedup.py (одна компания — один лид) · run.py (оркестратор одного прогона)
   bot/             app.py (только владелец) · handlers.py (команды: /start=/help /status /digest /crawl [N] /next /pause /resume
                    /skipped /letter /inbox /done /cleanup) · digest.py · feedback.py (кнопки 👍/👎/✅/⏸) · lead_actions.py
@@ -110,3 +111,6 @@ data/              hh_scout.db (WAL), logs/ — в .gitignore
 Формат карточки и письма — `pipeline/ranker.py`. Расписание — `scheduler.py`. Запросы/регионы/стоп-слова — `config.py`;
 порог, веса, лимиты, окна подходов, ритм серий, время дайджеста — `.env` (`.env.example` перечисляет всё). Что считается лидом —
 `prompts/vacancy_evaluation.md` + `prompts/candidate_profile.md`. Схема БД — `db.py`, перечисления — `docs/DATABASE.md`.
+Возможность ГПХ/ИП — **факт от hh**, а не мнение модели: `vacancies.accept_temporary` и `civil_law_contracts` (ИП /
+самозанятый / физлицо) из `browser/hh_pages.py`; `ip_gph_possible = "не указано"` в карточке означает, что вакансия
+об этом молчит. Штатная вакансия при этом остаётся полноценным лидом.
