@@ -23,8 +23,15 @@ from hh_scout.pipeline import repo
 log = logging.getLogger(__name__)
 
 MIN_CHARS = 400
-MAX_CHARS = 2500
+MAX_CHARS = 2800  # v8.3: the mandatory money paragraph adds ~250 chars to letters that averaged 1860
 MAX_DESCRIPTION_CHARS = 6000
+# the vacancy asks the applicant to name a figure; the letter answers "по объёму задач", never a number
+ASKS_SALARY_PHRASES = (
+    "ожидаемый уровень", "зарплатные ожидания", "зарплатных ожиданий", "зарплатные пожелания",
+    "ожидания по зарплате", "финансовые ожидания", "желаемый доход", "уровень дохода",
+    "желаемый уровень", "укажите желаемую", "укажите вилку", "желаемую заработную плату",
+    "salary expectation",
+)
 # profi.ru orders get a short bid, not a cover letter
 LETTER_PROMPTS = {"hh": "cover_letter.md", "profi": "profi_bid.md"}
 LENGTH_LIMITS = {"hh": (MIN_CHARS, MAX_CHARS), "profi": (150, 1200)}
@@ -41,13 +48,23 @@ class LetterStats:
     bridge_calls: int = 0
 
 
+def salary_stated(row: sqlite3.Row) -> bool:
+    """Whether the vacancy names any money at all.
+
+    Deliberately a flag, not the figure: the letter must never quote a sum, and all the model needs is
+    whether it can refer to "ваш бюджет" as a known thing. hh sends `{"noCompensation": …}` when it is silent.
+    """
+    raw = json.loads(row["salary_raw"]) if row["salary_raw"] else None
+    return bool(raw) and (raw.get("from") is not None or raw.get("to") is not None)
+
+
 def letter_payload(row: sqlite3.Row) -> dict:
     raw = json.loads(row["raw_json"]) if row["raw_json"] else {}
     skills = raw.get("keySkills")
     if isinstance(skills, dict):
         skills = skills.get("keySkill")
     desc = strip_html(raw.get("description"))
-    asks_salary = any(w in desc.lower() for w in ("ожидаемый уровень", "зарплатные ожидания", "укажите желаемую", "ожидания по зарплате"))
+    asks_salary = any(w in desc.lower() for w in ASKS_SALARY_PHRASES)
     if row_site(row) == "profi":
         return {
             "kind": "order",
@@ -69,6 +86,7 @@ def letter_payload(row: sqlite3.Row) -> dict:
         "accept_temporary": bool(row["accept_temporary"]),
         "civil_law_contracts": json.loads(row["civil_law_contracts"] or "[]"),
         "ip_gph_possible": row["ip_gph_possible"],
+        "salary_stated": salary_stated(row),
         "description": desc[:MAX_DESCRIPTION_CHARS],
         "key_skills": skills or [],
         "verdict": row["verdict"],

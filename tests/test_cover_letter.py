@@ -1,10 +1,12 @@
+import json
+
 import httpx
 import respx
 
 from hh_scout.config import Settings
 from hh_scout.db import connect, migrate
 from hh_scout.llm.bridge_client import BridgeClient
-from hh_scout.llm.cover_letter import CoverLetterWriter
+from hh_scout.llm.cover_letter import CoverLetterWriter, letter_payload
 from hh_scout.pipeline import repo
 
 
@@ -58,3 +60,56 @@ def test_too_short_letter_rejected(tmp_path):
     stats = CoverLetterWriter(s, conn, BridgeClient(s, sleep=lambda x: None)).run()
     assert stats.written == 0 and stats.failed == 2
     assert conn.execute("SELECT COUNT(*) FROM cover_letters").fetchone()[0] == 0
+
+
+def _payload_row(conn, vacancy_id):
+    return conn.execute(
+        """SELECT v.*, e.verdict, e.pitch_hint, e.company_kind, e.ip_gph_possible, e.employment_hint
+           FROM vacancies v JOIN evaluations e ON e.vacancy_id = v.id WHERE v.id = ?""", (vacancy_id,)).fetchone()
+
+
+def _set(conn, vacancy_id, **cols):
+    for k, v in cols.items():
+        conn.execute(f"UPDATE vacancies SET {k} = ? WHERE id = ?", (v, vacancy_id))
+
+
+def test_salary_stated_is_a_flag_not_a_figure():
+    """The letter must never quote a sum; it only needs to know whether "ваш бюджет" is a known thing."""
+    conn = _db()
+    _set(conn, 1, salary_raw=json.dumps({"from": 80000, "currencyCode": "RUR", "gross": True}))
+    assert letter_payload(_payload_row(conn, 1))["salary_stated"] is True
+    assert not any("80000" in str(v) for v in letter_payload(_payload_row(conn, 1)).values())
+
+    _set(conn, 1, salary_raw=json.dumps({"noCompensation": {}}))
+    assert letter_payload(_payload_row(conn, 1))["salary_stated"] is False
+
+    _set(conn, 1, salary_raw=None)
+    assert letter_payload(_payload_row(conn, 1))["salary_stated"] is False
+
+    _set(conn, 1, salary_raw=json.dumps({"to": 150000, "currencyCode": "RUR"}))  # upper bound only
+    assert letter_payload(_payload_row(conn, 1))["salary_stated"] is True
+
+
+def test_salary_note_catches_the_common_phrasings():
+    conn = _db()
+    asks = '{"description": "<p>Нужен ПЛК. В отклике укажите ваши финансовые ожидания.</p>"}'
+    _set(conn, 1, raw_json=asks)
+    assert letter_payload(_payload_row(conn, 1))["salary_note"] == "вакансия просит указать зарплатные ожидания"
+
+    _set(conn, 1, raw_json='{"description": "<p>Нужен ПЛК. Напишите желаемый доход.</p>"}')
+    assert letter_payload(_payload_row(conn, 1))["salary_note"] == "вакансия просит указать зарплатные ожидания"
+
+    _set(conn, 1, raw_json='{"description": "<p>Нужен программист ПЛК на CODESYS.</p>"}')
+    assert letter_payload(_payload_row(conn, 1))["salary_note"] == "зарплату не упоминать"
+
+
+def test_profi_bid_payload_has_its_own_budget_not_the_hh_flag():
+    conn = _db()
+    conn.execute("INSERT INTO vacancies(id,hh_id,site,title,employer,url,source,search_pass,status,raw_json,first_seen_at,updated_at) "
+                 "VALUES (9,'profi:1','profi','Наладить ПЛК','Сергей','u','profi','profi','evaluated',?,'t','t')",
+                 ('{"description": "нужен ПЛК", "budget": "до 5000 ₽"}',))
+    conn.execute("INSERT INTO evaluations(vacancy_id,tech_score,salary_score,format_score,role_score,lead_score,total,"
+                 "ip_gph_possible,is_agency,employment_hint,company_kind,verdict,pitch_hint,red_flags,created_at) "
+                 "VALUES (9,80,0,0,80,60,80,'yes',0,'project','end_customer','нужен ПЛК','предложить','[]','t')")
+    payload = letter_payload(_payload_row(conn, 9))
+    assert payload["budget"] == "до 5000 ₽" and "salary_stated" not in payload
