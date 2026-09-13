@@ -77,7 +77,8 @@ def _make(monkeypatch, budget=60):
     conn = connect(":memory:")
     migrate(conn)
     loads = []
-    settings = Settings(_env_file=None, daily_page_loads_min=budget, daily_page_loads_max=budget, max_pages_per_query=4)
+    settings = Settings(_env_file=None, daily_page_loads_min=budget, daily_page_loads_max=budget,
+                        max_pages_per_query=4, search_all_russia=False)
     c = Collector(settings, conn, session_factory=lambda b: FakeSession(b, loads), rng=random.Random(0), page_budget=budget)
     return c, conn, loads
 
@@ -144,3 +145,30 @@ def test_fail_stale_runs():
     assert repo.fail_stale_runs(conn, 3.0) == 1
     assert conn.execute("SELECT status FROM runs WHERE id = ?", (fresh,)).fetchone()["status"] == "running"
     assert conn.execute("SELECT status FROM runs WHERE id = 1").fetchone()["status"] == "failed"
+
+
+def test_geography_defaults_to_the_whole_country(monkeypatch):
+    """SEARCH_ALL_RUSSIA=true (default since 13.09): one area id 113 instead of 49 region ids.
+
+    The owner contracts remotely, so the client's region does not matter, and hh.ru takes the whole
+    country in the same single URL — widening the perimeter costs no extra page loads.
+    """
+    from hh_scout.hh.areas import RUSSIA_ID
+    from hh_scout.pipeline import collector as mod
+
+    called = []
+    monkeypatch.setattr(mod, "resolve_region_ids", lambda conn, s: called.append(1) or [1, 2019])
+    monkeypatch.setattr(mod, "SEARCH_QUERIES", ("Q",))
+    from hh_scout.browser import pacing
+    monkeypatch.setattr(pacing, "sleep", lambda s: None)
+    conn = connect(":memory:")
+    migrate(conn)
+    loads = []
+    s = Settings(_env_file=None, daily_page_loads_min=20, daily_page_loads_max=20, max_pages_per_query=4)
+    assert s.search_all_russia is True
+    c = Collector(s, conn, session_factory=lambda b: FakeSession(b, loads), rng=random.Random(0), page_budget=20)
+    c.run()
+    assert called == []  # the areas dictionary is not even consulted
+    regional = [u for u in loads if "area=" in u]
+    assert regional and all(f"area={RUSSIA_ID}" in u for u in regional)
+    assert not any("area=1&" in u or "area=2019" in u for u in loads)

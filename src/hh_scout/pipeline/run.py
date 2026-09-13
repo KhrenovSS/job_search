@@ -137,11 +137,16 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
             report.profi_error = str(e)
             report.page_loads += 1  # the feed page was loaded even though it had no cabinet
         except Exception as e:  # noqa: BLE001
+            # A secondary source must never fail an hh.ru run: the message goes to profi_error (health.py
+            # turns it into a soft alert), not to errors. Keep it short — a Marionette stacktrace would
+            # otherwise land whole in runs.error and in the alert text.
             log.exception("profi.ru упал")
-            report.errors.append(f"profi.ru: {e}")
+            report.profi_error = f"лента недоступна ({e.__class__.__name__})"
 
-    # 1. collect
-    hh_budget = max(0, budget - report.page_loads)
+    # 1. collect — hold back a share of the budget so step 4 always has pages left for vacancy descriptions.
+    # Without it a wide search eats the whole sitting and nothing is ever opened (no evaluations, no leads).
+    details_reserve = int(round(budget * settings.details_budget_share))
+    hh_budget = max(0, budget - report.page_loads - details_reserve)
     if hh_budget > 0 and report.browser_error is None:
         try:
             c = Collector(settings, conn, gap_scale=gap_scale, page_budget=hh_budget, should_stop=stop)
@@ -156,7 +161,9 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
         except Exception as e:  # noqa: BLE001
             log.exception("Сбор упал")
             report.errors.append(f"сбор: {e}")
-    else:
+    elif budget - report.page_loads <= 0:
+        # Genuinely out of pages. A zero hh_budget caused only by the reserve is not an error:
+        # the whole budget then goes to vacancy pages in step 4.
         report.browser_error = "дневной лимит загрузок исчерпан до начала прогона"
 
     # 2. prefilter (no I/O)

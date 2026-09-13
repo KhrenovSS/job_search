@@ -58,7 +58,8 @@ scripts/  install_service.sh (sudo) · install_geckodriver.sh · setup_firefox.s
 README.md · .gitignore · hh-scout.service.template + hh-scout-alert.service.template (юниты, рендерит install_service.sh) · pyproject.toml · requirements(-dev).txt
 · pytest.ini · .env.example · LICENSE (MIT)
 src/hh_scout/
-  config.py        Settings из .env (порог, веса, лимиты, окна, ритм, токены) + константы: SEARCH_QUERIES, REGION_NAMES (49),
+  config.py        Settings из .env (порог, веса, лимиты, окна, ритм, токены) + константы: SEARCH_QUERIES (5),
+                   REGION_NAMES (49 — запасной путь при SEARCH_ALL_RUSSIA=false; по умолчанию ищем по всей России),
                    TITLE_STOP/KEEP/REQUIRED_ANY;  logging_setup.py — логи в stdout/journald
   db.py            SQLite (автокоммит, WAL), миграции _m001…_m007 (PRAGMA user_version), kv_get/kv_set, transaction() для пакетных записей
   main.py          сервис: aiogram polling + планировщик; первый старт помечает превью как sent
@@ -92,6 +93,8 @@ data/              hh_scout.db (WAL), logs/ — в .gitignore
    его правила запрещают парсинг, поэтому одна загрузка ленты за подход, никаких страниц заказов и откликов.
 3. **Человекоподобие обязательно**: паузы, серии по времени, случайный порядок, только дневные окна, дневной лимит
    `DAILY_PAGE_LOADS_MIN..MAX` (100–140, случайный на день, kv `daily_cap:<дата>`) **суммарно по всем процессам**.
+   Доля `DETAILS_BUDGET_SHARE` бюджета подхода зарезервирована под страницы вакансий: сбор её не трогает,
+   иначе описания не качаются и лидов не появляется вовсе.
    `--no-gaps`/`--gap-scale` — только для отладки, не для ежедневной работы.
 4. Одна Marionette-сессия: не запускать CLI с браузером параллельно сервису.
 5. Данные — из JSON `HH-Lux-InitialState`; изменилась структура → warning и пропуск, прогон не падает.
@@ -109,7 +112,8 @@ data/              hh_scout.db (WAL), logs/ — в .gitignore
 
 ## Где лежит истина
 Формат карточки и письма — `pipeline/ranker.py`. Расписание — `scheduler.py`. Запросы/регионы/стоп-слова — `config.py`;
-порог, веса, лимиты, окна подходов, ритм серий, время дайджеста — `.env` (`.env.example` перечисляет всё). Что считается лидом —
+порог, веса, лимиты, окна подходов, ритм серий, время дайджеста, география (`SEARCH_ALL_RUSSIA`) и доля бюджета
+под страницы вакансий (`DETAILS_BUDGET_SHARE`) — `.env` (`.env.example` перечисляет всё). Что считается лидом —
 `prompts/vacancy_evaluation.md` + `prompts/candidate_profile.md`. Схема БД — `db.py`, перечисления — `docs/DATABASE.md`.
 Ядро письма — блок «По вашим задачам» (`prompts/cover_letter.md`, п.3): совпадение опыта с требованиями
 вакансии, сокращается последним. Письмо предлагает **только работу по ИП** — оговорок про штат в нём нет

@@ -116,14 +116,15 @@ def test_run_crawl_budget_share_limits_collector_and_details(monkeypatch, tmp_pa
     monkeypatch.setattr(run_mod, "CoverLetterWriter", FakeBridgeStep)
     monkeypatch.setattr(run_mod.prefilter, "run", lambda conn, s: {"passed": 0})
 
-    s = Settings(_env_file=None, daily_page_loads_min=120, daily_page_loads_max=120)
+    s = Settings(_env_file=None, daily_page_loads_min=120, daily_page_loads_max=120, details_budget_share=0.4)
     report = run_mod.run_crawl(s, tmp_path / "t.db", "schedule", budget=40)
-    assert budgets == {"collect": 40, "details": 28}  # details get what the collector left of this run's share
+    # 40 minus the 16-page reserve goes to collection; details then get the reserve plus the 12 it did not spend
+    assert budgets == {"collect": 24, "details": 28}
     assert report.page_loads == 40 and report.daily_cap == 120 and report.used_today == 40
     assert "за день 40/120" in report.as_text()
-    # a manual run takes everything that is left of the day
+    # a manual run takes everything that is left of the day, minus the same reserve
     report2 = run_mod.run_crawl(s, tmp_path / "t.db", "manual")
-    assert budgets["collect"] == 80
+    assert budgets["collect"] == 48  # (120 - 40) - round(80 * 0.4)
 
 
 def test_run_crawl_deadline_stops_browsing_and_is_reported(monkeypatch, tmp_path):
@@ -195,7 +196,8 @@ def test_profi_stage_runs_first_shares_the_budget_and_does_not_block_hh(monkeypa
     _noop_bridge_steps(monkeypatch)
     monkeypatch.setattr(run_mod, "ProfiCollector", FakeProfi)
     monkeypatch.setattr(run_mod, "Collector", FakeCollector)
-    s = Settings(_env_file=None, prompts_dir=tmp_path, daily_page_loads_min=50, daily_page_loads_max=50, profi_enabled=True)
+    s = Settings(_env_file=None, prompts_dir=tmp_path, daily_page_loads_min=50, daily_page_loads_max=50,
+                 profi_enabled=True, details_budget_share=0.0)
     report = run_mod.run_crawl(s, tmp_path / "t.db", "schedule", budget=10)
     assert budgets == {"profi": 1, "hh": 9}  # profi takes its page first, hh gets the rest
     assert report.page_loads == 4 and report.profi_orders == 2 and report.profi_new == 1
@@ -210,6 +212,90 @@ def test_profi_stage_runs_first_shares_the_budget_and_does_not_block_hh(monkeypa
     report2 = run_mod.run_crawl(s, tmp_path / "t2.db", "schedule", budget=10)
     assert report2.profi_error == "нет кабинета" and budgets["hh"] == 9 and report2.browser_error is None
     budgets.clear()
-    s_off = Settings(_env_file=None, prompts_dir=tmp_path, daily_page_loads_min=50, daily_page_loads_max=50)
+    s_off = Settings(_env_file=None, prompts_dir=tmp_path, daily_page_loads_min=50, daily_page_loads_max=50,
+                     details_budget_share=0.0)
     report3 = run_mod.run_crawl(s_off, tmp_path / "t3.db", "manual", budget=10)
     assert "profi" not in budgets and budgets["hh"] == 10 and report3.profi_orders is None
+
+
+def test_details_reserve_survives_a_greedy_collector(monkeypatch, tmp_path):
+    """A wide search must not eat the whole sitting: vacancy pages keep a guaranteed floor.
+
+    Regression for 13.09: collection spent 15 of 15 pages, DetailsFetcher got 0, nothing was opened
+    and the digest had no leads even though cards had been collected.
+    """
+    budgets = {}
+
+    class GreedyCollector:
+        def __init__(self, *a, page_budget=None, **kw):
+            budgets["collect"] = page_budget
+
+        def run(self, run_id):
+            # spends every page it is given
+            return _Stats(page_loads=budgets["collect"], new_vacancies=99, search_pages=budgets["collect"],
+                          cards_seen=99, not_logged_in=False)
+
+    class FakeDetails:
+        def __init__(self, *a, page_budget=None, **kw):
+            budgets["details"] = page_budget
+
+        def run(self, run_id):
+            return _Stats(page_loads=0, outcomes={"prefiltered": 0})
+
+    _noop_bridge_steps(monkeypatch)
+    monkeypatch.setattr(run_mod, "Collector", GreedyCollector)
+    monkeypatch.setattr(run_mod, "DetailsFetcher", FakeDetails)
+
+    s = Settings(_env_file=None, prompts_dir=tmp_path, daily_page_loads_min=100, daily_page_loads_max=100,
+                 details_budget_share=0.4)
+    report = run_mod.run_crawl(s, tmp_path / "t.db", "schedule", budget=30)
+    assert budgets["collect"] == 18 and budgets["details"] == 12  # 30 - round(30 * 0.4), then the reserve
+    assert report.browser_error is None and report.ok
+
+
+def test_zero_details_reserve_is_not_reported_as_an_exhausted_limit(monkeypatch, tmp_path):
+    """A budget too small to split is not an error — every page simply goes to vacancy pages."""
+    budgets = {}
+
+    class FakeDetails:
+        def __init__(self, *a, page_budget=None, **kw):
+            budgets["details"] = page_budget
+
+        def run(self, run_id):
+            return _Stats(page_loads=0, outcomes={})
+
+    _noop_bridge_steps(monkeypatch)
+    monkeypatch.setattr(run_mod, "DetailsFetcher", FakeDetails)
+    s = Settings(_env_file=None, prompts_dir=tmp_path, daily_page_loads_min=100, daily_page_loads_max=100,
+                 details_budget_share=1.0)
+    report = run_mod.run_crawl(s, tmp_path / "t.db", "schedule", budget=8)
+    assert budgets["details"] == 8 and report.browser_error is None
+
+
+def test_profi_network_failure_does_not_fail_the_hh_run(monkeypatch, tmp_path):
+    """profi.ru unreachable (13.09: its DNS stopped resolving) must not mark the run failed."""
+
+    class DeadProfi:
+        def __init__(self, *a, **kw):
+            pass
+
+        def run(self, run_id):
+            raise RuntimeError("Reached error page: about:neterror?e=dnsNotFound\nStacktrace:\nRemoteError@chrome://...")
+
+    class FakeCollector:
+        def __init__(self, *a, page_budget=None, **kw):
+            pass
+
+        def run(self, run_id):
+            return _Stats(page_loads=3, new_vacancies=5, search_pages=1, cards_seen=5, not_logged_in=False)
+
+    _noop_bridge_steps(monkeypatch)
+    monkeypatch.setattr(run_mod, "ProfiCollector", DeadProfi)
+    monkeypatch.setattr(run_mod, "Collector", FakeCollector)
+    s = Settings(_env_file=None, prompts_dir=tmp_path, daily_page_loads_min=50, daily_page_loads_max=50,
+                 profi_enabled=True)
+    report = run_mod.run_crawl(s, tmp_path / "t.db", "schedule", budget=10)
+    assert report.ok and report.errors == []          # hh.ru worked: the run is a success
+    assert report.new_vacancies == 5                  # collection still happened
+    assert report.profi_error == "лента недоступна (RuntimeError)"
+    assert "Stacktrace" not in report.as_text()       # no Marionette dump in runs.error / the alert

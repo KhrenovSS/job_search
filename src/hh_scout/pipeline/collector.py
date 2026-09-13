@@ -33,12 +33,12 @@ from hh_scout.browser.hh_pages import (
 from hh_scout.browser.session import BrowserSession, BrowserUnavailable, HHBlocked, PageBudgetExceeded
 from hh_scout.config import SEARCH_QUERIES, Settings
 from hh_scout.db import transaction
-from hh_scout.hh.areas import resolve_region_ids
+from hh_scout.hh.areas import RUSSIA_ID, resolve_region_ids
 from hh_scout.pipeline import repo
 
 log = logging.getLogger(__name__)
 
-PASS_REGIONAL = "regional"
+PASS_REGIONAL = "regional"   # geography pass: the whole country by default, or REGION_NAMES (see Settings.search_all_russia)
 PASS_REMOTE = "remote"
 PASS_PROJECT = "project"
 PASS_GPH = "gph"          # hh filter "Оформление по ГПХ или по совместительству"
@@ -116,7 +116,7 @@ class Collector:
     # -- public ------------------------------------------------------------------
 
     def run(self, run_id: int | None = None) -> CollectStats:
-        region_ids = resolve_region_ids(self.conn, self.s)
+        region_ids = [RUSSIA_ID] if self.s.search_all_russia else resolve_region_ids(self.conn, self.s)
         tasks = plan_tasks(region_ids, rng=self.rng)
         log.info("План сбора: %d задач, бюджет %d загрузок, регионы %s", len(tasks), self.page_budget, region_ids)
         state = {"negotiations_done": False}

@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     gap_minutes: str = "4-9"
     items_per_page: int = 50
     max_pages_per_query: int = 6
+    # Share of a run's page budget held back for vacancy pages, so collection cannot eat it all
+    # and leave DetailsFetcher with nothing (cards pile up in `to_fetch`, no evaluations, no leads).
+    # A floor, not a ceiling: details also get whatever collection did not spend.
+    details_budget_share: float = 0.4
     low_priority_ttl_days: int = 3  # triage priority 3 cards still unopened after this many days are dropped
     # One lead per company: further vacancies of an employer that already got a lead are skipped (duplicate_employer)
     # for this many days after the lead was sent; 0 = forever. Same-employer twins inside one digest always collapse to one.
@@ -62,6 +66,9 @@ class Settings(BaseSettings):
     crawl_windows: str = "07:00-10:00,12:00-15:00,18:00-22:00"
     digest_max_items: int = 20
     search_period_days: int = 2
+    # Geography: True searches the whole country (one area id 113) — the owner contracts remotely, so where
+    # the client sits does not matter. False falls back to the explicit REGION_NAMES list below.
+    search_all_russia: bool = True
     db_path: Path = PROJECT_ROOT / "data" / "hh_scout.db"
     prompts_dir: Path = PROJECT_ROOT / "prompts"
     log_level: str = "INFO"
@@ -153,11 +160,19 @@ SEARCH_QUERIES: tuple[str, ...] = (
     '("инженер по автоматизации" OR "инженер-программист" OR "Automation Engineer" OR "Controls Engineer" '
     'OR "Control Systems Engineer") AND (ПЛК OR PLC OR контроллер OR "технологического оборудования" OR SCADA OR HMI)',
     '(КИПиА OR "шкафов управления" OR "систем управления") AND (программирование OR ПЛК OR PLC OR разработка)',
+    # The same work named through the vendor: many ads never say "ПЛК" or "АСУ ТП", only the brand.
+    '(Siemens OR "TIA Portal" OR Step7 OR "Step 7" OR WinCC OR ОВЕН OR Beckhoff OR Wago '
+    'OR "Schneider Electric" OR Omron OR Mitsubishi OR Segnetics OR Delta) '
+    'AND (программирование OR программист OR контроллер OR ПЛК OR АСУ OR наладка)',
+    # Protocols and the upper level (диспетчеризация / АСКУЭ / телемеханика).
+    '(Modbus OR "OPC UA" OR Profinet OR Profibus OR "верхний уровень" OR диспетчеризация '
+    'OR АСКУЭ OR телемеханика) AND (АСУ OR ПЛК OR SCADA OR программирование OR инженер)',
 )
 
-# Region names resolved through GET /areas at first run and cached in the DB.
-# Geography (owner's decision 2026-09-08): European Russia without the Urals and the Caucasus republics,
-# roughly 1300 km from Moscow. Names must match hh.ru's /areas exactly (see tests/fixtures/areas_russia.json).
+# Fallback geography for SEARCH_ALL_RUSSIA=false. Region names resolved through GET /areas and cached in the DB.
+# Was the default until 2026-09-13 (owner's decision 2026-09-08: European Russia, roughly 1300 km from Moscow);
+# dropped because the owner contracts remotely and this perimeter saturated in four days — see docs/DECISIONS.md.
+# Names must match hh.ru's /areas exactly (see tests/fixtures/areas_russia.json).
 REGION_NAMES: tuple[str, ...] = (
     # Центральный ФО
     "Москва", "Московская область", "Белгородская область", "Брянская область", "Владимирская область",
