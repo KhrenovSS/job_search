@@ -39,7 +39,8 @@ HELP = (
     "/next — когда следующий подход\n"
     "/pause · /resume — приостановить/возобновить автоматические сборы\n"
     "/skipped [N] — последние отсеянные вакансии с причинами\n"
-    "/letter &lt;hh_id&gt; — переписать отклик для вакансии\n"
+    "/letter &lt;hh_id&gt; [пожелание] — написать или переписать отклик "
+    "(«/letter 137256632 больше про SCADA»)\n"
     "/help — эта справка\n\n"
     "Кнопки под карточкой: 👍/👎 — обратная связь для ИИ (👎 сворачивает карточку), "
     "✅ Написал — отклик отправлен (карточка сворачивается, письмо удаляется), ⏸ Позже — отложить."
@@ -188,17 +189,19 @@ async def cleanup_cmd(m: Message, command: CommandObject, conn: sqlite3.Connecti
 
 @router.message(Command("letter"))
 async def letter_cmd(m: Message, command: CommandObject, settings: Settings, conn: sqlite3.Connection) -> None:
-    hh_id = (command.args or "").strip()
+    hh_id, _, hint = (command.args or "").strip().partition(" ")
+    hint = hint.strip()
     if not _valid_id(hh_id):
-        await m.answer("Использование: /letter &lt;id&gt; — число из ссылки hh.ru/vacancy/… или profi:&lt;номер заказа&gt;")
+        await m.answer("Использование: /letter &lt;id&gt; [пожелание] — число из ссылки hh.ru/vacancy/… "
+                       "или profi:&lt;номер заказа&gt;.\nНапример: <code>/letter 137256632 больше про SCADA</code>")
         return
     row = repo.lead_by_hh_id(conn, hh_id)
     if row is None:
         await m.answer("Такой оценённой вакансии нет в базе.")
         return
-    await m.answer("Пишу отклик…")
+    await m.answer("Пишу отклик…" + (f" С учётом: {hint}" if hint else ""))
     try:
-        text = await asyncio.to_thread(CoverLetterWriter(settings, conn).write_for, row)
+        text = await asyncio.to_thread(CoverLetterWriter(settings, conn).write_for, row, None, hint or None)
     except Exception as e:  # noqa: BLE001
         await m.answer(f"Не удалось: {e}")
         return

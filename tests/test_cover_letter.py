@@ -132,3 +132,39 @@ def test_letter_payload_carries_the_company_dossier_and_the_place(tmp_path):
     assert payload["work_format"] == "remote"
 
     assert letter_payload(row)["company"] is None      # nothing known: the prompt then writes as before
+
+
+def _row_with_company(conn):
+    conn.execute("UPDATE vacancies SET employer = 'ФомЛайн' WHERE id = 1")
+    return repo.lead_by_hh_id(conn, "1")
+
+
+def test_code_checks_catch_money_and_cliches():
+    """The letter must never quote a sum (decisions #22-24) and must not read as a mailshot."""
+    from hh_scout.llm.cover_letter import check_letter
+    conn = _db()
+    row = _row_with_company(conn)
+    company = {"industry": "химическое производство", "products": ["пенополиуретан"]}
+
+    ok = "Вижу, что вы производите пенополиуретан. Работаю по ИП."
+    assert check_letter(ok, row, company) == ""
+    assert "сумма" in check_letter(ok + " Ставка 150 000 ₽ в месяц.", row, company)
+    assert "оборот" in check_letter(ok + " Помогу закрыть позицию.", row, company)
+    assert "не называет" in check_letter("Здравствуйте. Работаю по ИП, готов обсудить.", row, company)
+    assert check_letter("Здравствуйте. Работаю по ИП.", row, None) == ""   # no dossier — no such demand
+
+
+@respx.mock
+def test_daily_quota_limits_letters_across_runs(tmp_path):
+    """Three sittings a day must not turn a quota of two into six."""
+    s = _settings(tmp_path)
+    s = s.model_copy(update={"digest_max_items": 2})
+    conn = _db()
+    respx.post("http://bridge.test/complete").mock(
+        return_value=httpx.Response(200, json={"text": "x" * 600, "cost_usd": 0.01}))
+
+    first = CoverLetterWriter(s, conn, BridgeClient(s, retries=0)).run()
+    assert first.written == 2
+    second = CoverLetterWriter(s, conn, BridgeClient(s, retries=0)).run()
+    assert second.written == 0            # the quota is spent for today
+    assert repo.letters_written_today(conn) == 2

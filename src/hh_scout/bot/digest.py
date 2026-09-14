@@ -8,6 +8,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from aiogram import Bot
+from aiogram.types import LinkPreviewOptions
 
 from hh_scout.bot.keyboards import vote_kb
 from hh_scout.config import TZ, Settings
@@ -17,7 +18,8 @@ from hh_scout.llm.cover_letter import CoverLetterWriter
 from hh_scout.llm.evaluator import Evaluator
 from hh_scout.pipeline import repo
 from hh_scout.pipeline.digest_builder import finalize_digest, plan_digest
-from hh_scout.pipeline.ranker import digest_header, format_card, format_letter, row_site
+from hh_scout.pipeline.ranker import (digest_header, format_card, format_letter, format_queue_tail,
+                                      row_site)
 
 log = logging.getLogger(__name__)
 PAUSE_S = 0.6
@@ -76,6 +78,10 @@ async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, ch
             letter_msg = await bot.send_message(chat_id, format_letter(row["employer"], row["letter"], row_site(row)))
             letter_id = letter_msg.message_id
         sent.append((row, msg.message_id, letter_id))
+    if plan.waiting:
+        await asyncio.sleep(PAUSE_S)
+        await bot.send_message(chat_id, format_queue_tail(plan.waiting, plan.waiting_total),
+                               link_preview_options=LinkPreviewOptions(is_disabled=True))
     finalize_digest(conn, settings, sent, plan.checked, note)
     return len(sent)
 

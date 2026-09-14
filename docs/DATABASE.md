@@ -38,7 +38,7 @@
 ## `vacancies.skip_reason`
 `applied` (владелец уже откликался) · `archived` · `fly_in_fly_out` (вахта) · `stopword:<слово>` · `no_engineering_title`
 (нет инженерного слова в названии — самый частый) · `triage` (ИИ: не открывать) · `invalid_ai_answer` /
-`missing_in_ai_answer` (оценка) · `no_vacancy_view` (страница без данных) · `low_priority_expired` (приоритет 3 триажа не открыт за `LOW_PRIORITY_TTL_DAYS`) ·
+`missing_in_ai_answer` (оценка) · `no_vacancy_view` (страница без данных) · `low_priority_expired` (приоритет 3 триажа не открыт за `LOW_PRIORITY_TTL_DAYS`) · `queue_expired` (v9.1: лид простоял в очереди дольше `QUEUE_TTL_DAYS` — до него так и не дошла суточная норма) ·
 `duplicate_employer:<hh_id>` (v8: у компании уже есть лид `<hh_id>` — отправленный за последние `EMPLOYER_REPEAT_DAYS` или ждущий
 дайджест; ставится на любом статусе от `triage` до `evaluated`, см. `pipeline/dedup.py`). **Единственная обратимая причина** (v8.7): если `<hh_id>` так и не стал лидом (отклонён, сорвалась оценка или оценён ниже порога) и у компании лида
 не осталось, `dedup.revive_orphans` в начале каждого прогона возвращает дубль в `to_fetch` (триаж ИИ уже пройден) или `triage`. `set_status` в не-skip переходах обнуляет `skip_reason`.
@@ -103,4 +103,11 @@
 `sources` — JSON списка прочитанных URL; `researched_at`. Свежесть — `COMPANY_RESEARCH_TTL_DAYS` (180 дней).
 Заполняет `llm/company_research.py`; в карточку лида попадает строка «🏭 О компании» (`LEAD_SELECT` подмешивает
 `brief` как `company_brief`). Поля-факты собраны с прочитанных страниц, `automation_hooks` — явные предположения.
+
+## `evaluated` — это очередь (v9.1)
+Статус `evaluated` с `total ≥ SCORE_THRESHOLD` означает не «ждёт ближайшего дайджеста», а «стоит в очереди».
+Дайджест забирает сверху `DIGEST_MAX_ITEMS` (5) по приоритету `total + MIN(суток ожидания, QUEUE_WAIT_BONUS_MAX)`,
+остальные **остаются `evaluated`** и соревнуются с завтрашними поступлениями (`repo.lead_queue`, `repo.queue_size`).
+`reject_below` по-прежнему списывает то, что ниже порога; `repo.expire_queue` — то, что простояло дольше
+`QUEUE_TTL_DAYS`. Ожидание считается от `evaluations.created_at` (строка на вакансию одна).
 

@@ -138,6 +138,24 @@ def format_inbox(rows: list[sqlite3.Row]) -> str:
     return "\n".join(lines)
 
 
+def format_queue_tail(waiting: list[sqlite3.Row], total: int) -> str:
+    """The leads that did not make today's quota — one line each, letter on request.
+
+    They are not rejected: the queue outlives the day, and tomorrow they compete with whatever arrives.
+    """
+    if not waiting:
+        return ""
+    head = (f"<b>Ждут очереди: {total}</b>" if total <= len(waiting)
+            else f"<b>Ждут очереди: {total}</b> (ближайшие {len(waiting)})")
+    lines = [head + " — не попали в сегодняшнюю норму, но не отброшены."]
+    for r in waiting:
+        lines.append(f"{r['total']}/100 · {_esc(r['employer'] or '—')} · "
+                     f"<a href=\"{r['url']}\">{_esc((r['title'] or '')[:55])}</a> · /letter {r['hh_id']}")
+    lines.append("Письмо по любой из них — командой /letter &lt;id&gt;, можно с пожеланием: "
+                 "<code>/letter 12345678 больше про SCADA</code>")
+    return "\n".join(lines)
+
+
 def digest_header(count: int, checked: int, when: datetime | None = None, open_before: int = 0,
                   work: dict[str, int] | None = None) -> str:
     """`work` = repo.work_totals(): the only daily word about how the service itself is doing (quiet mode)."""

@@ -36,6 +36,23 @@ def test_plan_and_finalize_digest():
     assert repo.evaluations_since_last_digest(conn) == 0
 
 
+def test_the_tail_survives_the_digest_and_is_listed():
+    """v9.1: what did not fit the quota is a queue, not a reject — it competes again tomorrow."""
+    from hh_scout.pipeline.ranker import format_queue_tail
+
+    s = Settings(_env_file=None, digest_max_items=1, digest_tail_items=5)
+    conn = _db()
+    plan = plan_digest(conn, s)
+    assert len(plan.leads) == 1 and plan.waiting_total == 2      # quota 1, two more keep waiting
+    assert [r["hh_id"] for r in plan.waiting] == ["3", "4"]
+
+    finalize_digest(conn, s, [(plan.leads[0], 111)], plan.checked)
+    assert repo.count_by_status(conn) == {"sent": 1, "rejected": 1, "evaluated": 2}  # the tail stays evaluated
+
+    tail = format_queue_tail(plan.waiting, plan.waiting_total)
+    assert "Ждут очереди: 2" in tail and "/letter 3" in tail
+
+
 def test_plan_digest_keeps_one_lead_per_company():
     """Same employer in three regions → only the best-scored vacancy goes out, the twins are skipped as duplicates."""
     s = Settings(_env_file=None)

@@ -14,14 +14,30 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class DigestPlan:
-    leads: list[sqlite3.Row]
+    leads: list[sqlite3.Row]        # today's quota, best first by queue priority
     checked: int
+    waiting: list[sqlite3.Row]      # the next ones in the queue, listed by name in the tail
+    waiting_total: int = 0          # how many are waiting altogether
 
 
 def plan_digest(conn: sqlite3.Connection, settings: Settings) -> DigestPlan:
+    """The day's quota off the top of the lead queue, plus the tail that keeps waiting.
+
+    The queue outlives the day on purpose (v9.1): a strong vacancy found tomorrow goes before a weak one that
+    waited, and the weak one is not written off — it waits its turn or expires after `QUEUE_TTL_DAYS`.
+    """
     dedup.dedupe_evaluated(conn, settings)  # one lead per company (writes skipped/duplicate_employer; idempotent)
-    leads = repo.evaluated_leads(conn, settings.score_threshold, settings.digest_max_items)
-    return DigestPlan(leads=leads, checked=repo.evaluations_since_last_digest(conn))
+    with conn:
+        gone = repo.expire_queue(conn, settings.queue_ttl_days)
+    if gone:
+        log.info("Из очереди выбыло по сроку (%d дн.): %d", settings.queue_ttl_days, gone)
+    quota = settings.digest_max_items
+    leads = repo.lead_queue(conn, settings.score_threshold, quota, wait_bonus_max=settings.queue_wait_bonus_max)
+    waiting = repo.lead_queue(conn, settings.score_threshold, settings.digest_tail_items,
+                              wait_bonus_max=settings.queue_wait_bonus_max, offset=len(leads))
+    total = repo.queue_size(conn, settings.score_threshold)
+    return DigestPlan(leads=leads, checked=repo.evaluations_since_last_digest(conn),
+                      waiting=waiting, waiting_total=max(0, total - len(leads)))
 
 
 def finalize_digest(conn: sqlite3.Connection, settings: Settings, sent: list[tuple],

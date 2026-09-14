@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
 from hh_scout.browser.hh_pages import VacancyCard, VacancyDetail
@@ -261,6 +261,51 @@ LEAD_SELECT = """SELECT v.*, e.tech_score, e.role_score, e.lead_score, e.total, 
                         (SELECT brief FROM employers emp WHERE emp.employer_id = v.employer_id AND emp.found = 1)
                             AS company_brief
                  FROM vacancies v JOIN evaluations e ON e.vacancy_id = v.id"""
+
+
+# --- the lead queue -----------------------------------------------------------------
+# Leads that did not fit into a digest are NOT written off (`reject_below` only clears what is below the
+# threshold), so `evaluated` is a queue that outlives the day. Order in it is score plus a small bonus for
+# waiting: a fresh strong vacancy always goes before a stale weak one, but a week of waiting is worth 7 points,
+# so the tail cannot starve forever. `evaluations` has one row per vacancy, so `created_at` is when it queued.
+PRIORITY_SQL = ("(e.total + MIN(CAST(julianday('now') - julianday(e.created_at) AS INTEGER), {bonus}))")
+
+
+def lead_queue(conn: sqlite3.Connection, threshold: int, limit: int | None = None, *, wait_bonus_max: int = 7,
+               offset: int = 0) -> list[sqlite3.Row]:
+    """The pending leads, best first by priority. `offset` skips the ones already taken (the digest tail)."""
+    prio = PRIORITY_SQL.format(bonus=int(wait_bonus_max))
+    sql = (LEAD_SELECT + " WHERE v.status = 'evaluated' AND e.total >= ? "
+           f"ORDER BY {prio} DESC, e.total DESC, v.published_at DESC")
+    if limit is not None:
+        sql += f" LIMIT {int(limit)} OFFSET {int(offset)}"
+    elif offset:
+        sql += f" LIMIT -1 OFFSET {int(offset)}"
+    return conn.execute(sql, (threshold,)).fetchall()
+
+
+def queue_size(conn: sqlite3.Connection, threshold: int) -> int:
+    return int(conn.execute("SELECT COUNT(*) FROM vacancies v JOIN evaluations e ON e.vacancy_id = v.id "
+                            "WHERE v.status = 'evaluated' AND e.total >= ?", (threshold,)).fetchone()[0])
+
+
+def letters_written_today(conn: sqlite3.Connection) -> int:
+    """Letters written since local midnight — the daily quota must hold across all three sittings, not per run."""
+    start = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    return int(conn.execute("SELECT COUNT(*) FROM cover_letters WHERE created_at >= ?",
+                            (start.replace(microsecond=0).isoformat(),)).fetchone()[0])
+
+
+def expire_queue(conn: sqlite3.Connection, ttl_days: int) -> int:
+    """Leads nobody got to within `ttl_days` leave the queue: by then the vacancy is usually gone."""
+    if ttl_days <= 0:
+        return 0
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=ttl_days)).replace(microsecond=0).isoformat()
+    cur = conn.execute(
+        "UPDATE vacancies SET status = 'rejected', skip_reason = 'queue_expired', updated_at = ? "
+        "WHERE status = 'evaluated' AND id IN (SELECT vacancy_id FROM evaluations WHERE created_at < ?)",
+        (utcnow(), cutoff))
+    return cur.rowcount
 
 
 def evaluated_leads(conn: sqlite3.Connection, threshold: int, limit: int | None = None,

@@ -2,7 +2,7 @@
 
 Код подставляет `{resume}` и `{candidate_profile}`, отправляет как system. Пользовательское сообщение — JSON одной вакансии
 (title, employer, company, company_kind, city, address, work_format, description, key_skills, verdict, pitch_hint,
-employment, accept_temporary, civil_law_contracts, ip_gph_possible, salary_stated, salary_note).
+employment, accept_temporary, civil_law_contracts, ip_gph_possible, salary_stated, salary_note, owner_hint).
 `company` — досье на работодателя из открытых источников (`prompts/company_research.md`) или `null`.
 Ответ — только текст письма, без заголовков и пояснений.
 
@@ -29,6 +29,12 @@ employment, accept_temporary, civil_law_contracts, ip_gph_possible, salary_state
 об этой компании. Ничего сверх досье не добавляй: не приписывай компании оборудование, объекты или планы,
 которых в нём нет. Если `company` пустое или `null` — пиши по описанию вакансии, как будто досье и не было;
 выдумывать «вижу, вы производите…» в этом случае запрещено.
+
+## Пожелание владельца (`owner_hint`)
+
+Если поле не пустое — это прямое указание человека, который отправит письмо («больше про SCADA», «короче»,
+«упомяни выезд на объект»). Выполни его, не нарушая остальных правил: деньги, честность про стек и формат
+по ИП не отменяются ничем.
 
 ## Как писать
 

@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     company_research_enabled: bool = True
     company_research_model: str = "sonnet"  # the job is reading pages, not judging: opus is not worth it here
     company_research_ttl_days: int = 180
-    company_research_max_turns: int = 4     # measured: 5 turns = 5 min; 4 with a tighter prompt is ~2-3 min
+    company_research_max_turns: int = 6     # v9.1: five companies a day instead of fifteen — depth is affordable
     company_research_timeout_s: float = 450.0   # must exceed the bridge's own BRIDGE_WEB_TIMEOUT (420)
     company_research_max_per_run: int = 5   # ceiling on how long one letters step may spend reading the web
 
@@ -73,7 +73,10 @@ class Settings(BaseSettings):
     # Sittings: one crawl per window, its START picked at random inside the window; the daily cap is shared between
     # the sittings still ahead. Comma-separated, sorted, non-overlapping.
     crawl_windows: str = "07:00-10:00,12:00-15:00,18:00-22:00"
-    digest_max_items: int = 20
+    digest_max_items: int = 5       # v9.1: the daily quota — five thought-through letters beat twenty generic ones
+    queue_ttl_days: int = 30        # a lead nobody got to in a month leaves the queue (the vacancy is gone)
+    queue_wait_bonus_max: int = 7   # a day of waiting is worth a point, capped: the tail must not starve
+    digest_tail_items: int = 10     # how many of the waiting ones the digest lists by name
     search_period_days: int = 2
     # Geography: True searches the whole country (one area id 113) — the owner contracts remotely, so where
     # the client sits does not matter. False falls back to the explicit REGION_NAMES list below.

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sqlite3
 from dataclasses import dataclass
 
@@ -35,6 +36,7 @@ ASKS_SALARY_PHRASES = (
 )
 # profi.ru orders get a short bid, not a cover letter
 LETTER_PROMPTS = {"hh": "cover_letter.md", "profi": "profi_bid.md"}
+REVIEW_PROMPT = "letter_review.md"  # v9.1: a second pass over every hh letter — quality over quantity
 LENGTH_LIMITS = {"hh": (MIN_CHARS, MAX_CHARS), "profi": (150, 1200)}
 
 
@@ -46,6 +48,7 @@ def row_site(row: sqlite3.Row) -> str:
 class LetterStats:
     written: int = 0
     failed: int = 0
+    reviewed: int = 0   # letters the editor actually changed
     bridge_calls: int = 0
 
 
@@ -59,7 +62,7 @@ def salary_stated(row: sqlite3.Row) -> bool:
     return bool(raw) and (raw.get("from") is not None or raw.get("to") is not None)
 
 
-def letter_payload(row: sqlite3.Row, company: dict | None = None) -> dict:
+def letter_payload(row: sqlite3.Row, company: dict | None = None, owner_hint: str | None = None) -> dict:
     raw = json.loads(row["raw_json"]) if row["raw_json"] else {}
     skills = raw.get("keySkills")
     if isinstance(skills, dict):
@@ -84,6 +87,7 @@ def letter_payload(row: sqlite3.Row, company: dict | None = None) -> dict:
         "title": row["title"],
         "employer": row["employer"],
         "company": company,  # dossier from the open web (prompts/company_research.md); None = nothing known
+        "owner_hint": owner_hint or None,  # what the owner asked for when rewriting by hand (/letter <id> …)
         "company_kind": row["company_kind"],
         "city": row["area_name"],
         "address": address.get("displayName") or None,
@@ -99,6 +103,37 @@ def letter_payload(row: sqlite3.Row, company: dict | None = None) -> dict:
         "pitch_hint": row["pitch_hint"],
         "salary_note": "вакансия просит указать зарплатные ожидания" if asks_salary else "зарплату не упоминать",
     }
+
+
+# The letter must never quote money — neither the owner's figure nor the vacancy's (decisions #22-24).
+_MONEY_RE = re.compile(r"\d[\d\s  ]{2,}\s*(?:₽|руб|р\.|тыс|на руки)|(?:₽|руб|тыс)\s*\d", re.IGNORECASE)
+# Phrases that make the letter read as a mailshot or as flattery of the recruiter.
+_BANNED = ("помогу закрыть", "закрыть позицию", "закрыть вакансию", "уникальн", "инновацион", "уважаемые",
+           "динамично развивающ", "выполните kpi", "сэкономите на зарплате")
+
+
+def check_letter(text: str, row: sqlite3.Row, company: dict | None) -> str:
+    """What is wrong with the letter, or "" if it passes. Cheap rules only — the editor pass does the rest."""
+    low = text.lower()
+    if _MONEY_RE.search(text):
+        return "в тексте есть денежная сумма — ни одной цифры про деньги быть не должно"
+    for phrase in _BANNED:
+        if phrase in low:
+            return f"запрещённый оборот «{phrase}» — письмо должно быть деловым, без штампов и лести"
+    if row_site(row) == "hh" and company:
+        hooks = [w for w in _company_words(row, company) if len(w) > 4]
+        if hooks and not any(w.lower() in low for w in hooks):
+            return ("письмо не называет, чем занимается компания — первая строка должна показывать, "
+                    f"что автор понимает их производство (например: {', '.join(hooks[:3])})")
+    return ""
+
+
+def _company_words(row: sqlite3.Row, company: dict) -> list[str]:
+    """Words that prove the letter is about THIS company: its name and what the dossier says it makes."""
+    words = [row["employer"] or ""]
+    for value in (company.get("industry") or "", *(company.get("products") or [])):
+        words += [w.strip(" ,.;:()«»\"") for w in str(value).split() if len(w) > 4]
+    return [w for w in dict.fromkeys(words) if w]
 
 
 def _clean(text: str) -> str:
@@ -122,25 +157,39 @@ class CoverLetterWriter:
         self.researcher = CompanyResearcher(settings, conn, self.bridge)
         self.stats = LetterStats()
 
-    def write_for(self, row: sqlite3.Row, system_text: str | None = None) -> str | None:
+    def write_for(self, row: sqlite3.Row, system_text: str | None = None, hint: str | None = None) -> str | None:
         site = row_site(row)
         system_text = system_text or self._system(site)
         company = None
         if site == "hh":
             brief = self.researcher.for_row(row)
             company = brief.model_dump() if brief is not None and brief.found else None
-        user_text = json.dumps(letter_payload(row, company), ensure_ascii=False)
-        try:
-            answer = self.bridge.complete(system_text, user_text)
-        except BridgeError as e:
-            log.error("Письмо для %s: мост недоступен: %s", row["hh_id"], e)
-            raise
-        text = _clean(answer)
+        payload = letter_payload(row, company, hint)
         lo, hi = LENGTH_LIMITS.get(site, LENGTH_LIMITS["hh"])
-        if not (lo <= len(text) <= hi):
-            log.warning("Письмо для %s отклонено по длине (%d символов, допустимо %d–%d)", row["hh_id"], len(text), lo, hi)
+        text, problem = "", ""
+        for attempt in (0, 1):
+            user_text = json.dumps(payload, ensure_ascii=False)
+            if problem:
+                user_text += f"\n\nПредыдущий вариант не годится: {problem}. Перепиши письмо целиком без этой ошибки."
+            try:
+                answer = self.bridge.complete(system_text, user_text)
+            except BridgeError as e:
+                log.error("Письмо для %s: мост недоступен: %s", row["hh_id"], e)
+                raise
+            text = _clean(answer)
+            if not (lo <= len(text) <= hi):
+                problem = f"длина {len(text)} символов, нужно {lo}–{hi}"
+            else:
+                problem = check_letter(text, row, company)
+            if not problem:
+                break
+            log.info("Письмо для %s — правим и переписываем: %s", row["hh_id"], problem)
+        if problem:
+            log.warning("Письмо для %s отклонено: %s", row["hh_id"], problem)
             self.stats.failed += 1
             return None
+        if site == "hh":
+            text = self._review(text, payload) or text
         with self.conn:
             repo.save_cover_letter(self.conn, row["id"], text, model_note=self.s.bridge_model or "bridge-default")
         self.stats.written += 1
@@ -148,9 +197,21 @@ class CoverLetterWriter:
         return text
 
     def run(self, limit: int | None = None) -> LetterStats:
-        rows = repo.leads_without_letter(self.conn, self.s.score_threshold, limit)
+        """Letters for the top of the queue, within the day's quota (v9.1).
+
+        The quota is daily, not per run: the crawl runs three times a day and would otherwise write three
+        times as many. What is left over keeps its place in the queue and gets its letter on a later day.
+        """
+        left = max(0, self.s.digest_max_items - repo.letters_written_today(self.conn))
+        if limit is not None:
+            left = min(left, limit)
+        if left == 0:
+            log.info("Суточная норма писем исчерпана (%d) — остальные ждут очереди", self.s.digest_max_items)
+            return self.stats
+        rows = [r for r in repo.lead_queue(self.conn, self.s.score_threshold, None,
+                                           wait_bonus_max=self.s.queue_wait_bonus_max) if not r["letter"]][:left]
         if not rows:
-            log.info("Все лиды уже с письмами")
+            log.info("Все лиды в норме уже с письмами")
             return self.stats
         systems: dict[str, str] = {}
         for row in rows:
@@ -159,9 +220,34 @@ class CoverLetterWriter:
                 systems[site] = self._system(site)
             self.write_for(row, systems[site])
         self.stats.bridge_calls = self.bridge.calls  # research shares the client, so its calls are counted here too
-        log.info("Письма: написано %d, отклонено %d, вызовов моста %d, cost $%.3f",
-                 self.stats.written, self.stats.failed, self.stats.bridge_calls, self.bridge.cost_usd)
+        log.info("Письма: написано %d (правил редактор %d), отклонено %d, вызовов моста %d, cost $%.3f",
+                 self.stats.written, self.stats.reviewed, self.stats.failed, self.stats.bridge_calls,
+                 self.bridge.cost_usd)
         return self.stats
+
+    def _review(self, text: str, payload: dict) -> str | None:
+        """Second pass: an editor checks the letter against the checklist and returns `OK` or a fixed text.
+
+        Cheap insurance now that the day's quota is five letters: one extra call (~$0.06) per letter that the
+        owner will actually send. Any trouble — keep the draft, a letter in hand beats no letter.
+        """
+        try:
+            system_text = render(self.s.prompts_dir, REVIEW_PROMPT, resume=read_private(self.s.prompts_dir, "resume.md"))
+            answer = self.bridge.complete(system_text, json.dumps({"letter": text, "vacancy": payload},
+                                                                  ensure_ascii=False))
+        except (BridgeError, OSError) as e:
+            log.warning("Редактор письма недоступен (%s) — оставляю черновик", e)
+            return None
+        fixed = _clean(answer)
+        if not fixed or fixed.strip().upper().startswith("OK"):
+            return None
+        lo, hi = LENGTH_LIMITS["hh"]
+        if not (lo <= len(fixed) <= hi):
+            log.warning("Редактор вернул текст длиной %d — оставляю черновик", len(fixed))
+            return None
+        log.info("Редактор поправил письмо: было %d символов, стало %d", len(text), len(fixed))
+        self.stats.reviewed += 1
+        return fixed
 
     def _system(self, site: str = "hh") -> str:
         template = LETTER_PROMPTS.get(site, LETTER_PROMPTS["hh"])
