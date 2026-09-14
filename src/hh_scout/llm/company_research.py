@@ -81,7 +81,9 @@ class CompanyResearcher:
     def __init__(self, settings: Settings, conn: sqlite3.Connection, bridge: BridgeClient | None = None) -> None:
         self.s = settings
         self.conn = conn
-        self.bridge = bridge or BridgeClient(settings)
+        # One attempt, no retry storm: a research call costs minutes, and a bridge that just timed out on a heavy
+        # page will time out again. A failure simply means this letter goes without a dossier.
+        self.bridge = bridge or BridgeClient(settings, retries=0)
         self.calls = 0
 
     def for_row(self, row: sqlite3.Row, *, force: bool = False) -> CompanyBrief | None:
@@ -95,6 +97,12 @@ class CompanyResearcher:
             hit = cached(self.conn, row["employer_id"], self.s.company_research_ttl_days)
             if hit is not None:
                 return hit
+        if not force and self.calls >= self.s.company_research_max_per_run:
+            # Reading the web takes minutes per company. The digest must not wait for a long tail of new
+            # employers: what is left over is researched by the next run, from the cache-first path above.
+            log.info("Разведка: лимит %d компаний за прогон исчерпан — %s остаётся без досье до следующего раза",
+                     self.s.company_research_max_per_run, row["employer"] or row["employer_id"])
+            return None
         brief = self._ask(payload(row))
         if brief is None:
             return None
@@ -110,7 +118,8 @@ class CompanyResearcher:
         for attempt in (0, 1):
             try:
                 answer = self.bridge.complete(system_text, user_text, model=self.s.company_research_model,
-                                              allow_web=True, max_turns=self.s.company_research_max_turns)
+                                              allow_web=True, max_turns=self.s.company_research_max_turns,
+                                              timeout_s=self.s.company_research_timeout_s)
             except BridgeError as e:
                 log.warning("Разведка по компании не удалась (мост): %s", e)
                 return None

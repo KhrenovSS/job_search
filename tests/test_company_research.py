@@ -125,3 +125,33 @@ def test_a_dead_bridge_does_not_break_the_letter(tmp_path):
     respx.post("http://bridge.test/complete").mock(return_value=httpx.Response(500, text="boom"))
     s = _settings(tmp_path)
     assert CompanyResearcher(s, conn, BridgeClient(s, retries=0)).for_row(_row(conn)) is None
+
+
+@respx.mock
+def test_only_a_few_companies_are_researched_per_run(tmp_path):
+    """Reading the web costs minutes per company — the digest must not wait for a long tail of new employers."""
+    conn = _db()
+    for i, emp in ((2, "200"), (3, "300")):
+        conn.execute("INSERT INTO vacancies(id,hh_id,site,title,employer,employer_id,url,area_name,source,"
+                     "search_pass,status,raw_json,first_seen_at,updated_at) VALUES (?,?,'hh','Инженер','ООО',?,"
+                     "'u','Москва','s','remote','evaluated','{\"description\":\"d\"}','t','t')", (i, str(i), emp))
+    route = _reply(json.dumps(BRIEF, ensure_ascii=False))
+    s = _settings(tmp_path, company_research_max_per_run=2)
+    r = CompanyResearcher(s, conn, BridgeClient(s, retries=0))
+
+    got = [r.for_row(conn.execute("SELECT * FROM vacancies WHERE id = ?", (i,)).fetchone()) for i in (1, 2, 3)]
+    assert [g is not None for g in got] == [True, True, False]
+    assert route.call_count == 2
+    # the one left out is researched by a later run — its employer simply has no row yet
+    assert conn.execute("SELECT COUNT(*) FROM employers").fetchone()[0] == 2
+
+
+@respx.mock
+def test_research_waits_longer_than_an_ordinary_call(tmp_path):
+    """A measured research ran 5 minutes; the default 180 s client timeout would have killed it."""
+    conn = _db()
+    route = _reply(json.dumps(BRIEF, ensure_ascii=False))
+    s = _settings(tmp_path)
+    CompanyResearcher(s, conn, BridgeClient(s, retries=0)).for_row(_row(conn))
+    assert route.calls[0].request.extensions["timeout"]["read"] == s.company_research_timeout_s
+    assert s.company_research_timeout_s > s.bridge_timeout_s

@@ -60,7 +60,9 @@ class Settings(BaseSettings):
     company_research_enabled: bool = True
     company_research_model: str = "sonnet"  # the job is reading pages, not judging: opus is not worth it here
     company_research_ttl_days: int = 180
-    company_research_max_turns: int = 6
+    company_research_max_turns: int = 4     # measured: 5 turns = 5 min; 4 with a tighter prompt is ~2-3 min
+    company_research_timeout_s: float = 450.0   # must exceed the bridge's own BRIDGE_WEB_TIMEOUT (420)
+    company_research_max_per_run: int = 5   # ceiling on how long one letters step may spend reading the web
 
     # Telegram
     tg_bot_token: str = ""

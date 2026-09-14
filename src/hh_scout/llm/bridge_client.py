@@ -66,8 +66,9 @@ class BridgeClient:
         return r.json()
 
     def complete(self, system_text: str, user_text: str, *, model: str | None = None,
-                 allow_web: bool = False, max_turns: int = 1) -> str:
-        """One bridge call. `allow_web` lets the CLI read the open web — only company research uses it."""
+                 allow_web: bool = False, max_turns: int = 1, timeout_s: float | None = None) -> str:
+        """One bridge call. `allow_web` lets the CLI read the open web — only company research uses it, and it
+        needs minutes rather than seconds, hence `timeout_s`."""
         payload = {
             "system_text": system_text,
             "messages": [{"role": "user", "content": user_text}],
@@ -79,7 +80,7 @@ class BridgeClient:
         for attempt in range(self._retries + 1):
             try:
                 resp = httpx.post(f"{self._url}/complete", json=payload,
-                                  headers={"X-Bridge-Token": self._token}, timeout=self._timeout)
+                                  headers={"X-Bridge-Token": self._token}, timeout=timeout_s or self._timeout)
             except (httpx.TimeoutException, httpx.TransportError) as e:
                 last_err = f"{type(e).__name__}: {e}"
             else:
