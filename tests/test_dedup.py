@@ -1,4 +1,5 @@
-"""One lead per company (pipeline/dedup.py): early skips before triage / page load, collapse among evaluated leads."""
+"""One lead per company (pipeline/dedup.py): early skips before triage / page load, collapse among evaluated leads,
+and the way back for twins whose covering vacancy turned out to be no lead."""
 
 from datetime import datetime, timedelta, timezone
 
@@ -13,10 +14,12 @@ def _conn():
     return conn
 
 
-def _vac(conn, hh_id, status, *, employer="ООО Ромашка", employer_id="100", site="hh", total=None, updated_at=None, area="Москва"):
+def _vac(conn, hh_id, status, *, employer="ООО Ромашка", employer_id="100", site="hh", total=None, updated_at=None,
+         area="Москва", skip_reason=None, priority=None):
     conn.execute("INSERT INTO vacancies(hh_id, site, title, employer, employer_id, url, area_name, source, search_pass, status, "
-                 "first_seen_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                 (hh_id, site, f"Инженер {hh_id}", employer, employer_id, "u", area, "s", "regional", status, "t", updated_at or utcnow()))
+                 "skip_reason, triage_priority, first_seen_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                 (hh_id, site, f"Инженер {hh_id}", employer, employer_id, "u", area, "s", "regional", status,
+                  skip_reason, priority, "t", updated_at or utcnow()))
     vid = conn.execute("SELECT id FROM vacancies WHERE hh_id = ?", (hh_id,)).fetchone()[0]
     if total is not None:
         conn.execute("INSERT INTO evaluations(vacancy_id,tech_score,salary_score,format_score,role_score,lead_score,total,"
@@ -88,3 +91,44 @@ def test_dedupe_evaluated_keeps_best_and_respects_sent():
     assert _status(conn, "4") == ("skipped", "duplicate_employer:S")
     assert _status(conn, "6") == ("evaluated", None)
     assert dedup.dedupe_evaluated(conn, s) == 0  # idempotent
+
+
+def test_revive_orphans_brings_twins_back_when_the_cover_is_no_lead():
+    s = Settings(_env_file=None)
+    conn = _conn()
+    # Альфа: the cover was rejected — both twins come back, each to the stage it had reached
+    _vac(conn, "R", "rejected", employer="Альфа", employer_id="1")
+    _vac(conn, "a1", "skipped", employer="Альфа", employer_id="1", skip_reason="duplicate_employer:R", priority=1)
+    _vac(conn, "a2", "skipped", employer="Альфа", employer_id="1", skip_reason="duplicate_employer:R")
+    # Бета: the cover is still on its way to the digest — the twin stays a duplicate
+    _vac(conn, "P", "prefiltered", employer="Бета", employer_id="2")
+    _vac(conn, "b1", "skipped", employer="Бета", employer_id="2", skip_reason="duplicate_employer:P", priority=2)
+    # Гамма: the cover is an evaluated lead above the threshold
+    _vac(conn, "E", "evaluated", employer="Гамма", employer_id="3", total=75)
+    _vac(conn, "c1", "skipped", employer="Гамма", employer_id="3", skip_reason="duplicate_employer:E")
+    # Дельта: the cover was rejected, but the company got another lead already — stay a duplicate
+    _vac(conn, "DR", "rejected", employer="Дельта", employer_id="4")
+    _vac(conn, "DS", "sent", employer="Дельта", employer_id="4")
+    _vac(conn, "d1", "skipped", employer="Дельта", employer_id="4", skip_reason="duplicate_employer:DR")
+    # not a duplicate at all — never touched
+    _vac(conn, "x", "skipped", employer="Эпсилон", employer_id="5", skip_reason="triage")
+
+    assert dedup.revive_orphans(conn, s) == 2
+    assert _status(conn, "a1") == ("to_fetch", None)     # had passed AI triage
+    assert _status(conn, "a2") == ("triage", None)       # had not
+    assert _status(conn, "b1") == ("skipped", "duplicate_employer:P")
+    assert _status(conn, "c1") == ("skipped", "duplicate_employer:E")
+    assert _status(conn, "d1") == ("skipped", "duplicate_employer:DR")   # still a duplicate, reason untouched
+    assert _status(conn, "x") == ("skipped", "triage")
+    assert dedup.revive_orphans(conn, s) == 0            # idempotent: nothing is skipped as a duplicate any more
+
+
+def test_revive_orphans_does_not_loop():
+    """A revived twin that is evaluated and rejected stays rejected — it is not picked up again."""
+    s = Settings(_env_file=None)
+    conn = _conn()
+    _vac(conn, "R", "rejected", employer="Альфа", employer_id="1")
+    _vac(conn, "a1", "skipped", employer="Альфа", employer_id="1", skip_reason="duplicate_employer:R", priority=1)
+    assert dedup.revive_orphans(conn, s) == 1
+    repo.set_status(conn, "a1", "rejected", None)
+    assert dedup.revive_orphans(conn, s) == 0

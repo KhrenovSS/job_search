@@ -9,6 +9,10 @@ Applied three times, each as early as the data allows (cheapest first):
 * `dedupe_evaluated(conn, settings)` — after evaluation, before letters, and again when the digest is planned: among the
   evaluated hh.ru leads at/above the threshold only the best-scored vacancy of each employer stays.
 Identity: hh.ru `company.id` (`vacancies.employer_id`) or, for cards without an id, the employer name; profi.ru is exempt.
+
+A twin is often skipped against a vacancy that has not been evaluated yet (`prefiltered`). If that one then turns out
+not to be a lead, the whole company would silently vanish — so `revive_orphans(conn, settings)` puts such twins back
+into the queue at the start of every run.
 """
 
 from __future__ import annotations
@@ -54,6 +58,37 @@ def skip_covered(conn: sqlite3.Connection, settings: Settings, status: str) -> i
                 n += 1
     if n:
         log.info("Дубли компаний среди %s: %d пропущено без загрузки/оценки", status, n)
+    return n
+
+
+DUPLICATE_PREFIX = "duplicate_employer:"
+_LOST = ("rejected", "evaluation_failed", "skipped")  # the covering vacancy never became a lead
+
+
+def revive_orphans(conn: sqlite3.Connection, settings: Settings) -> int:
+    """Twins whose covering vacancy never became a lead go back into the queue. Returns how many.
+
+    Back to `to_fetch` if the card already passed AI triage (`triage_priority` is set), otherwise back to `triage`.
+    No loop: a revived twin ends up `rejected` (not `skipped`), so it is never picked up a second time."""
+    rows = conn.execute(
+        "SELECT * FROM vacancies WHERE site = 'hh' AND status = 'skipped' AND skip_reason LIKE ? ORDER BY id",
+        (DUPLICATE_PREFIX + "%",)).fetchall()
+    n = 0
+    with transaction(conn):
+        for row in rows:
+            cover = conn.execute("SELECT status FROM vacancies WHERE hh_id = ?",
+                                 (row["skip_reason"][len(DUPLICATE_PREFIX):],)).fetchone()
+            if cover is not None and cover["status"] not in _LOST:
+                continue                                   # the twin is still covered by that vacancy
+            if covering_lead(conn, settings, row) is not None:
+                continue                                   # the company has another lead — stay a duplicate
+            status = "to_fetch" if row["triage_priority"] is not None else "triage"
+            repo.set_status(conn, row["hh_id"], status, None)
+            log.info("Дубль вернулся в очередь (%s): %s «%s» (%s) — у %s лида не осталось", status, row["hh_id"],
+                     (row["title"] or "")[:50], row["area_name"] or "—", row["employer"] or "—")
+            n += 1
+    if n:
+        log.info("Осиротевших дублей возвращено в очередь: %d", n)
     return n
 
 

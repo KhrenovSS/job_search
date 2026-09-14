@@ -66,6 +66,7 @@ class CrawlReport:
     profi_new: int = 0
     profi_error: str | None = None     # profi.ru feed without the cabinet (login/captcha) — hh.ru is unaffected
     duplicate_employers: int = 0       # vacancies skipped because the company already has a lead (all stages)
+    revived_duplicates: int = 0        # twins put back into the queue: their covering vacancy is no lead
 
     @property
     def ok(self) -> bool:
@@ -77,7 +78,8 @@ class CrawlReport:
                  + (f" · остановлен по концу окна в {self.deadline.astimezone(TZ):%H:%M}" if self.deadline_hit and self.deadline else ""),
                  f"Страниц: {self.page_loads} (за день {self.used_today}/{self.daily_cap}) · новых вакансий: {self.new_vacancies} · описаний: {self.details}"
                  + (f" · списано слабых: {self.expired_low_priority}" if self.expired_low_priority else "")
-                 + (f" · дублей компаний: {self.duplicate_employers}" if self.duplicate_employers else ""),
+                 + (f" · дублей компаний: {self.duplicate_employers}" if self.duplicate_employers else "")
+                 + (f" · дублей вернулось: {self.revived_duplicates}" if self.revived_duplicates else ""),
                  f"Оценено: {self.evaluated} · новых лидов: {self.leads} · писем: {self.letters} · вызовов ИИ: {self.bridge_calls}"]
         if self.profi_orders is not None:
             lines.append(f"profi.ru: заказов в ленте {self.profi_orders} · новых {self.profi_new}")
@@ -174,8 +176,9 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
         log.exception("Префильтр упал")
         report.errors.append(f"префильтр: {e}")
 
-    # 2b. one lead per company: twins of existing leads need no AI triage
+    # 2b. one lead per company: revive twins whose covering vacancy turned out to be no lead, then skip the covered ones
     try:
+        report.revived_duplicates = dedup.revive_orphans(conn, settings)
         report.duplicate_employers += dedup.skip_covered(conn, settings, "triage")
     except Exception as e:  # noqa: BLE001
         log.exception("Отсев дублей компаний упал")

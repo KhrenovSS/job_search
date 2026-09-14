@@ -4,8 +4,10 @@ Batches of 5 go to the bridge with `prompts/vacancy_evaluation.md` + candidate p
 Sub-scores come back, the total is computed here (weights in config). Results → `evaluations`,
 vacancy status → `evaluated` (or `evaluation_failed` after a failed retry).
 
-CLI:  python -m hh_scout.llm.evaluator [--limit N] [--preview] [--send]
+CLI:  python -m hh_scout.llm.evaluator [--limit N] [--preview] [--send] [--requeue-rejected [--min-total N]]
       --preview prints the digest as the bot would send it; --send also sends it to the owner's Telegram.
+      --requeue-rejected re-evaluates vacancies rejected under an older prompt: their descriptions are already in
+      `raw_json`, so this needs the bridge only — no browser, no page loads. Manual use, never part of a run.
 """
 
 from __future__ import annotations
@@ -205,6 +207,25 @@ def build_digest_preview(conn: sqlite3.Connection, settings: Settings, checked: 
     return messages
 
 
+def requeue_rejected(conn: sqlite3.Connection, min_total: int, limit: int | None = None) -> int:
+    """Rejected vacancies scoring at least `min_total` go back to `prefiltered` for a fresh evaluation.
+
+    Their old `evaluations` row is dropped (the table has one row per vacancy). The page is not re-opened:
+    the description is already in `raw_json`."""
+    sql = ("SELECT v.id, v.hh_id FROM vacancies v JOIN evaluations e ON e.vacancy_id = v.id "
+           "WHERE v.status = 'rejected' AND e.total >= ? AND v.raw_json IS NOT NULL AND v.raw_json != '' "
+           "ORDER BY e.total DESC, v.id")
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    rows = conn.execute(sql, (min_total,)).fetchall()
+    with conn:
+        for row in rows:
+            conn.execute("DELETE FROM evaluations WHERE vacancy_id = ?", (row["id"],))
+            repo.set_status(conn, row["hh_id"], "prefiltered", None)
+    log.info("Возвращено на переоценку отклонённых (балл ≥ %d): %d", min_total, len(rows))
+    return len(rows)
+
+
 def main() -> int:
     from hh_scout.config import load_settings
     from hh_scout.db import open_db
@@ -215,10 +236,15 @@ def main() -> int:
     ap.add_argument("--preview", action="store_true", help="print the digest the bot would send")
     ap.add_argument("--send", action="store_true", help="also send the preview to the owner's Telegram (no buttons)")
     ap.add_argument("--tail", action="store_true", help="preview only: also list vacancies below the threshold")
+    ap.add_argument("--requeue-rejected", action="store_true",
+                    help="re-evaluate vacancies rejected under an older prompt (bridge only, no browser)")
+    ap.add_argument("--min-total", type=int, default=45, help="--requeue-rejected: lowest old score to take back")
     args = ap.parse_args()
     settings = load_settings()
     setup_logging(settings.log_level)
     conn = open_db(settings.db_path)
+    if args.requeue_rejected:
+        requeue_rejected(conn, args.min_total, args.limit)
     Evaluator(settings, conn).run(args.limit)
     if args.preview or args.send:
         checked = conn.execute("SELECT COUNT(*) FROM vacancies WHERE status != 'skipped' OR skip_reason != 'applied'").fetchone()[0]

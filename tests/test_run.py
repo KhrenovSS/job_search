@@ -299,3 +299,43 @@ def test_profi_network_failure_does_not_fail_the_hh_run(monkeypatch, tmp_path):
     assert report.new_vacancies == 5                  # collection still happened
     assert report.profi_error == "лента недоступна (RuntimeError)"
     assert "Stacktrace" not in report.as_text()       # no Marionette dump in runs.error / the alert
+
+
+def test_step_2b_revives_orphan_twins_before_skipping_covered_ones(monkeypatch, tmp_path):
+    """A twin skipped against a vacancy that ended up rejected goes back into the queue, and is reported."""
+    from hh_scout.db import open_db, utcnow
+
+    order = []
+    real_revive, real_skip = run_mod.dedup.revive_orphans, run_mod.dedup.skip_covered
+    monkeypatch.setattr(run_mod.dedup, "revive_orphans", lambda c, s: (order.append("revive"), real_revive(c, s))[1])
+    monkeypatch.setattr(run_mod.dedup, "skip_covered", lambda c, s, st: (order.append("skip"), real_skip(c, s, st))[1])
+    for name in ("Collector", "Triager", "DetailsFetcher", "Evaluator", "CoverLetterWriter"):
+        monkeypatch.setattr(run_mod, name, _fake_stage())
+    monkeypatch.setattr(run_mod.prefilter, "run", lambda conn, s: {"passed": 0})
+
+    db = tmp_path / "t.db"
+    conn = open_db(db)
+    for hh_id, status, reason, prio in (("R", "rejected", None, None), ("twin", "skipped", "duplicate_employer:R", 1)):
+        conn.execute("INSERT INTO vacancies(hh_id, title, employer, employer_id, url, source, search_pass, status, "
+                     "skip_reason, triage_priority, first_seen_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                     (hh_id, "Инженер", "Альфа", "1", "u", "s", "remote", status, reason, prio, "t", utcnow()))
+    conn.commit()
+    conn.close()
+
+    report = run_mod.run_crawl(Settings(_env_file=None), db, "manual")
+    assert order == ["revive", "skip"]                    # revive first: a freed twin must not be skipped again
+    assert report.revived_duplicates == 1
+    assert "дублей вернулось: 1" in report.as_text()
+    conn = open_db(db)
+    assert conn.execute("SELECT status, skip_reason FROM vacancies WHERE hh_id = 'twin'").fetchone()[:] == ("to_fetch", None)
+
+
+def _fake_stage():
+    class Fake:
+        def __init__(self, *a, **kw):
+            pass
+
+        def run(self, *a, **kw):
+            return _Stats(page_loads=0, outcomes={}, opened=0, bridge_calls=0, evaluated=0, written=0,
+                          new_vacancies=0, search_pages=0, cards_seen=0, not_logged_in=False, format_errors=0)
+    return Fake

@@ -40,7 +40,8 @@
 (нет инженерного слова в названии — самый частый) · `triage` (ИИ: не открывать) · `invalid_ai_answer` /
 `missing_in_ai_answer` (оценка) · `no_vacancy_view` (страница без данных) · `low_priority_expired` (приоритет 3 триажа не открыт за `LOW_PRIORITY_TTL_DAYS`) ·
 `duplicate_employer:<hh_id>` (v8: у компании уже есть лид `<hh_id>` — отправленный за последние `EMPLOYER_REPEAT_DAYS` или ждущий
-дайджест; ставится на любом статусе от `triage` до `evaluated`, см. `pipeline/dedup.py`). `set_status` в не-skip переходах обнуляет `skip_reason`.
+дайджест; ставится на любом статусе от `triage` до `evaluated`, см. `pipeline/dedup.py`). **Единственная обратимая причина** (v8.7): если `<hh_id>` так и не стал лидом (`rejected`/`evaluation_failed`/`skipped`) и у компании лида
+не осталось, `dedup.revive_orphans` в начале каждого прогона возвращает дубль в `to_fetch` (триаж ИИ уже пройден) или `triage`. `set_status` в не-skip переходах обнуляет `skip_reason`.
 
 ## Прочие поля `vacancies`
 - `work_format`: remote / hybrid / office / field / unknown (приоритет remote > hybrid > office > field).
