@@ -61,8 +61,9 @@ class Settings(BaseSettings):
     company_research_model: str = ""        # empty -> the bridge's own model (BRIDGE_MODEL, opus): reading a
                                             # company's site well is what makes the letter specific
     company_research_ttl_days: int = 180
-    company_research_max_turns: int = 5     # one hh page + two site pages + a search if needed; the 19-minute run
-                                            # was retries on a dead site, not depth (see CoverLetterWriter.__init__)
+    company_research_max_turns: int = 8     # a ceiling for the prompt's 6 network calls (hh page, site, searches,
+                                            # the company's own other vacancies), not a target: most runs take 2-4.
+                                            # The 19-minute run was retries on a dead site, not depth (v9.2)
     company_research_timeout_s: float = 450.0   # must exceed the bridge's own BRIDGE_WEB_TIMEOUT (420)
     company_research_max_per_run: int = 5   # ceiling on how long one letters step may spend reading the web
 
