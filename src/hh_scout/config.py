@@ -64,8 +64,10 @@ class Settings(BaseSettings):
     company_research_max_turns: int = 8     # a ceiling for the prompt's 6 network calls (hh page, site, searches,
                                             # the company's own other vacancies), not a target: most runs take 2-4.
                                             # The 19-minute run was retries on a dead site, not depth (v9.2)
-    company_research_timeout_s: float = 450.0   # must exceed the bridge's own BRIDGE_WEB_TIMEOUT (420)
-    company_research_max_per_run: int = 5   # ceiling on how long one letters step may spend reading the web
+    company_research_timeout_s: float = 930.0   # must exceed the bridge's own BRIDGE_WEB_TIMEOUT (900): six
+                                            # network calls on opus do not fit into 420 s when the site is silent
+    company_research_max_per_run: int = 3   # ceiling on how long one letters step may spend reading the web —
+                                            # lowered with the timeout raised, so the worst case stays ~45 min
 
     # Telegram
     tg_bot_token: str = ""

@@ -37,7 +37,7 @@ BRIDGE_TOKEN = os.environ.get("HH_BRIDGE_TOKEN", "")
 BRIDGE_MODEL = os.environ.get("BRIDGE_MODEL", "opus")
 BRIDGE_TIMEOUT = float(os.environ.get("BRIDGE_TIMEOUT", "150"))
 # Reading pages takes minutes, not seconds: a measured company research ran 5 turns in 300 s.
-BRIDGE_WEB_TIMEOUT = float(os.environ.get("BRIDGE_WEB_TIMEOUT", "420"))
+BRIDGE_WEB_TIMEOUT = float(os.environ.get("BRIDGE_WEB_TIMEOUT", "900"))
 BRIDGE_WORKDIR = os.environ.get("BRIDGE_WORKDIR") or tempfile.gettempdir()
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 
