@@ -161,8 +161,25 @@ class CoverLetterWriter:
         self.researcher = CompanyResearcher(settings, conn, self._research_bridge)
         self.stats = LetterStats()
 
+    def answered_employer(self, row: sqlite3.Row) -> sqlite3.Row | None:
+        """The vacancy of this company the owner has already answered — then no letter is written at all.
+
+        The single choke point for the owner's rule «пишем только туда, куда ещё не откликались»: it holds for the
+        digest, for `/letter` and for any ad-hoc script, and it fires before research, so a skip costs nothing.
+        """
+        if row_site(row) != "hh":
+            return None
+        answered = repo.employer_responded(self.conn, row["employer_id"], row["employer"],
+                                           exclude_id=None, within_days=self.s.employer_repeat_days)
+        if answered is not None:
+            log.info("Письмо для %s не пишу: в «%s» уже откликались (%s, %s)", row["hh_id"], row["employer"] or "—",
+                     answered["hh_id"], (answered["answered_at"] or "")[:10])
+        return answered
+
     def write_for(self, row: sqlite3.Row, system_text: str | None = None, hint: str | None = None) -> str | None:
         site = row_site(row)
+        if self.answered_employer(row) is not None:
+            return None
         system_text = system_text or self._system(site)
         company = None
         if site == "hh":

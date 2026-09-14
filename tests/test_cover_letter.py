@@ -200,3 +200,28 @@ def test_reported_cost_covers_research_too(tmp_path, caplog):
     assert stats.bridge_calls == w.bridge.calls + 1
     line = next(m for m in caplog.messages if m.startswith("Письма: написано"))
     assert "$0.2" in line or "$0.3" in line   # research money is in the total, not silently dropped
+
+
+@respx.mock
+def test_no_letter_for_a_company_the_owner_already_answered(tmp_path):
+    """The owner's rule: write only to companies he has not answered yet — a second letter hits the same HR desk."""
+    s = _settings(tmp_path)
+    conn = _db()          # все три вакансии одного работодателя «ООО»
+    conn.execute("UPDATE vacancies SET applied = 1 WHERE hh_id = '2'")   # отклик на hh.ru по одной из них
+    route = respx.post("http://bridge.test/complete").mock(return_value=httpx.Response(200, json={"text": "x" * 600}))
+    stats = CoverLetterWriter(s, conn, BridgeClient(s, sleep=lambda x: None)).run()
+    assert stats.written == 0 and route.call_count == 0   # ни разведки, ни черновика — отсечено до трат
+    assert repo.get_cover_letter(conn, 1) is None
+
+
+@respx.mock
+def test_the_card_button_closes_the_company_for_letters_too(tmp_path):
+    s = _settings(tmp_path)
+    conn = _db()
+    conn.execute("INSERT INTO lead_actions(vacancy_id, action, created_at) VALUES (3, 'responded', ?)",
+                 ("2026-09-14T09:23:15+00:00",))
+    route = respx.post("http://bridge.test/complete").mock(return_value=httpx.Response(200, json={"text": "x" * 600}))
+    w = CoverLetterWriter(s, conn, BridgeClient(s, sleep=lambda x: None))
+    assert w.run().written == 0 and route.call_count == 0
+    answered = w.answered_employer(conn.execute("SELECT * FROM vacancies WHERE id = 1").fetchone())
+    assert answered["hh_id"] == "3"    # именно та вакансия, по которой владелец отметил «✅ Написал»

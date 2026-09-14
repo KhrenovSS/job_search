@@ -3,6 +3,9 @@
 Companies post near-identical vacancies in several regions; the owner writes to the company once — a partnership is with
 the whole organisation, not with a regional branch. So an employer that already has a lead (sent within
 `EMPLOYER_REPEAT_DAYS`, or waiting for the digest) gets no second one: further vacancies are `skipped/duplicate_employer:<hh_id>`.
+A company the owner has already answered — himself on hh.ru (`applied = 1`) or with «✅ Написал» on a card — is closed
+the same way for `EMPLOYER_REPEAT_DAYS`, as `skipped/employer_responded:<hh_id>`: a second letter would reach the same
+HR desk. That check runs first, since it holds even when the company has no lead at all.
 
 Applied three times, each as early as the data allows (cheapest first):
 * `skip_covered(conn, settings, status)` — before AI triage (`triage`) and, per row, before opening a vacancy page (`to_fetch`);
@@ -39,8 +42,26 @@ def covering_lead(conn: sqlite3.Connection, settings: Settings, row: sqlite3.Row
                               threshold=settings.score_threshold, repeat_days=settings.employer_repeat_days)
 
 
+def answered_employer(conn: sqlite3.Connection, settings: Settings, row: sqlite3.Row,
+                      *, exclude_self: bool = True) -> sqlite3.Row | None:
+    """The vacancy of this row's employer the owner has already answered, or None (also None for profi.ru)."""
+    if not _is_hh(row):
+        return None
+    return repo.employer_responded(conn, row["employer_id"], row["employer"],
+                                   exclude_id=row["id"] if exclude_self else None,
+                                   within_days=settings.employer_repeat_days)
+
+
 def skip_if_covered(conn: sqlite3.Connection, settings: Settings, row: sqlite3.Row) -> sqlite3.Row | None:
-    """Mark `row` a duplicate if its employer already has a lead; returns that lead or None. Commits nothing."""
+    """Mark `row` a duplicate if its employer already has a lead — or was already answered; returns it or None.
+
+    Commits nothing."""
+    answered = answered_employer(conn, settings, row)
+    if answered is not None:
+        repo.skip_as_responded(conn, row["id"], answered["hh_id"])
+        log.info("В компанию уже откликались: %s «%s» (%s) — %s, отклик по %s", row["hh_id"], (row["title"] or "")[:50],
+                 row["area_name"] or "—", row["employer"] or "—", answered["hh_id"])
+        return answered
     lead = covering_lead(conn, settings, row)
     if lead is not None:
         repo.skip_as_duplicate(conn, row["id"], lead["hh_id"])
@@ -117,6 +138,13 @@ def dedupe_evaluated(conn: sqlite3.Connection, settings: Settings) -> int:
                 repo.skip_as_duplicate(conn, row["id"], twin["hh_id"])
                 log.info("Дубль компании в дайджесте: %s «%s» (%s) уступает %s (%s, %d баллов)", row["hh_id"],
                          (row["title"] or "")[:50], row["area_name"] or "—", twin["hh_id"], twin["area_name"] or "—", twin["total"])
+                n += 1
+                continue
+            answered = answered_employer(conn, settings, row)
+            if answered is not None:
+                repo.skip_as_responded(conn, row["id"], answered["hh_id"])
+                log.info("В компанию уже откликались: %s «%s» — %s, отклик по %s", row["hh_id"],
+                         (row["title"] or "")[:50], row["employer"] or "—", answered["hh_id"])
                 n += 1
                 continue
             sent = repo.employer_lead(conn, row["employer_id"], row["employer"], exclude_id=row["id"],

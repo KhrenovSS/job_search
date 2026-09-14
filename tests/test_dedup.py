@@ -140,3 +140,54 @@ def test_revive_orphans_does_not_loop():
     assert dedup.revive_orphans(conn, s) == 1
     repo.set_status(conn, "a1", "rejected", None)
     assert dedup.revive_orphans(conn, s) == 0
+
+
+def _responded(conn, vacancy_id, *, when=None, action="responded"):
+    conn.execute("INSERT INTO lead_actions(vacancy_id, action, created_at) VALUES (?,?,?)",
+                 (vacancy_id, action, when or utcnow()))
+
+
+def test_company_the_owner_already_answered_is_closed_for_the_repeat_window():
+    """The owner writes to the company's HR, so one answer closes the whole company — his own rule."""
+    s = Settings(_env_file=None, employer_repeat_days=90)
+    conn = _conn()
+    vid = _vac(conn, "A", "skipped", skip_reason="applied")        # он откликнулся сам на hh.ru
+    conn.execute("UPDATE vacancies SET applied = 1 WHERE id = ?", (vid,))
+    _vac(conn, "a", "triage")                                      # новая вакансия той же компании
+    _vac(conn, "d", "triage", employer="Другая", employer_id="300")
+    assert dedup.skip_covered(conn, s, "triage") == 1
+    assert _status(conn, "a") == ("skipped", "employer_responded:A")
+    assert _status(conn, "d")[0] == "triage"
+
+
+def test_the_card_button_counts_as_an_answer_too():
+    s = Settings(_env_file=None, employer_repeat_days=90)
+    conn = _conn()
+    _responded(conn, _vac(conn, "L", "sent"))                      # «✅ Написал» на карточке лида
+    _vac(conn, "a", "evaluated", total=80)
+    assert dedup.dedupe_evaluated(conn, s) == 1
+    assert _status(conn, "a") == ("skipped", "employer_responded:L")
+
+
+def test_an_old_answer_does_not_close_the_company_forever():
+    s = Settings(_env_file=None, employer_repeat_days=90)
+    conn = _conn()
+    long_ago = (datetime.now(timezone.utc) - timedelta(days=120)).replace(microsecond=0).isoformat()
+    vid = _vac(conn, "A", "skipped", skip_reason="applied", updated_at=long_ago)
+    conn.execute("UPDATE vacancies SET applied = 1 WHERE id = ?", (vid,))
+    _responded(conn, vid, when=long_ago)
+    _vac(conn, "a", "triage")
+    assert dedup.skip_covered(conn, s, "triage") == 0
+    assert _status(conn, "a")[0] == "triage"
+
+
+def test_revive_orphans_leaves_answered_companies_closed():
+    """A duplicate comes back when its cover turns out to be no lead; an answered company must not."""
+    s = Settings(_env_file=None, employer_repeat_days=90)
+    conn = _conn()
+    vid = _vac(conn, "A", "skipped", skip_reason="applied")
+    conn.execute("UPDATE vacancies SET applied = 1 WHERE id = ?", (vid,))
+    _vac(conn, "a", "triage", priority=3)
+    dedup.skip_covered(conn, s, "triage")
+    assert dedup.revive_orphans(conn, s) == 0
+    assert _status(conn, "a") == ("skipped", "employer_responded:A")

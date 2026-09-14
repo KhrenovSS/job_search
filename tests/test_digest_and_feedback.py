@@ -89,3 +89,32 @@ def test_feedback_roundtrip_and_callbacks():
     kb = vote_kb(5)
     assert [b.callback_data for b in kb.inline_keyboard[0]] == ["fb:5:up", "fb:5:down"]
     assert reason_kb(5).inline_keyboard[2][0].callback_data == "fbr:5:skip"
+
+
+def test_letter_cmd_refuses_for_a_company_the_owner_already_answered(tmp_path):
+    """Иначе владелец увидел бы «ИИ вернул текст неподходящей длины» — неправда и потраченные деньги."""
+    import asyncio
+
+    from aiogram.filters import CommandObject
+
+    from hh_scout.bot.handlers import letter_cmd
+
+    conn = _db()
+    conn.execute("UPDATE vacancies SET employer = 'ООО 1', updated_at = '2026-09-14T09:00:00+00:00' WHERE id IN (1, 2)")
+    conn.execute("INSERT INTO lead_actions(vacancy_id, action, created_at) VALUES (1, 'responded', ?)",
+                 ("2026-09-14T09:23:15+00:00",))
+    said: list[str] = []
+
+    class _Msg:
+        async def answer(self, text, **kw):
+            said.append(text)
+
+    prompts = tmp_path / "prompts"
+    prompts.mkdir()
+    (prompts / "candidate_profile.md").write_text("П", encoding="utf-8")
+    (prompts / "resume.md").write_text("Р", encoding="utf-8")
+    (prompts / "cover_letter.md").write_text("h\n---\nSYS", encoding="utf-8")
+    s = Settings(_env_file=None, prompts_dir=prompts, bridge_url="http://bridge.test", bridge_token="t")
+    asyncio.run(letter_cmd(_Msg(), CommandObject(args="2"), s, conn))
+    assert len(said) == 1 and said[0].startswith("Вы уже откликались")
+    assert "2026-09-14" in said[0] and "Инженер 1" in said[0]

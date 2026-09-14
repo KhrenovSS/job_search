@@ -199,9 +199,15 @@ async def letter_cmd(m: Message, command: CommandObject, settings: Settings, con
     if row is None:
         await m.answer("Такой оценённой вакансии нет в базе.")
         return
+    writer = CoverLetterWriter(settings, conn)
+    answered = writer.answered_employer(row)
+    if answered is not None:   # письмо уходит кадровику всей организации — второе на тот же стол не нужно
+        await m.answer(f"Вы уже откликались в «{row['employer'] or '—'}»: «{answered['title'] or '—'}» "
+                       f"({answered['hh_id']}), {(answered['answered_at'] or '')[:10]} — письмо не переписываю.")
+        return
     await m.answer("Пишу отклик…" + (f" С учётом: {hint}" if hint else ""))
     try:
-        text = await asyncio.to_thread(CoverLetterWriter(settings, conn).write_for, row, None, hint or None)
+        text = await asyncio.to_thread(writer.write_for, row, None, hint or None)
     except Exception as e:  # noqa: BLE001
         await m.answer(f"Не удалось: {e}")
         return

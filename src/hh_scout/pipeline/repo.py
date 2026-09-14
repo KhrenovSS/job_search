@@ -221,9 +221,46 @@ def employer_lead(conn: sqlite3.Connection, employer_id: str | None, employer: s
     return conn.execute(sql, same_employer_params(employer_id, employer) + [exclude_id, cutoff, threshold]).fetchone()
 
 
+def employer_responded(conn: sqlite3.Connection, employer_id: str | None, employer: str | None, *,
+                       exclude_id: int | None, within_days: int) -> sqlite3.Row | None:
+    """The vacancy of this employer the owner has already answered, within `within_days` (0 = ever), newest first.
+
+    Two ways an answer is recorded: the owner applied on hh.ru himself and the collector saw it in his negotiations
+    (`vacancies.applied = 1`), or he pressed «✅ Написал» on a lead card (`lead_actions.responded` / `auto_responded`).
+    A letter goes to the company's HR, not to a branch, so one answer closes the whole company — writing again would
+    land on the same desk.
+    """
+    if employer_id is None and not employer:
+        return None
+    from datetime import timedelta
+
+    cutoff = ((datetime.now(timezone.utc) - timedelta(days=within_days)).replace(microsecond=0).isoformat()
+              if within_days > 0 else "1970-01-01T00:00:00+00:00")
+    sql = (f"""SELECT * FROM (
+                 SELECT v.id, v.hh_id, v.title, v.status,
+                        COALESCE((SELECT MAX(a.created_at) FROM lead_actions a
+                                    WHERE a.vacancy_id = v.id
+                                      AND a.action IN ('responded', 'auto_responded')),
+                                 v.updated_at) AS answered_at   -- «✅ Написал» точен; у откликов с hh.ru есть
+                                                                -- только момент, когда бот их увидел
+                   FROM vacancies v
+                  WHERE {same_employer_sql('v')} AND v.id IS NOT ?
+                    AND (v.applied = 1 OR EXISTS (SELECT 1 FROM lead_actions a WHERE a.vacancy_id = v.id
+                                                   AND a.action IN ('responded', 'auto_responded')))
+               ) WHERE answered_at >= ? ORDER BY answered_at DESC, id DESC LIMIT 1""")
+    return conn.execute(sql, same_employer_params(employer_id, employer) + [exclude_id, cutoff]).fetchone()
+
+
 def skip_as_duplicate(conn: sqlite3.Connection, vacancy_id: int, of_hh_id: str) -> None:
     conn.execute("UPDATE vacancies SET status = 'skipped', skip_reason = ?, updated_at = ? WHERE id = ?",
                  (f"duplicate_employer:{of_hh_id}", utcnow(), vacancy_id))
+
+
+def skip_as_responded(conn: sqlite3.Connection, vacancy_id: int, of_hh_id: str) -> None:
+    """Its own reason, not `duplicate_employer:`: `dedup.revive_orphans` resurrects duplicates, and a company
+    the owner has already written to must stay closed."""
+    conn.execute("UPDATE vacancies SET status = 'skipped', skip_reason = ?, updated_at = ? WHERE id = ?",
+                 (f"employer_responded:{of_hh_id}", utcnow(), vacancy_id))
 
 
 # --- cover letters ----------------------------------------------------------------
