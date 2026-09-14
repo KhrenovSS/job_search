@@ -113,3 +113,22 @@ def test_profi_bid_payload_has_its_own_budget_not_the_hh_flag():
                  "VALUES (9,80,0,0,80,60,80,'yes',0,'project','end_customer','нужен ПЛК','предложить','[]','t')")
     payload = letter_payload(_payload_row(conn, 9))
     assert payload["budget"] == "до 5000 ₽" and "salary_stated" not in payload
+
+
+def test_letter_payload_carries_the_company_dossier_and_the_place(tmp_path):
+    """Before v9.0 the model knew only the employer's name — not even the city the work is in."""
+    conn = _db()
+    conn.execute("UPDATE vacancies SET area_name = 'Кузнецк', work_format = 'remote', "
+                 "raw_json = ? WHERE id = 1",
+                 (json.dumps({"description": "<p>Нужен ПЛК</p>",
+                              "address": {"displayName": "Кузнецк, улица Белинского, 8А"}}, ensure_ascii=False),))
+    row = repo.lead_by_hh_id(conn, "1")
+
+    brief = {"found": True, "what_they_do": "Выпускает эластичный пенополиуретан", "industry": "Химия"}
+    payload = letter_payload(row, brief)
+    assert payload["company"] == brief
+    assert payload["city"] == "Кузнецк"
+    assert payload["address"] == "Кузнецк, улица Белинского, 8А"
+    assert payload["work_format"] == "remote"
+
+    assert letter_payload(row)["company"] is None      # nothing known: the prompt then writes as before

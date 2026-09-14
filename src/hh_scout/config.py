@@ -55,6 +55,13 @@ class Settings(BaseSettings):
     bridge_model: str = ""  # empty -> the bridge's own default (BRIDGE_MODEL)
     bridge_timeout_s: float = 180.0
 
+    # Company research (v9.0): one web-enabled bridge call per employer, cached in `employers`.
+    # Runs outside the browser, so it costs no page loads from the daily cap — only bridge money.
+    company_research_enabled: bool = True
+    company_research_model: str = "sonnet"  # the job is reading pages, not judging: opus is not worth it here
+    company_research_ttl_days: int = 180
+    company_research_max_turns: int = 6
+
     # Telegram
     tg_bot_token: str = ""
     tg_owner_chat_id: int | None = None

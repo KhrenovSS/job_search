@@ -6,7 +6,7 @@ def test_migrations_create_schema_and_are_idempotent():
     assert migrate(conn) == len(MIGRATIONS)
     tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"areas_cache", "vacancies", "evaluations", "digests",
-            "digest_items", "feedback", "runs", "kv"} <= tables
+            "digest_items", "feedback", "runs", "kv", "employers"} <= tables
     run_cols = {r["name"] for r in conn.execute("PRAGMA table_info(runs)")}
     assert {"page_loads", "bridge_calls", "trigger"} <= run_cols
     # second run is a no-op
@@ -86,3 +86,19 @@ def test_transaction_commits_a_batch_and_rolls_back_on_error():
         pass
     assert not conn.in_transaction
     assert kv_get(conn, "a") == "1"
+
+
+def test_m009_employers_is_keyed_by_the_hh_company_id():
+    """One dossier per company — the same key as "one lead per company", so every vacancy of it reuses the answer."""
+    conn = connect(":memory:")
+    migrate(conn)
+    cols = {r[1]: r for r in conn.execute("PRAGMA table_info(employers)")}
+    assert cols["employer_id"][5] == 1                      # primary key
+    assert {"name", "found", "brief", "sources", "researched_at"} <= set(cols)
+    conn.execute("INSERT INTO employers(employer_id, name, found, brief, sources, researched_at) "
+                 "VALUES ('1', 'ООО', 1, '{}', '[]', 't')")
+    conn.execute("INSERT INTO employers(employer_id, name, found, brief, sources, researched_at) "
+                 "VALUES ('1', 'ООО', 0, '{}', '[]', 'u') "
+                 "ON CONFLICT(employer_id) DO UPDATE SET found = excluded.found")
+    assert conn.execute("SELECT found FROM employers WHERE employer_id = '1'").fetchone()[0] == 0
+

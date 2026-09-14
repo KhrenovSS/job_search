@@ -48,12 +48,27 @@ def format_card(position: int, v: sqlite3.Row, e: sqlite3.Row) -> str:
         f"   ⭐ Лид: <b>{e['total']}/100</b> (техника {e['tech_score']} · роль {e['role_score']} · лид {e['lead_score']})",
         f"   Что им нужно: {_esc(e['verdict'])}",
     ]
+    about = _company_line(v)
+    if about:
+        lines.append(f"   🏭 О компании: {_esc(about)}")
     if e["pitch_hint"]:
         lines.append(f"   ✉️ Зацепка: {_esc(e['pitch_hint'])}")
     if flags:
         lines.append(f"   ⚠️ {_esc('; '.join(flags))}")
     lines.append(f"   {v['url']}")
     return "\n".join(lines)
+
+
+def _company_line(v: sqlite3.Row) -> str:
+    """One line of the employer dossier, so the owner sees what the letter was built on and can spot an invention."""
+    raw = _row_get(v, "company_brief")
+    if not raw:
+        return ""
+    try:
+        brief = json.loads(raw)
+    except (TypeError, ValueError):
+        return ""
+    return str(brief.get("what_they_do") or "")[:300]
 
 
 def format_letter(employer: str | None, text: str, site: str = "hh") -> str:

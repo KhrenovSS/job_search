@@ -44,3 +44,23 @@ class VacancyEvaluation(BaseModel):
 
 class EvaluationBatch(RootModel[list[VacancyEvaluation]]):
     pass
+
+
+class CompanyBrief(BaseModel):
+    """What the open web says about an employer (see prompts/company_research.md).
+
+    Facts and guesses are kept apart on purpose: every field but `automation_hooks` must come from a page the
+    model actually read, and `sources` says which. `found=False` is a valid answer — a small company with no
+    site is common, and inventing one would poison the letter.
+    """
+
+    found: bool = False
+    what_they_do: str = ""
+    industry: str = ""
+    products: list[str] = Field(default_factory=list)
+    sites: list[str] = Field(default_factory=list)
+    scale: str = ""
+    automation_hooks: list[str] = Field(default_factory=list)  # guesses, marked as such in the letter prompt
+    sources: list[str] = Field(default_factory=list)
+    note: str = ""
+

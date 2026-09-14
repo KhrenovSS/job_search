@@ -257,7 +257,9 @@ def get_cover_letter(conn: sqlite3.Connection, vacancy_id: int) -> str | None:
 
 LEAD_SELECT = """SELECT v.*, e.tech_score, e.role_score, e.lead_score, e.total, e.ip_gph_possible, e.is_agency,
                         e.employment_hint, e.company_kind, e.verdict, e.pitch_hint, e.red_flags,
-                        (SELECT text FROM cover_letters c WHERE c.vacancy_id = v.id) AS letter
+                        (SELECT text FROM cover_letters c WHERE c.vacancy_id = v.id) AS letter,
+                        (SELECT brief FROM employers emp WHERE emp.employer_id = v.employer_id AND emp.found = 1)
+                            AS company_brief
                  FROM vacancies v JOIN evaluations e ON e.vacancy_id = v.id"""
 
 

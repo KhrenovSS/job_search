@@ -46,12 +46,14 @@ docs/  ARCHITECTURE.md (компоненты и 6 шагов пайплайна)
        INTEGRATIONS.md (страницы hh.ru, мост, Telegram) · DECISIONS.md (почему) · ROADMAP.md (история, состояние)
        archive/README.md      описание архива; сама папка archive/2026-09-08-initial-vision/ (старые доки, PDF резюме,
                               переписка с примером письма) — только локально, в .gitignore
-prompts/  candidate_profile.md  профиль кандидата — правит ВЛАДЕЛЕЦ, читается целиком при каждом прогоне; в .gitignore
+prompts/  company_research.md   что открыть про компанию и что вернуть (веб-разведка, v9.0)
+          candidate_profile.md  профиль кандидата — правит ВЛАДЕЛЕЦ, читается целиком при каждом прогоне; в .gitignore
           resume.md             резюме (из PDF) — правит владелец; источник фактов для писем; в .gitignore
           *.example.md          публичные образцы этих двух файлов (скопировать и заполнить на новой машине)
           card_triage.md · vacancy_evaluation.md · cover_letter.md  системные промпты (часть после `---`)
           profi_order_evaluation.md · profi_bid.md  то же для заказов profi.ru (оценка заказа, короткое предложение клиенту)
-bridge/   hh_scout_bridge.py  мост Claude: FastAPI → `claude -p` под подпиской; hh-scout-bridge.service.template, install.sh, .env.bridge(.example)
+bridge/   hh_scout_bridge.py  мост Claude: FastAPI → `claude -p` под подпиской; cmdline.py (сборка команды CLI:
+          без инструментов по умолчанию, веб — только при `allow_web`); hh-scout-bridge.service.template, install.sh, .env.bridge(.example)
 scripts/  install_service.sh (sudo) · install_geckodriver.sh · setup_firefox.sh · check_browser.py · tg_whoami.py
           · tg_alert.sh (Telegram через curl для systemd OnFailure)
           · svc.sh (status/logs/start/stop/restart/reinstall/bridge-restart; не рестартует во время сбора) · grant_agent_control.sh
@@ -72,6 +74,8 @@ src/hh_scout/
   profi/           pages.py — лента заказов profi.ru из DOM кабинета (OrderCard, parse_orders, ProfiBlocked); v7, PROFI_ENABLED
   llm/             bridge_client.py · prompts.py (сборка промптов) · schemas.py · triage.py (карточки → открывать?)
                    evaluator.py (лид: техника/роль/лид) · cover_letter.py (письмо на лид)
+                   company_research.py (досье на работодателя из открытых источников → таблица `employers`;
+                   единственный запрос, которому мост разрешает веб; идёт мимо браузера)
   pipeline/        repo.py (весь SQL) · budget.py (дневной лимит) · collector.py (4 прохода: regional/remote/project/gph) ·
                    prefilter.py · details.py · ranker.py (total, карточка)
                    digest_builder.py · dedup.py (одна компания — один лид) · run.py (оркестратор одного прогона)
@@ -116,7 +120,9 @@ data/              hh_scout.db (WAL), logs/ — в .gitignore
 порог, веса, лимиты, окна подходов, ритм серий, время дайджеста, география (`SEARCH_ALL_RUSSIA`) и доля бюджета
 под страницы вакансий (`DETAILS_BUDGET_SHARE`) — `.env` (`.env.example` перечисляет всё). Что считается лидом —
 `prompts/vacancy_evaluation.md` + `prompts/candidate_profile.md`. Схема БД — `db.py`, перечисления — `docs/DATABASE.md`.
-Ядро письма — блок «По вашим задачам» (`prompts/cover_letter.md`, п.3): совпадение опыта с требованиями
+Письмо персонализируется досье на компанию (`prompts/company_research.md` → таблица `employers`): факты
+о производстве берутся только из прочитанных страниц, `automation_hooks` — явные предположения, пустое досье
+означает письмо «как раньше». Ядро письма — блок «По вашим задачам» (`prompts/cover_letter.md`, п.3): совпадение опыта с требованиями
 вакансии, сокращается последним. Письмо предлагает **только работу по ИП** — оговорок про штат в нём нет
 (п.4), хотя штатная вакансия остаётся полноценным лидом; там же обязательная гибкость (объём/этапы/сроки,
 начать с небольшой задачи, работа в их процессе) и **одна фраза** про деньги: обе суммы — ориентир в резюме

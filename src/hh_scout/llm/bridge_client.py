@@ -65,11 +65,15 @@ class BridgeClient:
         r.raise_for_status()
         return r.json()
 
-    def complete(self, system_text: str, user_text: str, *, model: str | None = None) -> str:
+    def complete(self, system_text: str, user_text: str, *, model: str | None = None,
+                 allow_web: bool = False, max_turns: int = 1) -> str:
+        """One bridge call. `allow_web` lets the CLI read the open web — only company research uses it."""
         payload = {
             "system_text": system_text,
             "messages": [{"role": "user", "content": user_text}],
             "model": model or self._model or "",
+            "allow_web": allow_web,
+            "max_turns": max_turns,
         }
         last_err: str = ""
         for attempt in range(self._retries + 1):

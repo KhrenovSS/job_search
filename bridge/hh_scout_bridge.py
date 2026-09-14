@@ -26,6 +26,7 @@ import os
 import tempfile
 from typing import Any
 
+from cmdline import build_cmd
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
@@ -54,6 +55,8 @@ class CompleteRequest(BaseModel):
     messages: list[Message] = Field(min_length=1, max_length=MAX_MESSAGES)
     model: str = ""  # empty -> BRIDGE_MODEL
     max_tokens: int = 8000  # accepted for API compatibility; the CLI decides
+    allow_web: bool = False  # let the CLI read the open web (company research); everything else stays tool-less
+    max_turns: int = Field(default=1, ge=1, le=12)
 
 
 class CompleteResponse(BaseModel):
@@ -83,10 +86,9 @@ def _cli_env() -> dict[str, str]:
     return env
 
 
-async def run_claude(system_text: str, prompt: str, model: str) -> dict[str, Any]:
-    cmd = [CLAUDE_BIN, "-p", "--output-format", "json", "--max-turns", "1", "--tools", "", "--model", model]
-    if system_text:
-        cmd += ["--system-prompt", system_text]
+async def run_claude(system_text: str, prompt: str, model: str, *, allow_web: bool = False,
+                     max_turns: int = 1) -> dict[str, Any]:
+    cmd = build_cmd(CLAUDE_BIN, system_text, model, allow_web=allow_web, max_turns=max_turns)
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdin=asyncio.subprocess.PIPE,
@@ -142,8 +144,9 @@ async def complete(req: CompleteRequest, x_bridge_token: str | None = Header(def
     _check_token(x_bridge_token)
     model = req.model or BRIDGE_MODEL
     prompt = _flatten(req.messages)
-    log.info("complete: model=%s system=%d chars prompt=%d chars", model, len(req.system_text), len(prompt))
-    envelope = await run_claude(req.system_text, prompt, model)
+    log.info("complete: model=%s system=%d chars prompt=%d chars%s", model, len(req.system_text), len(prompt),
+             f" web={req.max_turns} turns" if req.allow_web else "")
+    envelope = await run_claude(req.system_text, prompt, model, allow_web=req.allow_web, max_turns=req.max_turns)
     resp = _envelope_to_response(envelope)
     log.info("complete: done, %d chars out, cost=%s", len(resp.text), resp.cost_usd)
     return resp

@@ -33,7 +33,8 @@
 | 3 | Триаж ИИ | `llm/triage.py` | карточки пачками по 30 → `to_fetch` (+priority 1–3) или `skipped/triage` | мост |
 | 4 | Описания | `pipeline/details.py` | сначала `repo.expire_low_priority`: `to_fetch` с приоритетом 3 старше `LOW_PRIORITY_TTL_DAYS` (3) → `skipped/low_priority_expired`; затем `to_fetch` по приоритету → перед каждой загрузкой `dedup.skip_if_covered` (двойник уже имеющегося лида не стоит загрузки) → страница вакансии → `prefiltered` (архив/отклик → `skipped`; страница без `vacancyView` → `evaluation_failed`) | браузер, остаток бюджета прогона |
 | 5 | Оценка | `llm/evaluator.py` | `prefiltered` пачками по 5 → `evaluations` (tech/role/lead, verdict, pitch_hint…) → `evaluated`; total = код. Затем `dedup.dedupe_evaluated`: среди `evaluated ≥ порог` (hh) остаётся лучшая вакансия каждой компании (группировка транзитивна: по `employer_id` или имени), остальные → `skipped/duplicate_employer`; компания с `sent`-лидом в окне повтора не получает нового | мост |
-| 6 | Письма | `llm/cover_letter.py` | `evaluated`/`sent` с `total ≥ порог` без письма (`repo.leads_without_letter`) → `cover_letters` (1 вызов на лид) | мост |
+| 5b | Досье на компанию | `llm/company_research.py` | Перед письмом, для hh-лидов с `employer_id`: CLI с веб-инструментами читает `hh.ru/employer/<id>` и сайт компании → `employers` (1 вызов на **компанию**, кэш `COMPANY_RESEARCH_TTL_DAYS`). Мимо браузера — дневной лимит загрузок не тратится. Сбой или `found: false` не мешает письму | мост (веб) |
+| 6 | Письма | `llm/cover_letter.py` | `evaluated`/`sent` с `total ≥ порог` без письма (`repo.leads_without_letter`) → `cover_letters` (1 вызов на лид), в payload идёт досье компании, город и адрес площадки | мост |
 
 Сбор: задачи = `SEARCH_QUERIES` × проходы (regional: 49 регионов одним запросом; remote: `work_format=REMOTE`;
 project: `employment_form=PROJECT,PART`), в случайном порядке; пагинация до `max_pages_per_query` (6) с ранней

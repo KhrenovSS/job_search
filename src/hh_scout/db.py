@@ -235,6 +235,25 @@ def _m008_accept_temporary(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE vacancies ADD COLUMN civil_law_contracts TEXT")
 
 
+def _m009_employers(conn: sqlite3.Connection) -> None:
+    """v9.0: what the open web says about a company — one dossier per employer, reused by all its vacancies.
+
+    Keyed by hh.ru `company.id`, the same key as "one lead per company" (`vacancies.employer_id`), so a company
+    is researched once and the answer serves every letter. `brief` is the model's validated JSON, `sources` the
+    URLs it read; `found = 0` records "looked and found nothing" so the next letter does not pay for it again.
+    """
+    conn.execute(
+        """CREATE TABLE employers (
+               employer_id    TEXT PRIMARY KEY,
+               name           TEXT,
+               found          INTEGER NOT NULL DEFAULT 0,
+               brief          TEXT,           -- JSON: CompanyBrief as the model returned it
+               sources        TEXT,           -- JSON list of URLs the model actually read
+               researched_at  TEXT NOT NULL
+           )"""
+    )
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m001_initial,
     _m002_triage_columns,
@@ -244,6 +263,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m006_site,
     _m007_employer_id,
     _m008_accept_temporary,
+    _m009_employers,
 ]
 
 

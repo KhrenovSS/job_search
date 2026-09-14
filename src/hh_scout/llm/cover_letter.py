@@ -17,13 +17,14 @@ from dataclasses import dataclass
 from hh_scout.browser.hh_pages import strip_html
 from hh_scout.config import Settings
 from hh_scout.llm.bridge_client import BridgeClient, BridgeError
+from hh_scout.llm.company_research import CompanyResearcher
 from hh_scout.llm.prompts import read_private, render
 from hh_scout.pipeline import repo
 
 log = logging.getLogger(__name__)
 
 MIN_CHARS = 400
-MAX_CHARS = 3200  # v8.5: the experience block is the core and runs 4–6 bullets; the cap only guards against rambling
+MAX_CHARS = 3600  # v9.0: +the company line and the recruiter paragraph; the cap only guards against rambling
 MAX_DESCRIPTION_CHARS = 6000
 # the vacancy asks the applicant to name a figure; the letter answers "по объёму задач", never a number
 ASKS_SALARY_PHRASES = (
@@ -58,7 +59,7 @@ def salary_stated(row: sqlite3.Row) -> bool:
     return bool(raw) and (raw.get("from") is not None or raw.get("to") is not None)
 
 
-def letter_payload(row: sqlite3.Row) -> dict:
+def letter_payload(row: sqlite3.Row, company: dict | None = None) -> dict:
     raw = json.loads(row["raw_json"]) if row["raw_json"] else {}
     skills = raw.get("keySkills")
     if isinstance(skills, dict):
@@ -78,10 +79,15 @@ def letter_payload(row: sqlite3.Row) -> dict:
             "verdict": row["verdict"],
             "pitch_hint": row["pitch_hint"],
         }
+    address = raw.get("address") or {}
     return {
         "title": row["title"],
         "employer": row["employer"],
+        "company": company,  # dossier from the open web (prompts/company_research.md); None = nothing known
         "company_kind": row["company_kind"],
+        "city": row["area_name"],
+        "address": address.get("displayName") or None,
+        "work_format": row["work_format"],
         "employment": row["employment"],
         "accept_temporary": bool(row["accept_temporary"]),
         "civil_law_contracts": json.loads(row["civil_law_contracts"] or "[]"),
@@ -113,12 +119,17 @@ class CoverLetterWriter:
         self.s = settings
         self.conn = conn
         self.bridge = bridge or BridgeClient(settings)
+        self.researcher = CompanyResearcher(settings, conn, self.bridge)
         self.stats = LetterStats()
 
     def write_for(self, row: sqlite3.Row, system_text: str | None = None) -> str | None:
         site = row_site(row)
         system_text = system_text or self._system(site)
-        user_text = json.dumps(letter_payload(row), ensure_ascii=False)
+        company = None
+        if site == "hh":
+            brief = self.researcher.for_row(row)
+            company = brief.model_dump() if brief is not None and brief.found else None
+        user_text = json.dumps(letter_payload(row, company), ensure_ascii=False)
         try:
             answer = self.bridge.complete(system_text, user_text)
         except BridgeError as e:
@@ -147,7 +158,7 @@ class CoverLetterWriter:
             if site not in systems:
                 systems[site] = self._system(site)
             self.write_for(row, systems[site])
-        self.stats.bridge_calls = self.bridge.calls
+        self.stats.bridge_calls = self.bridge.calls  # research shares the client, so its calls are counted here too
         log.info("Письма: написано %d, отклонено %d, вызовов моста %d, cost $%.3f",
                  self.stats.written, self.stats.failed, self.stats.bridge_calls, self.bridge.cost_usd)
         return self.stats
