@@ -95,3 +95,12 @@ def test_expire_queue_drops_only_the_long_forgotten():
     row = conn.execute("SELECT status, skip_reason FROM vacancies WHERE hh_id = 'old'").fetchone()
     assert (row["status"], row["skip_reason"]) == ("rejected", "queue_expired")
     assert repo.expire_queue(conn, 0) == 0          # 0 = never expire
+
+
+def test_the_queue_reports_how_long_each_lead_has_waited():
+    """The owner must see that a lead is old — the bot does not re-open vacancy pages to check they are still live."""
+    conn = _conn()
+    _lead(conn, "old", 70, days_ago=9)
+    _lead(conn, "fresh", 71)
+    by_id = {r["hh_id"]: r["waiting_days"] for r in repo.lead_queue(conn, 60)}
+    assert by_id["old"] == 9 and by_id["fresh"] == 0

@@ -48,6 +48,9 @@ def format_card(position: int, v: sqlite3.Row, e: sqlite3.Row) -> str:
         f"   ⭐ Лид: <b>{e['total']}/100</b> (техника {e['tech_score']} · роль {e['role_score']} · лид {e['lead_score']})",
         f"   Что им нужно: {_esc(e['verdict'])}",
     ]
+    waited = _row_get(v, "waiting_days") or 0
+    if waited >= 2:
+        lines[1] += f" · ⏳ в очереди {waited} дн."
     about = _company_line(v)
     if about:
         lines.append(f"   🏭 О компании: {_esc(about)}")
@@ -149,7 +152,9 @@ def format_queue_tail(waiting: list[sqlite3.Row], total: int) -> str:
             else f"<b>Ждут очереди: {total}</b> (ближайшие {len(waiting)})")
     lines = [head + " — не попали в сегодняшнюю норму, но не отброшены."]
     for r in waiting:
-        lines.append(f"{r['total']}/100 · {_esc(r['employer'] or '—')} · "
+        waited = r["waiting_days"] if "waiting_days" in r.keys() else 0
+        age = f" · ждёт {waited} дн." if (waited or 0) >= 2 else ""
+        lines.append(f"{r['total']}/100{age} · {_esc(r['employer'] or '—')} · "
                      f"<a href=\"{r['url']}\">{_esc((r['title'] or '')[:55])}</a> · /letter {r['hh_id']}")
     lines.append("Письмо по любой из них — командой /letter &lt;id&gt;, можно с пожеланием: "
                  "<code>/letter 12345678 больше про SCADA</code>")

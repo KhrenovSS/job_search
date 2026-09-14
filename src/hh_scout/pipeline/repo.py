@@ -275,7 +275,10 @@ def lead_queue(conn: sqlite3.Connection, threshold: int, limit: int | None = Non
                offset: int = 0) -> list[sqlite3.Row]:
     """The pending leads, best first by priority. `offset` skips the ones already taken (the digest tail)."""
     prio = PRIORITY_SQL.format(bonus=int(wait_bonus_max))
-    sql = (LEAD_SELECT + " WHERE v.status = 'evaluated' AND e.total >= ? "
+    sql = (LEAD_SELECT.replace(" FROM vacancies v",
+                               ", CAST(julianday('now') - julianday(e.created_at) AS INTEGER) AS waiting_days"
+                               " FROM vacancies v")
+           + " WHERE v.status = 'evaluated' AND e.total >= ? "
            f"ORDER BY {prio} DESC, e.total DESC, v.published_at DESC")
     if limit is not None:
         sql += f" LIMIT {int(limit)} OFFSET {int(offset)}"
