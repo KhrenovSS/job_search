@@ -106,6 +106,12 @@ def test_revive_orphans_brings_twins_back_when_the_cover_is_no_lead():
     # Гамма: the cover is an evaluated lead above the threshold
     _vac(conn, "E", "evaluated", employer="Гамма", employer_id="3", total=75)
     _vac(conn, "c1", "skipped", employer="Гамма", employer_id="3", skip_reason="duplicate_employer:E")
+    # Дзета: the cover was evaluated below the threshold — as lost as rejected, just not written off yet
+    _vac(conn, "W", "evaluated", employer="Дзета", employer_id="6", total=40)
+    _vac(conn, "z1", "skipped", employer="Дзета", employer_id="6", skip_reason="duplicate_employer:W")
+    # Эта: the cover has not been fetched yet — it may still become the lead, the twin waits
+    _vac(conn, "T", "to_fetch", employer="Эта", employer_id="7")
+    _vac(conn, "e1", "skipped", employer="Эта", employer_id="7", skip_reason="duplicate_employer:T")
     # Дельта: the cover was rejected, but the company got another lead already — stay a duplicate
     _vac(conn, "DR", "rejected", employer="Дельта", employer_id="4")
     _vac(conn, "DS", "sent", employer="Дельта", employer_id="4")
@@ -113,11 +119,13 @@ def test_revive_orphans_brings_twins_back_when_the_cover_is_no_lead():
     # not a duplicate at all — never touched
     _vac(conn, "x", "skipped", employer="Эпсилон", employer_id="5", skip_reason="triage")
 
-    assert dedup.revive_orphans(conn, s) == 2
+    assert dedup.revive_orphans(conn, s) == 3
     assert _status(conn, "a1") == ("to_fetch", None)     # had passed AI triage
     assert _status(conn, "a2") == ("triage", None)       # had not
     assert _status(conn, "b1") == ("skipped", "duplicate_employer:P")
     assert _status(conn, "c1") == ("skipped", "duplicate_employer:E")
+    assert _status(conn, "z1") == ("triage", None)                    # below the threshold is not a lead
+    assert _status(conn, "e1") == ("skipped", "duplicate_employer:T")  # the cover is still on its way
     assert _status(conn, "d1") == ("skipped", "duplicate_employer:DR")   # still a duplicate, reason untouched
     assert _status(conn, "x") == ("skipped", "triage")
     assert dedup.revive_orphans(conn, s) == 0            # idempotent: nothing is skipped as a duplicate any more

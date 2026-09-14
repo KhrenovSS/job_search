@@ -62,11 +62,15 @@ def skip_covered(conn: sqlite3.Connection, settings: Settings, status: str) -> i
 
 
 DUPLICATE_PREFIX = "duplicate_employer:"
-_LOST = ("rejected", "evaluation_failed", "skipped")  # the covering vacancy never became a lead
+_IN_FLIGHT = ("new", "triage", "to_fetch")  # the covering vacancy still has a chance; `prefiltered` covers via covering_lead
 
 
 def revive_orphans(conn: sqlite3.Connection, settings: Settings) -> int:
     """Twins whose covering vacancy never became a lead go back into the queue. Returns how many.
+
+    "Never became a lead" is decided by `covering_lead`, not by the covering vacancy's status alone: `evaluated` below
+    the threshold is as lost as `rejected`, it just has not been written off yet. Only a vacancy still on its way
+    (`new`/`triage`/`to_fetch`) keeps its twins down.
 
     Back to `to_fetch` if the card already passed AI triage (`triage_priority` is set), otherwise back to `triage`.
     No loop: a revived twin ends up `rejected` (not `skipped`), so it is never picked up a second time."""
@@ -78,10 +82,10 @@ def revive_orphans(conn: sqlite3.Connection, settings: Settings) -> int:
         for row in rows:
             cover = conn.execute("SELECT status FROM vacancies WHERE hh_id = ?",
                                  (row["skip_reason"][len(DUPLICATE_PREFIX):],)).fetchone()
-            if cover is not None and cover["status"] not in _LOST:
-                continue                                   # the twin is still covered by that vacancy
+            if cover is not None and cover["status"] in _IN_FLIGHT:
+                continue                                   # that vacancy may still become the company's lead
             if covering_lead(conn, settings, row) is not None:
-                continue                                   # the company has another lead — stay a duplicate
+                continue                                   # the company has a lead (or one on its way) — stay a duplicate
             status = "to_fetch" if row["triage_priority"] is not None else "triage"
             repo.set_status(conn, row["hh_id"], status, None)
             log.info("Дубль вернулся в очередь (%s): %s «%s» (%s) — у %s лида не осталось", status, row["hh_id"],
