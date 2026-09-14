@@ -33,8 +33,8 @@ class Settings(BaseSettings):
     page_delay_max_s: float = 20.0
     # Daily page-load cap (search + vacancy pages, all processes): drawn once per day at random from this range
     # and stored in kv `daily_cap:<date>` so the number differs from day to day.
-    daily_page_loads_min: int = 100
-    daily_page_loads_max: int = 140
+    daily_page_loads_min: int = 150   # raised from 100-140 (v9.5): sittings spend their share to the last page
+    daily_page_loads_max: int = 200   # (35 / 34 of a cap of 103), so the cap is what limits how many leads appear
     # Rhythm inside a sitting: browse for burst_minutes, stay quiet for gap_minutes, repeat ("MIN-MAX").
     burst_minutes: str = "7-13"
     gap_minutes: str = "4-9"
@@ -43,7 +43,8 @@ class Settings(BaseSettings):
     # Share of a run's page budget held back for vacancy pages, so collection cannot eat it all
     # and leave DetailsFetcher with nothing (cards pile up in `to_fetch`, no evaluations, no leads).
     # A floor, not a ceiling: details also get whatever collection did not spend.
-    details_budget_share: float = 0.4
+    details_budget_share: float = 0.55  # v9.5: 243 cards collected per sitting against 14 pages opened — cards
+                                        # were never the scarce side, and a lead is born only from an opened page
     low_priority_ttl_days: int = 3  # triage priority 3 cards still unopened after this many days are dropped
     # One lead per company: further vacancies of an employer that already got a lead are skipped (duplicate_employer)
     # for this many days after the lead was sent; 0 = forever. Same-employer twins inside one digest always collapse to one.
