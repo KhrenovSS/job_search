@@ -4,8 +4,11 @@ A prompt change is worth nothing if it only applies to vacancies collected after
 rows back to `prefiltered`. The page is never re-opened — the description is already in `raw_json`.
 """
 
+from hh_scout.config import Settings
 from hh_scout.db import connect, migrate, utcnow
 from hh_scout.llm.evaluator import requeue
+
+THRESHOLD = Settings(_env_file=None).score_threshold
 
 
 def _conn():
@@ -32,18 +35,31 @@ def _state(conn, hh_id):
     return r["status"], r["id"] is not None
 
 
-def test_requeue_takes_borderline_rejected_only():
+def test_requeue_takes_borderline_non_leads_only():
     conn = _conn()
     _vac(conn, "near", "rejected", 57)
     _vac(conn, "far", "rejected", 20)                              # hopeless: a prompt tweak will not save it
     _vac(conn, "sent", "sent", 80)                                 # already a lead, never touched
     _vac(conn, "noraw", "rejected", 58, raw="")                    # no description cached: would need the browser
 
-    assert requeue(conn, min_total=45) == 1
+    assert requeue(conn, min_total=45, threshold=THRESHOLD) == 1
     assert _state(conn, "near") == ("prefiltered", False)           # old evaluation dropped
     assert _state(conn, "far") == ("rejected", True)
     assert _state(conn, "sent") == ("sent", True)
     assert _state(conn, "noraw") == ("rejected", True)
+
+
+def test_requeue_takes_evaluated_below_the_threshold_too():
+    """Whether a non-lead sits in `rejected` or `evaluated` only says if a digest has run since — not its fate."""
+    conn = _conn()
+    _vac(conn, "waiting", "evaluated", THRESHOLD - 1)              # written off at the next digest, a non-lead already
+    _vac(conn, "lead", "evaluated", THRESHOLD)                     # exactly at the threshold: a lead, hands off
+    _vac(conn, "written_off", "rejected", THRESHOLD - 1)           # the same vacancy one digest later
+
+    assert requeue(conn, min_total=45, threshold=THRESHOLD) == 2
+    assert _state(conn, "waiting") == ("prefiltered", False)
+    assert _state(conn, "written_off") == ("prefiltered", False)
+    assert _state(conn, "lead") == ("evaluated", True)
 
 
 def test_requeue_by_id_ignores_status_and_score():
@@ -62,6 +78,6 @@ def test_requeue_limit_takes_the_closest_to_the_threshold():
     conn = _conn()
     for hh_id, total in (("a", 46), ("b", 59), ("c", 52)):
         _vac(conn, hh_id, "rejected", total)
-    assert requeue(conn, min_total=45, limit=2) == 2
+    assert requeue(conn, min_total=45, threshold=THRESHOLD, limit=2) == 2
     assert _state(conn, "b")[0] == "prefiltered" and _state(conn, "c")[0] == "prefiltered"
     assert _state(conn, "a")[0] == "rejected"

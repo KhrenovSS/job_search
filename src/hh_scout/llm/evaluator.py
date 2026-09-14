@@ -7,9 +7,9 @@ vacancy status → `evaluated` (or `evaluation_failed` after a failed retry).
 CLI:  python -m hh_scout.llm.evaluator [--limit N] [--preview] [--send]
                                          [--requeue-rejected [--min-total N] | --requeue-id HH_ID ...]
       --preview prints the digest as the bot would send it; --send also sends it to the owner's Telegram.
-      --requeue-rejected re-evaluates vacancies rejected under an older prompt, --requeue-id named ones: their
-      descriptions are already in `raw_json`, so this needs the bridge only — no browser, no page loads.
-      Manual use, never part of a run.
+      --requeue-rejected re-evaluates what an older prompt left out (rejected, and evaluated below the threshold —
+      a vacancy sits in the first only if a digest has run since), --requeue-id named ones: their descriptions are
+      already in `raw_json`, so this needs the bridge only — no browser, no page loads. Manual use, never part of a run.
 """
 
 from __future__ import annotations
@@ -209,14 +209,18 @@ def build_digest_preview(conn: sqlite3.Connection, settings: Settings, checked: 
     return messages
 
 
-def requeue(conn: sqlite3.Connection, *, min_total: int | None = None, hh_ids: list[str] | None = None,
-            limit: int | None = None) -> int:
+def requeue(conn: sqlite3.Connection, *, min_total: int | None = None, threshold: int = 0,
+            hh_ids: list[str] | None = None, limit: int | None = None) -> int:
     """Already evaluated vacancies go back to `prefiltered` for a fresh evaluation. Returns how many.
 
-    `min_total` takes the rejected ones that scored at least that much (a prompt change usually only moves the
-    borderline); `hh_ids` takes exactly those vacancies whatever their status — for trying a prompt on a known case.
-    The old `evaluations` row is dropped (the table has one row per vacancy). The page is never re-opened:
-    the description is already in `raw_json`."""
+    `min_total` takes everything that was evaluated and did NOT become a lead but scored at least that much —
+    a prompt change only moves the borderline. "Did not become a lead" is both `rejected` and `evaluated` below
+    `threshold`: which of the two a vacancy sits in only says whether a digest has run since (`repo.reject_below`
+    in `finalize_digest` writes them off), so filtering by `rejected` alone would silently skip a whole day's work.
+    `hh_ids` takes exactly those vacancies whatever their status — for trying a prompt on a known case.
+
+    Leads are never touched (`sent`, or `evaluated` at/above the threshold). The old `evaluations` row is dropped
+    (the table has one row per vacancy). The page is never re-opened: the description is already in `raw_json`."""
     params: list = []
     sql = ("SELECT v.id, v.hh_id FROM vacancies v JOIN evaluations e ON e.vacancy_id = v.id "
            "WHERE v.raw_json IS NOT NULL AND v.raw_json != ''")
@@ -224,8 +228,8 @@ def requeue(conn: sqlite3.Connection, *, min_total: int | None = None, hh_ids: l
         sql += f" AND v.hh_id IN ({','.join('?' * len(hh_ids))})"
         params += hh_ids
     else:
-        sql += " AND v.status = 'rejected' AND e.total >= ?"
-        params.append(min_total if min_total is not None else 0)
+        sql += " AND (v.status = 'rejected' OR (v.status = 'evaluated' AND e.total < ?)) AND e.total >= ?"
+        params += [threshold, min_total if min_total is not None else 0]
     sql += " ORDER BY e.total DESC, v.id"
     if limit:
         sql += f" LIMIT {int(limit)}"
@@ -235,7 +239,7 @@ def requeue(conn: sqlite3.Connection, *, min_total: int | None = None, hh_ids: l
             conn.execute("DELETE FROM evaluations WHERE vacancy_id = ?", (row["id"],))
             repo.set_status(conn, row["hh_id"], "prefiltered", None)
     log.info("Возвращено на переоценку: %d (%s)", len(rows),
-             "по списку id" if hh_ids else f"отклонённые с баллом ≥ {min_total}")
+             "по списку id" if hh_ids else f"не ставшие лидом с баллом ≥ {min_total}")
     return len(rows)
 
 
@@ -250,7 +254,7 @@ def main() -> int:
     ap.add_argument("--send", action="store_true", help="also send the preview to the owner's Telegram (no buttons)")
     ap.add_argument("--tail", action="store_true", help="preview only: also list vacancies below the threshold")
     ap.add_argument("--requeue-rejected", action="store_true",
-                    help="re-evaluate vacancies rejected under an older prompt (bridge only, no browser)")
+                    help="re-evaluate what an older prompt left out: rejected and evaluated below the threshold")
     ap.add_argument("--min-total", type=int, default=45, help="--requeue-rejected: lowest old score to take back")
     ap.add_argument("--requeue-id", action="append", metavar="HH_ID", default=[],
                     help="re-evaluate exactly this vacancy whatever its status (repeatable); for trying a prompt")
@@ -261,7 +265,7 @@ def main() -> int:
     if args.requeue_id:
         requeue(conn, hh_ids=args.requeue_id)
     elif args.requeue_rejected:
-        requeue(conn, min_total=args.min_total, limit=args.limit)
+        requeue(conn, min_total=args.min_total, threshold=settings.score_threshold, limit=args.limit)
     Evaluator(settings, conn).run(args.limit)
     if args.preview or args.send:
         checked = conn.execute("SELECT COUNT(*) FROM vacancies WHERE status != 'skipped' OR skip_reason != 'applied'").fetchone()[0]
