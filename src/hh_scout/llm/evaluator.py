@@ -4,10 +4,12 @@ Batches of 5 go to the bridge with `prompts/vacancy_evaluation.md` + candidate p
 Sub-scores come back, the total is computed here (weights in config). Results → `evaluations`,
 vacancy status → `evaluated` (or `evaluation_failed` after a failed retry).
 
-CLI:  python -m hh_scout.llm.evaluator [--limit N] [--preview] [--send] [--requeue-rejected [--min-total N]]
+CLI:  python -m hh_scout.llm.evaluator [--limit N] [--preview] [--send]
+                                         [--requeue-rejected [--min-total N] | --requeue-id HH_ID ...]
       --preview prints the digest as the bot would send it; --send also sends it to the owner's Telegram.
-      --requeue-rejected re-evaluates vacancies rejected under an older prompt: their descriptions are already in
-      `raw_json`, so this needs the bridge only — no browser, no page loads. Manual use, never part of a run.
+      --requeue-rejected re-evaluates vacancies rejected under an older prompt, --requeue-id named ones: their
+      descriptions are already in `raw_json`, so this needs the bridge only — no browser, no page loads.
+      Manual use, never part of a run.
 """
 
 from __future__ import annotations
@@ -207,22 +209,33 @@ def build_digest_preview(conn: sqlite3.Connection, settings: Settings, checked: 
     return messages
 
 
-def requeue_rejected(conn: sqlite3.Connection, min_total: int, limit: int | None = None) -> int:
-    """Rejected vacancies scoring at least `min_total` go back to `prefiltered` for a fresh evaluation.
+def requeue(conn: sqlite3.Connection, *, min_total: int | None = None, hh_ids: list[str] | None = None,
+            limit: int | None = None) -> int:
+    """Already evaluated vacancies go back to `prefiltered` for a fresh evaluation. Returns how many.
 
-    Their old `evaluations` row is dropped (the table has one row per vacancy). The page is not re-opened:
+    `min_total` takes the rejected ones that scored at least that much (a prompt change usually only moves the
+    borderline); `hh_ids` takes exactly those vacancies whatever their status — for trying a prompt on a known case.
+    The old `evaluations` row is dropped (the table has one row per vacancy). The page is never re-opened:
     the description is already in `raw_json`."""
+    params: list = []
     sql = ("SELECT v.id, v.hh_id FROM vacancies v JOIN evaluations e ON e.vacancy_id = v.id "
-           "WHERE v.status = 'rejected' AND e.total >= ? AND v.raw_json IS NOT NULL AND v.raw_json != '' "
-           "ORDER BY e.total DESC, v.id")
+           "WHERE v.raw_json IS NOT NULL AND v.raw_json != ''")
+    if hh_ids:
+        sql += f" AND v.hh_id IN ({','.join('?' * len(hh_ids))})"
+        params += hh_ids
+    else:
+        sql += " AND v.status = 'rejected' AND e.total >= ?"
+        params.append(min_total if min_total is not None else 0)
+    sql += " ORDER BY e.total DESC, v.id"
     if limit:
         sql += f" LIMIT {int(limit)}"
-    rows = conn.execute(sql, (min_total,)).fetchall()
+    rows = conn.execute(sql, params).fetchall()
     with conn:
         for row in rows:
             conn.execute("DELETE FROM evaluations WHERE vacancy_id = ?", (row["id"],))
             repo.set_status(conn, row["hh_id"], "prefiltered", None)
-    log.info("Возвращено на переоценку отклонённых (балл ≥ %d): %d", min_total, len(rows))
+    log.info("Возвращено на переоценку: %d (%s)", len(rows),
+             "по списку id" if hh_ids else f"отклонённые с баллом ≥ {min_total}")
     return len(rows)
 
 
@@ -239,12 +252,16 @@ def main() -> int:
     ap.add_argument("--requeue-rejected", action="store_true",
                     help="re-evaluate vacancies rejected under an older prompt (bridge only, no browser)")
     ap.add_argument("--min-total", type=int, default=45, help="--requeue-rejected: lowest old score to take back")
+    ap.add_argument("--requeue-id", action="append", metavar="HH_ID", default=[],
+                    help="re-evaluate exactly this vacancy whatever its status (repeatable); for trying a prompt")
     args = ap.parse_args()
     settings = load_settings()
     setup_logging(settings.log_level)
     conn = open_db(settings.db_path)
-    if args.requeue_rejected:
-        requeue_rejected(conn, args.min_total, args.limit)
+    if args.requeue_id:
+        requeue(conn, hh_ids=args.requeue_id)
+    elif args.requeue_rejected:
+        requeue(conn, min_total=args.min_total, limit=args.limit)
     Evaluator(settings, conn).run(args.limit)
     if args.preview or args.send:
         checked = conn.execute("SELECT COUNT(*) FROM vacancies WHERE status != 'skipped' OR skip_reason != 'applied'").fetchone()[0]
