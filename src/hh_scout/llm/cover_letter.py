@@ -154,7 +154,11 @@ class CoverLetterWriter:
         self.s = settings
         self.conn = conn
         self.bridge = bridge or BridgeClient(settings)
-        self.researcher = CompanyResearcher(settings, conn, self.bridge)
+        # Research gets its own client, deliberately without retries: it waits on the web for minutes, and a
+        # bridge that just timed out on a heavy page will time out again. Handing it self.bridge (retries=2)
+        # silently overrode CompanyResearcher's own retries=0 and cost 21 minutes on a single dead company site.
+        self._research_bridge = BridgeClient(settings, retries=0)
+        self.researcher = CompanyResearcher(settings, conn, self._research_bridge)
         self.stats = LetterStats()
 
     def write_for(self, row: sqlite3.Row, system_text: str | None = None, hint: str | None = None) -> str | None:
@@ -219,10 +223,10 @@ class CoverLetterWriter:
             if site not in systems:
                 systems[site] = self._system(site)
             self.write_for(row, systems[site])
-        self.stats.bridge_calls = self.bridge.calls  # research shares the client, so its calls are counted here too
+        self.stats.bridge_calls = self.bridge.calls + self._research_bridge.calls  # research has its own client
         log.info("Письма: написано %d (правил редактор %d), отклонено %d, вызовов моста %d, cost $%.3f",
                  self.stats.written, self.stats.reviewed, self.stats.failed, self.stats.bridge_calls,
-                 self.bridge.cost_usd)
+                 self.bridge.cost_usd + self._research_bridge.cost_usd)
         return self.stats
 
     def _review(self, text: str, payload: dict) -> str | None:

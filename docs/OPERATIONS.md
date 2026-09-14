@@ -153,6 +153,7 @@ PRAGMA wal_checkpoint(TRUNCATE);
 | Поисковые запросы, регионы, стоп-слова, обязательные слова | `config.py`: `SEARCH_QUERIES`, `REGION_NAMES`, `TITLE_STOP_WORDS`, `TITLE_KEEP_WORDS`, `TITLE_REQUIRED_ANY` |
 | Порог, веса total, размер дайджеста, лимит загрузок, паузы, окно сбора, время дайджеста | `.env` (см. `.env.example`) — все поля `Settings` переопределяемы |
 | Модель Claude | `bridge/.env.bridge` `BRIDGE_MODEL` (по умолчанию для моста) или `.env` `BRIDGE_MODEL` (переопределяет на каждый запрос) |
+| Модель разведки по компании | `.env` `COMPANY_RESEARCH_MODEL` — пусто = модель моста (opus). Глубина: `COMPANY_RESEARCH_MAX_TURNS` (5) и потолок 4 обращений к сети в `prompts/company_research.md`; ретраев у разведки нет намеренно |
 | Заказы с profi.ru: включить/выключить, адрес ленты, страниц за подход | `.env`: `PROFI_ENABLED`, `PROFI_ORDERS_URL`, `PROFI_PAGES_PER_RUN`; критерии — `prompts/profi_order_evaluation.md`, текст предложения — `prompts/profi_bid.md` |
 Правило промптов: файлы с `---` — модели уходит только текст после разделителя; `candidate_profile.md` и `resume.md`
 читаются целиком, включая их заголовки.

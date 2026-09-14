@@ -168,3 +168,35 @@ def test_daily_quota_limits_letters_across_runs(tmp_path):
     second = CoverLetterWriter(s, conn, BridgeClient(s, retries=0)).run()
     assert second.written == 0            # the quota is spent for today
     assert repo.letters_written_today(conn) == 2
+
+
+@respx.mock
+def test_research_gets_its_own_client_without_retries(tmp_path):
+    """White box on purpose: sharing the letter's client (retries=2) with research cost 21 minutes on one company.
+
+    A dead site makes the bridge answer 504 only after BRIDGE_WEB_TIMEOUT (420 s), so every extra retry is
+    another seven minutes of waiting for a dossier that will not arrive.
+    """
+    s = _settings(tmp_path)
+    conn = _db()
+    letter_bridge = BridgeClient(s, sleep=lambda x: None)
+    w = CoverLetterWriter(s, conn, letter_bridge)
+    assert w.researcher.bridge is not letter_bridge
+    assert w.researcher.bridge._retries == 0 and letter_bridge._retries == 2
+
+
+@respx.mock
+def test_reported_cost_covers_research_too(tmp_path, caplog):
+    s = _settings(tmp_path)
+    conn = _db()
+    good = "Здравствуйте.\n" + "Опыт CODESYS и MasterSCADA. " * 30 + "\nИван Иванов, +7 900"
+    respx.post("http://bridge.test/complete").mock(
+        return_value=httpx.Response(200, json={"text": good, "usage": {}, "cost_usd": 0.01}))
+    w = CoverLetterWriter(s, conn, BridgeClient(s, sleep=lambda x: None))
+    w._research_bridge.cost_usd = 0.25   # as if one dossier had been read from the web
+    w._research_bridge.calls = 1
+    with caplog.at_level("INFO", logger="hh_scout.llm.cover_letter"):
+        stats = w.run()
+    assert stats.bridge_calls == w.bridge.calls + 1
+    line = next(m for m in caplog.messages if m.startswith("Письма: написано"))
+    assert "$0.2" in line or "$0.3" in line   # research money is in the total, not silently dropped
