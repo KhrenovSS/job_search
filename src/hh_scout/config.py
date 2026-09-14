@@ -60,7 +60,8 @@ class Settings(BaseSettings):
     company_research_enabled: bool = True
     company_research_model: str = "sonnet"  # the job is reading pages, not judging: opus is not worth it here
     company_research_ttl_days: int = 180
-    company_research_max_turns: int = 6     # v9.1: five companies a day instead of fifteen — depth is affordable
+    company_research_max_turns: int = 4     # measured: 4 turns / 3 fetches = 20-45 s; 6 / 5 ran 19 min on a
+                                           # company whose site was dead — depth bought nothing, waiting cost $0.60
     company_research_timeout_s: float = 450.0   # must exceed the bridge's own BRIDGE_WEB_TIMEOUT (420)
     company_research_max_per_run: int = 5   # ceiling on how long one letters step may spend reading the web
 
