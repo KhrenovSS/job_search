@@ -25,7 +25,8 @@ from hh_scout.pipeline import repo
 log = logging.getLogger(__name__)
 
 MIN_CHARS = 400
-MAX_CHARS = 3600  # v9.0: +the company line and the recruiter paragraph; the cap only guards against rambling
+MAX_CHARS = 3600  # v9.0: +the company line and the "easy to arrange" paragraph. Deliberately looser than the
+# 3400 the prompts aim at: a letter 100 chars over the guidance beats no letter at all, so this only stops rambling.
 MAX_DESCRIPTION_CHARS = 6000
 # the vacancy asks the applicant to name a figure; the letter answers "по объёму задач", never a number
 ASKS_SALARY_PHRASES = (
@@ -110,6 +111,12 @@ _MONEY_RE = re.compile(r"\d[\d\s  ]{2,}\s*(?:₽|руб|р\.|тыс|на рук�
 # Phrases that make the letter read as a mailshot or as flattery of the recruiter.
 _BANNED = ("помогу закрыть", "закрыть позицию", "закрыть вакансию", "уникальн", "инновацион", "уважаемые",
            "динамично развивающ", "выполните kpi", "сэкономите на зарплате")
+# The letter must never sort its reader by job title: "Для отдела кадров: подряд не требует…" reads as a mailshot,
+# and the owner deleted that label by hand from every letter that had it (v9.6, decision #38). Cutting the label is
+# cheaper and surer than regenerating the whole letter, so this lives in _clean(), not in check_letter().
+_ROLE_ADDRESS_RE = re.compile(
+    r"(?:\A|\n|(?<=\.)[ \t])[ \t]*(?:отдельно\s+)?для\s+[^:\n]{0,60}?(?:кадр|подбор|персонал|hr|рекрут)[^:\n]{0,20}:[ \t]*",
+    re.IGNORECASE)
 
 
 def check_letter(text: str, row: sqlite3.Row, company: dict | None) -> str:
@@ -146,7 +153,33 @@ def _clean(text: str) -> str:
     for prefix in ("Отклик:", "Письмо:", "Текст письма:"):
         if text.startswith(prefix):
             text = text[len(prefix):].strip()
-    return text
+    return _strip_role_address(text)
+
+
+def _strip_role_address(text: str) -> str:
+    """Drop a "Для отдела кадров:" label, keeping the sentence it introduced (decision #38).
+
+    The owner did exactly this by hand before sending: the thought is right, naming the reader's job is not.
+    """
+    out: list[str] = []
+    cuts: list[int] = []   # where in the result the sentence that lost its label now begins
+    last = pos = 0
+    for m in _ROLE_ADDRESS_RE.finditer(text):
+        log.info("Убрал из письма обращение по должности: «%s»", m.group(0).strip())
+        lead = m.group(0)[0]
+        chunk = text[last:m.start()] + (lead if lead.isspace() else "")   # keep the break, drop the label
+        out.append(chunk)
+        pos += len(chunk)
+        cuts.append(pos)
+        last = m.end()
+    if not cuts:
+        return text
+    out.append(text[last:])
+    chars = list("".join(out))
+    for i in cuts:                       # the label carried the capital letter — give it back
+        if i < len(chars):
+            chars[i] = chars[i].upper()
+    return "".join(chars)
 
 
 class CoverLetterWriter:

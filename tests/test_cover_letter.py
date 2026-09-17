@@ -225,3 +225,32 @@ def test_the_card_button_closes_the_company_for_letters_too(tmp_path):
     assert w.run().written == 0 and route.call_count == 0
     answered = w.answered_employer(conn.execute("SELECT * FROM vacancies WHERE id = 1").fetchone())
     assert answered["hh_id"] == "3"    # именно та вакансия, по которой владелец отметил «✅ Написал»
+
+
+def test_role_address_label_is_stripped_but_the_thought_stays():
+    """«Для отдела кадров:» выдаёт рассылку — надпись срезается, смысловая часть остаётся (решение №38)."""
+    from hh_scout.llm.cover_letter import _clean
+
+    tail = "подряд не требует ставки в штатном расписании."
+    for label in ("Для менеджера по подбору:", "Для отдела кадров:", "Для службы персонала:",
+                  "Для кадровой части:", "Для HR:", "Для тех, кто ведёт подбор:", "Отдельно для подбора:"):
+        cleaned = _clean(f"Здравствуйте.\n\n{label} {tail}\n\nСергей")
+        assert cleaned == f"Здравствуйте.\n\nПодряд не требует ставки в штатном расписании.\n\nСергей", label
+
+
+def test_role_address_stripped_in_the_middle_of_a_paragraph():
+    from hh_scout.llm.cover_letter import _clean
+
+    text = "Стоимость считается от объёма. Отдельно для подбора: задача может поехать сразу."
+    assert _clean(text) == "Стоимость считается от объёма. Задача может поехать сразу."
+
+
+def test_normal_letter_text_is_not_touched():
+    """Никаких ложных срабатываний: «для» в обычной фразе и двоеточие в перечислении — не обращение."""
+    from hh_scout.llm.cover_letter import _clean
+
+    for text in ("Для этого достаточно одного узла — посмотрим, как пойдёт.",
+                 "Готов работать в вашем процессе: стандарты оформления кода, отчётность, созвоны.",
+                 "По вашим задачам:\n\n— Программирование ПЛК: CODESYS 3.5, Structured Text.",
+                 "Беру программную часть для вашей линии розлива: ПЛК, экраны панелей, обмен."):
+        assert _clean(text) == text
