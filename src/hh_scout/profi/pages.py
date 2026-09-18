@@ -22,6 +22,9 @@ DESCRIPTION_PREFIX = "Пожелания и особенности:"
 # markers of the logged-in cabinet layout (any of them) vs. a login/captcha page
 _LOGGED_IN_MARKERS = ("_order-snippet", "Вы посмотрели все новые заказы", ">Анкета<", "backoffice/build/")
 _BLOCK_MARKERS = ("captcha", "Подтвердите, что вы не робот", "Войти или зарегистрироваться", "Введите номер телефона")
+# What the browser session polls for after navigation: either the feed rendered or the site is
+# asking us to log in / prove we are human. Both mean the page is done and worth reading.
+WAIT_MARKERS = _LOGGED_IN_MARKERS + _BLOCK_MARKERS
 
 _CARD_START_RE = re.compile(r'<a\b[^>]*data-testid="(\d+)_order-snippet"[^>]*>', re.S)
 _ARIA_LABEL_RE = re.compile(r'aria-label="([^"]*)"')

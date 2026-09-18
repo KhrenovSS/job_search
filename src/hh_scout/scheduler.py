@@ -22,6 +22,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from hh_scout import health
 from hh_scout.config import TZ, Settings
+from hh_scout import db as dbmod
 from hh_scout.db import kv_get, kv_set
 from hh_scout.pipeline import repo
 from hh_scout.pipeline.budget import daily_cap
@@ -34,6 +35,10 @@ MIN_SITTING_MINUTES = 60   # a sitting starts no later than this before its wind
 SITTING_GRACE_MIN = health.WINDOW_GRACE_MIN  # ...and stops this long after the window closes, budget or not
 
 Window = tuple[time, time]
+
+
+# Nightly, between the last sitting and the first one of the next day.
+BACKUP_HOUR, BACKUP_MINUTE = 3, 30
 
 
 def _at(d: date, t: time) -> datetime:
@@ -126,6 +131,8 @@ class Scheduler:
             kv_set(self.conn, "crawl_attempts", None)  # v5 leftover
         self._restore_crawl()
         self.aps.add_job(self.watchdog_job, IntervalTrigger(minutes=health.WATCHDOG_INTERVAL_MIN, timezone=TZ), id="watchdog",
+                         replace_existing=True)
+        self.aps.add_job(self.backup_job, CronTrigger(hour=BACKUP_HOUR, minute=BACKUP_MINUTE, timezone=TZ), id="backup",
                          replace_existing=True)
         self.aps.start()
         nxt = self.next_crawl_at()
@@ -229,6 +236,15 @@ class Scheduler:
         return math.ceil(remaining / sittings_left(now, self.windows, self.next_window_idx()))
 
     # -- jobs ----------------------------------------------------------------------
+
+    async def backup_job(self) -> None:
+        """Nightly copy of the database (see db.backup). Silent on success — a failure is worth an alert."""
+        try:
+            target = await asyncio.to_thread(dbmod.backup, self.conn, self.s.backup_dir, self.s.backup_keep)
+            kv_set(self.conn, "last_backup", f"{dbmod.utcnow()}|{target.name}")
+        except Exception as e:
+            log.exception("Резервная копия БД не создана")
+            await self.alerter.send([health.Alert("backup_failed", f"⚠️ Не удалось сделать резервную копию БД: {e}")])
 
     async def digest_job(self) -> None:
         try:

@@ -21,6 +21,8 @@ from urllib.parse import urlencode
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://hh.ru"
+# The substring the browser session polls for before reading the page (see session._wait_for_markers).
+HH_STATE_MARKER = "HH-Lux-InitialState"
 _STATE_RE = re.compile(r'<template[^>]*id="HH-Lux-InitialState"[^>]*>(.*?)</template>', re.S)
 _TAG_RE = re.compile(r"<[^>]+>")
 _BR_RE = re.compile(r"<\s*(br|/p|/li|/div|/h\d|/tr)\s*/?>", re.I)

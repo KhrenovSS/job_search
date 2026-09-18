@@ -41,6 +41,28 @@ def connect(path: Path | str) -> sqlite3.Connection:
     return conn
 
 
+
+def backup(conn: sqlite3.Connection, dest_dir: Path | str, keep: int = 7) -> Path:
+    """Copy the live database to dest_dir/hh_scout-YYYY-MM-DD.db, keeping the newest `keep` copies.
+
+    Uses SQLite's own backup API, so it is safe to run while the bot writes (WAL and all) — no
+    file copying, no service stop. The feedback the owner gives every day is the only place the
+    calibration data lives, and it is not reproducible from hh.ru.
+    """
+    d = Path(dest_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    target = d / f"hh_scout-{datetime.now(timezone.utc).date().isoformat()}.db"
+    dst = sqlite3.connect(str(target))
+    try:
+        conn.backup(dst)
+    finally:
+        dst.close()
+    old = sorted(d.glob("hh_scout-*.db"), reverse=True)[keep:]
+    for f in old:
+        f.unlink(missing_ok=True)
+    log.info("Резервная копия БД: %s (храним %d)", target.name, keep)
+    return target
+
 @contextmanager
 def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     """One real write transaction for a batch of statements.

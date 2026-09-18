@@ -28,7 +28,7 @@ class FakeSession:
     def __exit__(self, *a):
         pass
 
-    def open_raw(self, url):
+    def open_raw(self, url, wait_for=()):
         if self.page_loads >= self.page_budget:
             raise PageBudgetExceeded("b")
         self.page_loads += 1

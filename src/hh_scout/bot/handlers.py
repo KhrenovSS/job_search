@@ -106,7 +106,9 @@ async def status_cmd(m: Message, settings: Settings, conn: sqlite3.Connection, s
                                 else "выключен (PROFI_ENABLED=false)"))
     wd = kv_get(conn, "watchdog_last")
     lines.append(f"Сторож: последняя проверка {_fmt_dt(wd)} · тревог сегодня {scheduler.alerter.count_today(datetime.now(TZ).date())}")
-    lines.append(f"БД: {db_mb:.1f} МБ")
+    bk = kv_get(conn, "last_backup")
+    bk_when, _, bk_name = (bk or "").partition("|")
+    lines.append(f"БД: {db_mb:.1f} МБ · копия: " + (f"{_fmt_dt(bk_when)} ({bk_name})" if bk else "ещё не делалась"))
     await m.answer("\n".join(lines))
 
 

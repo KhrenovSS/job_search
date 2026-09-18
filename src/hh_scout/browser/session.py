@@ -15,16 +15,22 @@ import socket
 import subprocess
 import time
 from dataclasses import dataclass
+from collections.abc import Sequence
 from typing import Any
 
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
 
 from hh_scout.browser import pacing
-from hh_scout.browser.hh_pages import extract_initial_state
+from hh_scout.browser.hh_pages import HH_STATE_MARKER, extract_initial_state
 from hh_scout.config import Settings
 
 log = logging.getLogger(__name__)
+
+# Navigation waits in two steps: a short page load (the markup we need is server-rendered and
+# arrives with the document), then a poll for the markup itself. See decision #39.
+PAGE_LOAD_TIMEOUT_S = 15.0
+MARKUP_WAIT_S = 20.0
 
 
 class BrowserUnavailable(RuntimeError):
@@ -107,6 +113,11 @@ class BrowserSession:
             time.sleep(0.1)
 
         opts = webdriver.FirefoxOptions()
+        # 'eager' returns from get() at DOMContentLoaded instead of waiting for every analytics
+        # request hh.ru keeps open: the pages we read ship their JSON in the server-rendered HTML,
+        # so the data is already there. With the default 'normal' every load burned the full
+        # page-load timeout (see decision #39).
+        opts.page_load_strategy = "eager"
         try:
             self._driver = webdriver.Remote(command_executor=f"http://127.0.0.1:{gd_port}", options=opts)
         except WebDriverException as e:
@@ -209,22 +220,45 @@ class BrowserSession:
 
     # -- browsing ------------------------------------------------------------
 
-    def open_raw(self, url: str) -> str:
+    def _wait_for_markers(self, markers: Sequence[str]) -> bool:
+        """Poll the live DOM until one of `markers` shows up, at most MARKUP_WAIT_S seconds.
+
+        Normally returns on the first check: the markup is server-rendered and already in place
+        when navigation returns. This is what makes the short page-load timeout safe.
+        """
+        d = self.driver
+        deadline = time.monotonic() + MARKUP_WAIT_S
+        while True:
+            try:
+                html = d.execute_script("return document.documentElement.innerHTML;") or ""
+            except WebDriverException:
+                html = ""
+            if any(m in html for m in markers):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.5)
+
+    def open_raw(self, url: str, wait_for: Sequence[str] = ()) -> str:
         """Load any page in our own window like a person would and return its rendered HTML.
 
-        Counts against the page budget, lets the SPA settle, scrolls a bit, then waits a human-like "reading" pause.
+        Counts against the page budget, waits until the page actually carries what the caller needs,
+        lets the SPA settle, scrolls a bit, then waits a human-like "reading" pause.
+        `wait_for` is a set of substrings; the first one to appear ends the wait.
         Raises PageBudgetExceeded; site-specific checks are up to the caller (see `open()` for hh.ru).
         """
         if self.page_loads >= self.page_budget:
             raise PageBudgetExceeded(f"лимит {self.page_budget} загрузок страниц за прогон исчерпан")
         self.open_own_window()
         d = self.driver
-        d.set_page_load_timeout(60)
+        d.set_page_load_timeout(PAGE_LOAD_TIMEOUT_S)
         try:
             d.get(url)
         except TimeoutException:
-            log.warning("Страница не загрузилась за 60 с: %s", url)
+            log.debug("get() не вернулся за %.0f с — ждём разметку: %s", PAGE_LOAD_TIMEOUT_S, url)
         self.page_loads += 1
+        if wait_for and not self._wait_for_markers(wait_for):
+            log.warning("Страница без ожидаемой разметки за %.0f с: %s", MARKUP_WAIT_S, url)
         try:
             d.execute_script("window.name = arguments[0];", BOT_WINDOW_NAME)
         except WebDriverException:
@@ -242,7 +276,7 @@ class BrowserSession:
 
         Raises PageBudgetExceeded / HHBlocked; the caller decides how to stop softly.
         """
-        source = self.open_raw(url)
+        source = self.open_raw(url, wait_for=(HH_STATE_MARKER,))
         state = extract_initial_state(source)
         if state is None:
             d = self.driver

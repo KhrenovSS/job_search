@@ -88,6 +88,10 @@ class Settings(BaseSettings):
     # the client sits does not matter. False falls back to the explicit REGION_NAMES list below.
     search_all_russia: bool = True
     db_path: Path = PROJECT_ROOT / "data" / "hh_scout.db"
+    # Nightly backup of the database: the owner's feedback and the employers' answers are not
+    # reproducible from hh.ru, so they get their own copies (decision #40).
+    backup_dir: Path = PROJECT_ROOT / "data" / "backups"
+    backup_keep: int = 7
     prompts_dir: Path = PROJECT_ROOT / "prompts"
     log_level: str = "INFO"
 

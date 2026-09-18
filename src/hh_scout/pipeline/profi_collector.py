@@ -18,7 +18,7 @@ from hh_scout.browser.bursts import run_in_bursts
 from hh_scout.browser.session import BrowserSession, BrowserUnavailable
 from hh_scout.config import TZ, Settings
 from hh_scout.pipeline import repo
-from hh_scout.profi.pages import ProfiBlocked, parse_orders
+from hh_scout.profi.pages import WAIT_MARKERS, ProfiBlocked, parse_orders
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ class ProfiCollector:
         self.stats = ProfiStats()
 
     def _step(self, session: BrowserSession) -> bool:
-        html = session.open_raw(self.s.profi_orders_url)
+        html = session.open_raw(self.s.profi_orders_url, wait_for=WAIT_MARKERS)
         orders = parse_orders(html, datetime.now(TZ))  # raises ProfiBlocked
         self.stats.orders_seen += len(orders)
         with self.conn:
