@@ -29,10 +29,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--sample", type=int, default=200)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--db", help="путь к базе (по умолчанию data/hh_scout.db рядом с репозиторием)")
     args = ap.parse_args()
 
     s = Settings()
-    conn = connect(s.db_path)
+    conn = connect(args.db or s.db_path)
     rows = conn.execute(
         "SELECT hh_id, title, employer, area_name, work_format, employment, search_pass, published_at "
         "FROM vacancies WHERE skip_reason = 'no_engineering_title'").fetchall()
@@ -54,7 +55,7 @@ def main() -> int:
                   "published_at": (r["published_at"] or "")[:10], "employer_searching_days": 0} for r in batch]
         try:
             answer = bridge.complete(system_text, json.dumps(cards, ensure_ascii=False, indent=0))
-            verdicts = json.loads(extract_json(answer))
+            verdicts = extract_json(answer)  # already parsed
         except Exception as e:  # noqa: BLE001
             print(f"  пачка {i // BATCH + 1}: не получилось ({e})")
             continue
