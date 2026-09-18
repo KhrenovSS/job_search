@@ -5,7 +5,8 @@
 `_m002_triage_columns` (`vacancies.triage_priority`, `triage_note`), `_m003_lead_scoring` (`evaluations.role_score`,
 `lead_score`, `company_kind`, `pitch_hint`), `_m004_cover_letters`, `_m005_lead_actions` (`lead_actions`,
 `digest_items.letter_message_id`), `_m006_site`, `_m007_employer_id`, `_m008_accept_temporary`
-(`vacancies.accept_temporary`, `civil_law_contracts`). Время — TEXT ISO-8601 UTC.
+(`vacancies.accept_temporary`, `civil_law_contracts`), `_m009_employers`, `_m010_negotiation_state`
+(`vacancies.negotiation_state`, `negotiation_seen_at`). Время — TEXT ISO-8601 UTC.
 Весь SQL — в `src/hh_scout/pipeline/repo.py`.
 
 | Таблица | Назначение |
@@ -33,10 +34,10 @@
 | `skipped` | prefilter/collector/triage/details/dedup/digest | отсеяна; всегда с `skip_reason` |
 | `evaluation_failed` | evaluator (ИИ дважды вернул невалидный ответ / пропустил hh_id) или details (страница без `vacancyView`) | терминальная ошибка, не повторяется |
 
-Лиды выше порога, не влезшие в `DIGEST_MAX_ITEMS` (20), остаются `evaluated` до следующего дайджеста.
+Лиды выше порога, не влезшие в `DIGEST_MAX_ITEMS` (10), остаются `evaluated` до следующего дайджеста.
 
 ## `vacancies.skip_reason`
-`applied` (владелец уже откликался) · `archived` · `fly_in_fly_out` (вахта) · `stopword:<слово>` · `no_engineering_title`
+`applied` (владелец уже откликался) · `archived` · `stopword:<слово>` · `no_engineering_title`
 (нет инженерного слова в названии — самый частый) · `triage` (ИИ: не открывать) · `invalid_ai_answer` /
 `missing_in_ai_answer` (оценка) · `no_vacancy_view` (страница без данных) · `low_priority_expired` (приоритет 3 триажа не открыт за `LOW_PRIORITY_TTL_DAYS`) · `queue_expired` (v9.1: лид простоял в очереди дольше `QUEUE_TTL_DAYS` — до него так и не дошла суточная норма) ·
 `duplicate_employer:<hh_id>` (v8: у компании уже есть лид `<hh_id>` — отправленный за последние `EMPLOYER_REPEAT_DAYS` или ждущий
@@ -111,9 +112,18 @@
 Заполняет `llm/company_research.py`; в карточку лида попадает строка «🏭 О компании» (`LEAD_SELECT` подмешивает
 `brief` как `company_brief`). Поля-факты собраны с прочитанных страниц, `automation_hooks` — явные предположения.
 
+## Что ответила компания (v9.7)
+`vacancies.negotiation_state` — состояние переписки на hh.ru как его отдаёт сам сайт (`RESPONSE` — отклик без ответа,
+`INTERVIEW` — пригласили, `DISCARD` — отказ), `negotiation_seen_at` — когда мы это увидели. Пишется при синхронизации
+откликов (`collector._sync_negotiations` → `repo.mark_applied`) и **только вперёд**: hh не отзывает приглашение.
+Успехом метода считается `INTERVIEW`, отказ — неудачей (решение №42). Старое поле `has_chat` («кто-то ответил»)
+остаётся как более грубый сигнал. `repo.outcome_stats` сводит это по полосам балла (`repo.SCORE_BANDS`), `/stats`
+показывает таблицу, шапка дайджеста — число приглашений за 14 дней. Письма, отправленные мимо hh.ru
+(`applied = 0`), попадают в колонку «без канала измерения»: их исход нам не виден, и в конверсию они не идут.
+
 ## `evaluated` — это очередь (v9.1)
 Статус `evaluated` с `total ≥ SCORE_THRESHOLD` означает не «ждёт ближайшего дайджеста», а «стоит в очереди».
-Дайджест забирает сверху `DIGEST_MAX_ITEMS` (5) по приоритету `total + MIN(суток ожидания, QUEUE_WAIT_BONUS_MAX)`,
+Дайджест забирает сверху `DIGEST_MAX_ITEMS` (10) по приоритету `total + MIN(суток ожидания, QUEUE_WAIT_BONUS_MAX)`,
 остальные **остаются `evaluated`** и соревнуются с завтрашними поступлениями (`repo.lead_queue`, `repo.queue_size`).
 `reject_below` по-прежнему списывает то, что ниже порога; `repo.expire_queue` — то, что простояло дольше
 `QUEUE_TTL_DAYS`. Ожидание считается от `evaluations.created_at` (строка на вакансию одна).

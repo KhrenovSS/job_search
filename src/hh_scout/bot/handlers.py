@@ -7,7 +7,7 @@ import logging
 import re
 import socket
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import httpx
 from aiogram import Router
@@ -39,6 +39,7 @@ HELP = (
     "/next — когда следующий подход\n"
     "/pause · /resume — приостановить/возобновить автоматические сборы\n"
     "/skipped [N] — последние отсеянные вакансии с причинами\n"
+    "/stats [дней] — что ответили компании: письма, ответы, приглашения и отказы по полосам балла\n"
     "/letter &lt;hh_id&gt; [пожелание] — написать или переписать отклик "
     "(«/letter 137256632 больше про SCADA»)\n"
     "/help — эта справка\n\n"
@@ -145,6 +146,27 @@ async def pause_cmd(m: Message, scheduler) -> None:
 async def resume_cmd(m: Message, scheduler) -> None:
     scheduler.set_paused(False)
     await m.answer("▶️ Автоматические сборы возобновлены.")
+
+
+@router.message(Command("stats"))
+async def stats_cmd(m: Message, command: CommandObject, conn: sqlite3.Connection) -> None:
+    """What the letters bought, by score band — the calibration the threshold decision rests on."""
+    days = min(int(command.args), 365) if command.args and command.args.strip().isdigit() else 30
+    since = (datetime.now(TZ) - timedelta(days=days)).isoformat()
+    bands = repo.outcome_stats(conn, since)
+    written = sum(int(b["written"]) for b in bands)
+    if not written:
+        await m.answer(f"За {days} дн. писем ещё не отправлено — считать нечего.")
+        return
+    lines = [f"<b>Что ответили компании за {days} дн.</b>", "<pre>полоса  писем  ответ  пригл.  отказ</pre>"]
+    for b in bands:
+        lines.append(f"<pre>{str(b['band']):<7} {b['written']:>5}  {b['answered']:>5}  {b['invited']:>6}  {b['refused']:>5}</pre>")
+    blind = sum(int(b["blind"]) for b in bands)
+    lines.append(f"Всего писем {written} · ответов {sum(int(b['answered']) for b in bands)} · "
+                 f"приглашений {sum(int(b['invited']) for b in bands)}")
+    if blind:
+        lines.append(f"Без канала измерения: {blind} — письмо ушло мимо hh.ru, ответ компании нам не виден.")
+    await m.answer("\n".join(lines))
 
 
 @router.message(Command("skipped"))

@@ -13,7 +13,9 @@ from hh_scout.config import TZ, Settings
 from hh_scout.hh.salary import human_from_raw
 
 WORK_FORMAT_RU = {"remote": "🏠 удалёнка", "hybrid": "гибрид", "office": "🏢 офис", "field": "🚗 разъездная", "unknown": None}
-EMPLOYMENT_RU = {"full": "штат", "part": "частичная занятость", "project": "📄 проектная работа", "fly_in_fly_out": "вахта", "unknown": None}
+EMPLOYMENT_RU = {"full": "штат", "part": "частичная занятость", "project": "📄 проектная работа", "fly_in_fly_out": "🚁 вахта", "unknown": None}
+# How long an employer must have been advertising the same role before it counts as "cannot fill it".
+SEARCHING_LONG_DAYS = 14
 IP_RU = {"yes": "да", "maybe": "не указано", "no": "нет"}  # "maybe" = the vacancy says nothing, not "probably yes"
 CONTRACT_RU = {"INDIVIDUAL_ENTREPRENEUR": "ИП", "SELF_EMPLOYED": "самозанятый", "INDIVIDUAL_PERSON": "физлицо"}
 COMPANY_RU = {"integrator": "интегратор", "manufacturer": "производитель оборудования", "end_customer": "конечный заказчик",
@@ -51,6 +53,9 @@ def format_card(position: int, v: sqlite3.Row, e: sqlite3.Row) -> str:
     waited = _row_get(v, "waiting_days") or 0
     if waited >= 2:
         lines[1] += f" · ⏳ в очереди {waited} дн."
+    searching = _row_get(v, "searching_days") or 0
+    if searching >= SEARCHING_LONG_DAYS:
+        lines[1] += f" · 🔁 ищут {searching} дн."
     about = _company_line(v)
     if about:
         lines.append(f"   🏭 О компании: {_esc(about)}")
@@ -162,13 +167,18 @@ def format_queue_tail(waiting: list[sqlite3.Row], total: int) -> str:
 
 
 def digest_header(count: int, checked: int, when: datetime | None = None, open_before: int = 0,
-                  work: dict[str, int] | None = None) -> str:
-    """`work` = repo.work_totals(): the only daily word about how the service itself is doing (quiet mode)."""
+                  work: dict[str, int] | None = None, invited: int | None = None, invited_days: int = 14) -> str:
+    """`work` = repo.work_totals(): the only daily word about how the service itself is doing (quiet mode).
+
+    `invited` = repo.invited_since(): what the letters actually bought over the last `invited_days`.
+    """
     when = when or datetime.now(TZ)
     months = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
     date = f"{when.day} {months[when.month - 1]}"
     tail = f"\nРабота за сутки: подходов {work['sittings']} · страниц {work['page_loads']}" if work else ""
     tail += f"\nНеобработанных с прошлых дней: {open_before} (/inbox)" if open_before else ""
+    if invited is not None:
+        tail += f"\nПриглашений за {invited_days} дн.: {invited} (/stats)"
     if count == 0:
         return f"Сегодня лидов не нашлось. Проверено {checked} новых вакансий.{tail}"
     noun = "лид" if count % 10 == 1 and count % 100 != 11 else "лида" if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14 else "лидов"

@@ -79,10 +79,13 @@ class Settings(BaseSettings):
     # Sittings: one crawl per window, its START picked at random inside the window; the daily cap is shared between
     # the sittings still ahead. Comma-separated, sorted, non-overlapping.
     crawl_windows: str = "07:00-10:00,12:00-15:00,18:00-22:00"
-    digest_max_items: int = 5       # v9.1: the daily quota — five thought-through letters beat twenty generic ones
+    # The daily letter quota (the digest shows exactly this many leads and writes exactly this many letters).
+    # v9.1 set it to 5; v9.7 doubled it on the owner's call — an unsent offer answers with certainty, a sent one
+    # only probably (decision #41). Whether the lower score bands earn their letters is now measured, not guessed.
+    digest_max_items: int = 10
     queue_ttl_days: int = 30        # a lead nobody got to in a month leaves the queue (the vacancy is gone)
     queue_wait_bonus_max: int = 7   # a day of waiting is worth a point, capped: the tail must not starve
-    digest_tail_items: int = 10     # how many of the waiting ones the digest lists by name
+    digest_tail_items: int = 8      # how many of the waiting ones the digest lists by name
     search_period_days: int = 2
     # Geography: True searches the whole country (one area id 113) — the owner contracts remotely, so where
     # the client sits does not matter. False falls back to the explicit REGION_NAMES list below.

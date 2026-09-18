@@ -71,25 +71,32 @@ def count_site(conn: sqlite3.Connection, site: str) -> int:
     return int(conn.execute("SELECT COUNT(*) FROM vacancies WHERE site = ?", (site,)).fetchone()[0])
 
 
-def mark_applied(conn: sqlite3.Connection, hh_id: str, *, has_chat: bool, title: str | None = None,
-                 employer: str | None = None, url: str | None = None) -> None:
-    """Flag a vacancy the owner already responded to; creates a stub row if unknown."""
+def mark_applied(conn: sqlite3.Connection, hh_id: str, *, has_chat: bool, state: str | None = None,
+                 title: str | None = None, employer: str | None = None, url: str | None = None) -> None:
+    """Flag a vacancy the owner already responded to; creates a stub row if unknown.
+
+    `state` is hh's own view of the conversation (RESPONSE / INTERVIEW / DISCARD) — the only place the
+    method learns whether an offer led anywhere. It only ever moves forward: hh never un-invites.
+    """
     now = utcnow()
     if vacancy_exists(conn, hh_id):
         conn.execute(
-            """UPDATE vacancies SET applied = 1, has_chat = MAX(has_chat, ?), updated_at = ?,
+            """UPDATE vacancies SET applied = 1, has_chat = MAX(has_chat, ?),
+                      negotiation_state = COALESCE(?, negotiation_state),
+                      negotiation_seen_at = CASE WHEN ? IS NULL THEN negotiation_seen_at ELSE ? END,
+                      updated_at = ?,
                       status = CASE WHEN status IN ('new', 'prefiltered', 'evaluated') THEN 'skipped' ELSE status END,
                       skip_reason = CASE WHEN status IN ('new', 'prefiltered', 'evaluated') THEN 'applied' ELSE skip_reason END
                WHERE hh_id = ?""",
-            (int(has_chat), now, hh_id),
+            (int(has_chat), state, state, now, now, hh_id),
         )
     else:
         conn.execute(
             """INSERT INTO vacancies(hh_id, title, employer, url, source, search_pass, status, skip_reason,
-                                     applied, has_chat, first_seen_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                     applied, has_chat, negotiation_state, negotiation_seen_at, first_seen_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (hh_id, title or "(отклик)", employer, url or f"https://hh.ru/vacancy/{hh_id}", "negotiations",
-             "negotiations", "skipped", "applied", 1, int(has_chat), now, now),
+             "negotiations", "skipped", "applied", 1, int(has_chat), state, now if state else None, now, now),
         )
 
 
@@ -296,7 +303,13 @@ LEAD_SELECT = """SELECT v.*, e.tech_score, e.role_score, e.lead_score, e.total, 
                         e.employment_hint, e.company_kind, e.verdict, e.pitch_hint, e.red_flags,
                         (SELECT text FROM cover_letters c WHERE c.vacancy_id = v.id) AS letter,
                         (SELECT brief FROM employers emp WHERE emp.employer_id = v.employer_id AND emp.found = 1)
-                            AS company_brief
+                            AS company_brief,
+                        (SELECT CAST(julianday('now') - julianday(MIN(o.first_seen_at)) AS INTEGER)
+                           FROM vacancies o
+                          WHERE o.site = 'hh' AND casefold(o.title) = casefold(v.title)
+                            AND ((v.employer_id IS NOT NULL AND o.employer_id = v.employer_id)
+                                 OR (v.employer_id IS NULL AND casefold(o.employer) = casefold(v.employer))))
+                            AS searching_days
                  FROM vacancies v JOIN evaluations e ON e.vacancy_id = v.id"""
 
 
@@ -393,6 +406,84 @@ def add_digest_item(conn: sqlite3.Connection, digest_id: int, vacancy_id: int, p
     conn.execute("INSERT OR REPLACE INTO digest_items(digest_id, vacancy_id, position, tg_message_id, letter_message_id) "
                  "VALUES (?, ?, ?, ?, ?)", (digest_id, vacancy_id, position, tg_message_id, letter_message_id))
     conn.execute("UPDATE vacancies SET status = 'sent', updated_at = ? WHERE id = ?", (utcnow(), vacancy_id))
+
+
+# --- "they have been searching for a while" (v9.7) ---------------------------------------
+
+# A vacancy hh shows as published today may have been re-posted for weeks: hh bumps the date on every
+# refresh, so the age of the posting says nothing (in 3745 of 4059 rows we first saw it on its own
+# publication date, and not one was older than 21 days). What does say something is our own history:
+# how long this employer has been advertising this same role to us. 14+ days means they cannot fill
+# the seat, which is exactly when a contract starts to look like the obvious answer (decision #44).
+_SEARCHING_DAYS_SQL = """
+    SELECT CAST(julianday('now') - julianday(MIN(v.first_seen_at)) AS INTEGER) AS days
+    FROM vacancies v
+    WHERE v.site = 'hh' AND casefold(v.title) = casefold(?)
+      AND (""" + "(? IS NOT NULL AND v.employer_id = ?) OR (? IS NULL AND casefold(v.employer) = casefold(?))" + """)
+"""
+
+
+def employer_searching_days(conn: sqlite3.Connection, row: sqlite3.Row) -> int:
+    """For how many days we have been seeing this employer advertise this very role.
+
+    Title match is exact (case-folded) on purpose: a company hiring both a programmer and a fitter is
+    not "searching long" for either. 0 means we are seeing it for the first time, which is not a signal.
+    """
+    emp_id = row["employer_id"] if "employer_id" in row.keys() else None
+    name = row["employer"] if "employer" in row.keys() else None
+    title = row["title"] or ""
+    got = conn.execute(_SEARCHING_DAYS_SQL, (title, emp_id, emp_id, emp_id, name)).fetchone()
+    return int(got["days"] or 0) if got else 0
+
+
+# --- outcomes: what came back from the companies (v9.7) ----------------------------------
+
+# Score bands the method is calibrated on. Kept here, not in the query, so the digest, /stats and
+# any later threshold decision all slice the data the same way.
+SCORE_BANDS: tuple[tuple[str, int, int], ...] = (("60-64", 60, 64), ("65-69", 65, 69), ("70-74", 70, 74), ("75+", 75, 1000))
+
+_OUTCOMES_SQL = """
+    SELECT e.total AS total,
+           v.applied AS applied,
+           v.has_chat AS has_chat,
+           v.negotiation_state AS state
+    FROM vacancies v
+    JOIN evaluations e ON e.vacancy_id = v.id
+    JOIN digest_items di ON di.vacancy_id = v.id
+    JOIN digests d ON d.id = di.digest_id
+    WHERE v.site = 'hh' AND d.sent_at >= ?
+      AND EXISTS (SELECT 1 FROM lead_actions a WHERE a.vacancy_id = v.id
+                  AND a.action IN ('responded', 'auto_responded'))
+    GROUP BY v.id
+"""
+
+
+def outcome_stats(conn: sqlite3.Connection, since_iso: str) -> list[dict[str, int | str]]:
+    """Per score band: how many leads the owner wrote to, and what the companies did about it.
+
+    Only leads the owner actually wrote to count — a lead he waved away says nothing about the score.
+    `blind` are the ones sent outside hh.ru (no `applied`), where the answer is invisible to us: they
+    are reported separately instead of quietly diluting the conversion.
+    """
+    rows = conn.execute(_OUTCOMES_SQL, (since_iso,)).fetchall()
+    out = []
+    for name, lo, hi in SCORE_BANDS:
+        band = [r for r in rows if lo <= int(r["total"] or 0) <= hi]
+        tracked = [r for r in band if r["applied"]]
+        out.append({
+            "band": name,
+            "written": len(band),
+            "blind": len(band) - len(tracked),
+            "answered": sum(1 for r in tracked if r["has_chat"]),
+            "invited": sum(1 for r in tracked if (r["state"] or "") == "INTERVIEW"),
+            "refused": sum(1 for r in tracked if (r["state"] or "") == "DISCARD"),
+        })
+    return out
+
+
+def invited_since(conn: sqlite3.Connection, since_iso: str) -> int:
+    """How many companies invited the owner to talk since `since_iso` — the digest header line."""
+    return sum(int(b["invited"]) for b in outcome_stats(conn, since_iso))
 
 
 # --- lead lifecycle (v5) --------------------------------------------------------------

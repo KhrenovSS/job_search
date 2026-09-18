@@ -40,7 +40,7 @@ class TriageStats:
     verdicts: list[tuple[str, TriageVerdict]] = field(default_factory=list)  # (title, verdict) for logs/CLI
 
 
-def card_payload(row: sqlite3.Row) -> dict:
+def card_payload(row: sqlite3.Row, searching_days: int = 0) -> dict:
     return {
         "hh_id": row["hh_id"],
         "title": row["title"],
@@ -53,6 +53,8 @@ def card_payload(row: sqlite3.Row) -> dict:
         "salary": normalize(json.loads(row["salary_raw"]) if row["salary_raw"] else None).human(),
         "search_pass": row["search_pass"],
         "published_at": (row["published_at"] or "")[:10],
+        # hh bumps the publication date on every refresh, so this is our own observation, not hh's
+        "employer_searching_days": searching_days,
     }
 
 
@@ -95,7 +97,8 @@ class Triager:
         return self.stats
 
     def _triage_batch(self, system_text: str, batch: list[sqlite3.Row]) -> list[TriageVerdict] | None:
-        user_text = json.dumps([card_payload(r) for r in batch], ensure_ascii=False, indent=0)
+        user_text = json.dumps([card_payload(r, repo.employer_searching_days(self.conn, r)) for r in batch],
+                               ensure_ascii=False, indent=0)
         last_error = ""
         for attempt in range(2):
             prompt = user_text if attempt == 0 else user_text + _RETRY_NOTE.format(error=last_error)

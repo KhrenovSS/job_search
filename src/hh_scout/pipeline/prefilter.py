@@ -44,8 +44,6 @@ def decide(card: CardFacts, min_salary_net: int) -> str | None:
         return "applied"
     if card.archived:
         return "archived"
-    if card.employment == "fly_in_fly_out":
-        return "fly_in_fly_out"
     title = card.title.casefold()
     keep = any(k in title for k in TITLE_KEEP_WORDS)
     if not keep:
@@ -54,7 +52,10 @@ def decide(card: CardFacts, min_salary_net: int) -> str | None:
                 return f"stopword:{w.strip()}"
     if not any(k in title for k in TITLE_REQUIRED_ANY):
         return "no_engineering_title"
-    # Salary is deliberately NOT a rule: vacancies are leads for contracting, not jobs to take.
+    # Neither salary nor work format is a rule: vacancies are leads for contracting, not jobs to take.
+    # Rotation work (fly_in_fly_out) used to be dropped here — 467 vacancies, 12% of everything skipped —
+    # although it only says where the object is. Whether the programming part can be done from a desk is
+    # a judgement call, so it belongs to the triage model now (decision #43).
     return None
 
 

@@ -120,7 +120,11 @@ def analyze_report(report) -> list[Alert]:
                                            "curl :8766/health"))
     pe = getattr(report, "profi_error", None)
     if pe:
-        alerts.append(Alert("profi_blocked", f"🚫 profi.ru: {pe}. Заказы подождут следующего подхода; hh.ru это не затронуло."))
+        # Keyed by day-of-year / 3 so a standing problem (the host's DNS does not resolve profi.ru) speaks up
+        # every third day instead of every day — the daily copy was pure noise for five days running.
+        bucket = datetime.now(TZ).timetuple().tm_yday // 3
+        alerts.append(Alert(f"profi_blocked:{bucket}",
+                            f"🚫 profi.ru: {pe}. Заказы подождут следующего подхода; hh.ru это не затронуло."))
     return alerts
 
 

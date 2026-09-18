@@ -38,7 +38,9 @@ ASKS_SALARY_PHRASES = (
 # profi.ru orders get a short bid, not a cover letter
 LETTER_PROMPTS = {"hh": "cover_letter.md", "profi": "profi_bid.md"}
 REVIEW_PROMPT = "letter_review.md"  # v9.1: a second pass over every hh letter — quality over quantity
-LENGTH_LIMITS = {"hh": (MIN_CHARS, MAX_CHARS), "profi": (150, 1200)}
+# The profi ceiling was 1200 and threw away a perfectly good bid at 1492 (profi:93756285), leaving the order
+# with no text at all. Same reasoning as MAX_CHARS above: a bid a bit over the target beats no bid.
+LENGTH_LIMITS = {"hh": (MIN_CHARS, MAX_CHARS), "profi": (150, 1500)}
 
 
 def row_site(row: sqlite3.Row) -> str:

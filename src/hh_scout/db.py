@@ -276,6 +276,18 @@ def _m009_employers(conn: sqlite3.Connection) -> None:
     )
 
 
+def _m010_negotiation_state(conn: sqlite3.Connection) -> None:
+    """v9.7: what the employer actually answered, not just that it answered something.
+
+    `has_chat` only said "somebody wrote back" and was never read by any code. hh.ru carries the state
+    of the conversation itself (`lastState`: RESPONSE / INTERVIEW / DISCARD), and the parser already
+    produced it — it was thrown away at the door. An invitation is what the method is for; a rejection
+    is a failure. Both are needed to calibrate the score bands (decision #42).
+    """
+    conn.execute("ALTER TABLE vacancies ADD COLUMN negotiation_state TEXT")
+    conn.execute("ALTER TABLE vacancies ADD COLUMN negotiation_seen_at TEXT")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m001_initial,
     _m002_triage_columns,
@@ -286,6 +298,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m007_employer_id,
     _m008_accept_temporary,
     _m009_employers,
+    _m010_negotiation_state,
 ]
 
 

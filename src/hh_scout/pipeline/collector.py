@@ -201,7 +201,8 @@ class Collector:
         items = parse_negotiations(state)
         with transaction(self.conn):
             for n in items:
-                repo.mark_applied(self.conn, n.hh_id, has_chat=n.has_messages, title=n.title, employer=n.employer)
+                repo.mark_applied(self.conn, n.hh_id, has_chat=n.has_messages, state=n.state,
+                                  title=n.title, employer=n.employer)
         self.stats.applied_synced = len(items)
         similar = parse_suitable(state)
         new_similar = self._store_cards(similar, "similar_to_resume", PASS_SIMILAR)

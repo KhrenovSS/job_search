@@ -9,10 +9,16 @@ def _c(title, **kw):
     return CardFacts(**base)
 
 
-def test_applied_archived_fifo_first():
+def test_applied_and_archived_are_skipped():
     assert decide(_c("Инженер АСУ ТП", applied=True), MIN) == "applied"
     assert decide(_c("Инженер АСУ ТП", archived=True), MIN) == "archived"
-    assert decide(_c("Инженер АСУ ТП", employment="fly_in_fly_out"), MIN) == "fly_in_fly_out"
+
+
+def test_rotation_work_is_not_a_rule_anymore():
+    """v9.7: вахта says where the object is, not what the work is — the triage model decides (decision #43)."""
+    assert decide(_c("Инженер АСУ ТП", employment="fly_in_fly_out"), MIN) is None
+    # a rotation vacancy that is not engineering at all still goes out on its title
+    assert decide(_c("Повар вахтой", employment="fly_in_fly_out"), MIN) == "stopword:повар"
 
 
 def test_stop_words_and_keep_words():

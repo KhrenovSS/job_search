@@ -22,7 +22,8 @@ from hh_scout.pipeline.ranker import (digest_header, format_card, format_letter,
                                       row_site)
 
 log = logging.getLogger(__name__)
-PAUSE_S = 0.6
+INVITED_DAYS = 14  # how far back the header looks for invitations
+PAUSE_S = 1.0  # v9.7: a digest is now ~20 messages at noon — do not crowd the Telegram API
 
 
 def _evaluate_pending(settings: Settings) -> tuple[int, int]:
@@ -52,8 +53,10 @@ async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, ch
     plan = plan_digest(conn, settings)
     open_before = len(repo.open_leads(conn))
     work = repo.work_totals(conn, datetime.now(TZ) - timedelta(hours=24))
+    invited = repo.invited_since(conn, (datetime.now(TZ) - timedelta(days=INVITED_DAYS)).isoformat())
     if not plan.leads:
-        await bot.send_message(chat_id, digest_header(0, plan.checked, open_before=open_before, work=work))
+        await bot.send_message(chat_id, digest_header(0, plan.checked, open_before=open_before, work=work,
+                                                  invited=invited, invited_days=INVITED_DAYS))
         finalize_digest(conn, settings, [], plan.checked, note)
         return 0
     # letters for leads that still lack one (e.g. bridge was down during the crawl)
@@ -67,7 +70,8 @@ async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, ch
             log.warning("Не удалось дописать письма перед дайджестом: %s", e)
         plan = plan_digest(conn, settings)
 
-    await bot.send_message(chat_id, digest_header(len(plan.leads), plan.checked, open_before=open_before, work=work))
+    await bot.send_message(chat_id, digest_header(len(plan.leads), plan.checked, open_before=open_before, work=work,
+                                                  invited=invited, invited_days=INVITED_DAYS))
     sent: list[tuple[sqlite3.Row, int | None, int | None]] = []
     for i, row in enumerate(plan.leads, 1):
         await asyncio.sleep(PAUSE_S)

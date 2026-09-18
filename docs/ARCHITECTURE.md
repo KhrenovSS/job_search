@@ -27,15 +27,15 @@
 | # | Шаг | Модуль | Вход → выход | Ресурс |
 |---|---|---|---|---|
 | 1a | profi.ru | `pipeline/profi_collector.py` | при `PROFI_ENABLED`: одна загрузка ленты заказов кабинета → `vacancies(site='profi', status=prefiltered)` — полный текст уже в карточке, стадии 4 не нужно; лента без кабинета → `ProfiBlocked` в `report.profi_error`, hh.ru продолжает | браузер, `min(PROFI_PAGES_PER_RUN, бюджет)` |
-| 1 | Сбор | `pipeline/collector.py` | страницы поиска → `vacancies(new)`; страница откликов → `applied/has_chat` (+`suitableVacancies` как проход `similar`) | браузер |
-| 2 | Правила | `pipeline/prefilter.py` | `new → triage` или `skipped` (applied, archived, fly_in_fly_out, stopword, no_engineering_title) | — |
+| 1 | Сбор | `pipeline/collector.py` | страницы поиска → `vacancies(new)`; страница откликов → `applied/has_chat`/`negotiation_state` (+`suitableVacancies` как проход `similar`) | браузер |
+| 2 | Правила | `pipeline/prefilter.py` | `new → triage` или `skipped` (applied, archived, stopword, no_engineering_title) | — |
 | 2b | Одна компания — один лид | `pipeline/dedup.py` | Сначала `revive_orphans`: дубли, чей «победитель» лидом так и не стал (`covering_lead` пуст — отклонён, сорвалась оценка или оценён ниже порога), а сам он уже не в пути (`new`/`triage`/`to_fetch`), возвращаются в очередь (`to_fetch`, если триаж ИИ уже пройден, иначе `triage`). Затем `skip_covered`: `triage`, чей работодатель уже имеет лид (`sent` за `EMPLOYER_REPEAT_DAYS`, `prefiltered`, `evaluated ≥ порог`) → `skipped/duplicate_employer:<hh_id>` — без триажа ИИ | — |
 | 3 | Триаж ИИ | `llm/triage.py` | карточки пачками по 30 → `to_fetch` (+priority 1–3) или `skipped/triage` | мост |
 | 4 | Описания | `pipeline/details.py` | сначала `repo.expire_low_priority`: `to_fetch` с приоритетом 3 старше `LOW_PRIORITY_TTL_DAYS` (3) → `skipped/low_priority_expired`; затем `to_fetch` по приоритету → перед каждой загрузкой `dedup.skip_if_covered` (двойник уже имеющегося лида не стоит загрузки) → страница вакансии → `prefiltered` (архив/отклик → `skipped`; страница без `vacancyView` → `evaluation_failed`) | браузер, остаток бюджета прогона |
 | 5 | Оценка | `llm/evaluator.py` | `prefiltered` пачками по 5 → `evaluations` (tech/role/lead, verdict, pitch_hint…) → `evaluated`; total = код. Затем `dedup.dedupe_evaluated`: среди `evaluated ≥ порог` (hh) остаётся лучшая вакансия каждой компании (группировка транзитивна: по `employer_id` или имени), остальные → `skipped/duplicate_employer`; компания с `sent`-лидом в окне повтора не получает нового | мост |
 | 5c | Очередь лидов | `pipeline/repo.py` | `evaluated ≥ порога` — это **очередь, живущая дольше суток**: приоритет = балл + 1 за каждые сутки ожидания (потолок `QUEUE_WAIT_BONUS_MAX` = 7). Что не влезло в норму — не отбрасывается, ждёт и соревнуется завтра; старше `QUEUE_TTL_DAYS` (30) → `rejected/queue_expired` | — |
 | 5b | Досье на компанию | `llm/company_research.py` | Перед письмом, для hh-лидов с `employer_id`: CLI с веб-инструментами читает `hh.ru/employer/<id>` и сайт компании → `employers` (1 вызов на **компанию**, кэш `COMPANY_RESEARCH_TTL_DAYS`). Мимо браузера — дневной лимит загрузок не тратится. Сбой или `found: false` не мешает письму | мост (веб) |
-| 6 | Письма | `llm/cover_letter.py` | Верх очереди (`repo.lead_queue`) в пределах **суточной нормы** `DIGEST_MAX_ITEMS` (5) за вычетом уже написанных сегодня (`repo.letters_written_today`) → `cover_letters`. На письмо: черновик → проверки кодом (суммы, штампы, названо ли производство) с одним повтором → **проход редактора** (`prompts/letter_review.md`). В payload — досье компании, город, площадка и `owner_hint` от `/letter` | мост (2–3 вызова на письмо) |
+| 6 | Письма | `llm/cover_letter.py` | Верх очереди (`repo.lead_queue`) в пределах **суточной нормы** `DIGEST_MAX_ITEMS` (10) за вычетом уже написанных сегодня (`repo.letters_written_today`) → `cover_letters`. На письмо: черновик → проверки кодом (суммы, штампы, названо ли производство) с одним повтором → **проход редактора** (`prompts/letter_review.md`). В payload — досье компании, город, площадка и `owner_hint` от `/letter` | мост (2–3 вызова на письмо) |
 
 Сбор: задачи = `SEARCH_QUERIES` × проходы (regional: 49 регионов одним запросом; remote: `work_format=REMOTE`;
 project: `employment_form=PROJECT,PART`), в случайном порядке; пагинация до `max_pages_per_query` (6) с ранней
@@ -89,6 +89,20 @@ profi.ru в том же Firefox). Кабинет — JS-приложение б�
   сразу (первая установка, рестарт посреди сбора). План из v5 (без индекса окна) дополняется индексом по времени.
 - Любая ошибка job'а → одна строка владельцу, traceback в журнал.
 
+## Что ответили компании (`repo.outcome_stats`, v9.7)
+Синхронизация откликов пишет не только «работодатель что-то ответил» (`has_chat`), но и состояние переписки с hh
+(`negotiation_state`: RESPONSE / INTERVIEW / DISCARD). Успех метода — `INTERVIEW`, отказ — неудача (решение №42).
+`repo.outcome_stats(since)` сводит письма / ответы / приглашения / отказы по полосам балла (`repo.SCORE_BANDS`):
+команда `/stats [дней]` печатает таблицу, шапка дайджеста — строку «Приглашений за 14 дн.», `evaluator.feedback_block`
+подмешивает исход к каждому 👍/👎, так что оценщик калибруется результатом, а не только мнением владельца.
+Письма мимо hh.ru (`applied = 0`) идут отдельной строкой «без канала измерения».
+Сколько суток компания ищет на ту же роль — `repo.employer_searching_days` по нашей же истории (hh обновляет дату
+публикации при каждом поднятии, поэтому возраст вакансии бесполезен); от 14 суток карточка помечается «🔁 ищут N дн.».
+
+## Резервная копия БД (v9.7, этап 7)
+`Scheduler.backup_job` в 03:30 зовёт `db.backup` (штатный SQLite backup API — безопасно на ходу), кладёт
+`data/backups/hh_scout-<дата>.db`, держит 7 копий, пишет kv `last_backup`; дата видна в `/status`, сбой — тревога.
+
 ## Тревоги (`health.py`)
 Урок 09.09: сервис весь день молчал, потому что сообщал только об исходе сбора, а не о его отсутствии. Теперь:
 - **Сторож** (`Scheduler.watchdog_job`, каждые 30 мин): окно закрылось (+30 мин) без стартовавшего прогона → «⚠️ Окно … прошло
@@ -108,10 +122,10 @@ profi.ru в том же Firefox). Кабинет — JS-приложение б�
   unit `failed` → `OnFailure=hh-scout-alert.service` → `scripts/tg_alert.sh` шлёт «🚨» через curl.
 
 ## Дайджест (`pipeline/digest_builder.py`, `bot/digest.py`)
-`evaluated` с `total ≥ score_threshold` по убыванию total, не больше `DIGEST_MAX_ITEMS` (20); лишние остаются `evaluated`
+`evaluated` с `total ≥ score_threshold` по приоритету очереди, не больше `DIGEST_MAX_ITEMS` (10); лишние остаются `evaluated`
 до следующего раза. Лидам без письма письмо дописывается перед отправкой. Сообщения: заголовок «Лиды за <дата> — N
 (проверено M вакансий)» (+ строка «Необработанных с прошлых дней: K (/inbox)», если K > 0) → на каждый лид карточка (`ranker.format_card`, клавиатура из двух рядов — см. ниже) + письмо (`format_letter`, `<pre>`),
-пауза 0.6 с. Затем `sent` + `digests/digest_items`; всё `evaluated` ниже порога → `rejected`. Пусто → «Сегодня лидов не нашлось.
+пауза 1.0 с. Затем `sent` + `digests/digest_items`; всё `evaluated` ниже порога → `rejected`. Пусто → «Сегодня лидов не нашлось.
 Проверено M новых вакансий.» M = число оценок с прошлого дайджеста. При первом старте сервиса уже показанные превью
 помечаются `sent` без отправки (`kv.preview_marked`). `plan_digest` перед выборкой ещё раз вызывает `dedup.dedupe_evaluated` (страховка: лид мог быть отправлен вчера, двойник оценён сегодня).
 
@@ -142,6 +156,6 @@ profi.ru в том же Firefox). Кабинет — JS-приложение б�
 `/crawl [N]` — подход сейчас (N — потолок загрузок, иначе весь остаток дневного лимита) ·
 `/next` — время следующего сбора · `/pause` `/resume` · `/skipped [N≤50]` — последние отсеянные · `/letter <hh_id>` —
 переписать письмо и прислать карточку с письмом · `/inbox` — открытые лиды · `/done <hh_id>` — отметить «написал» ·
-`/cleanup [дней]` — свернуть устаревшие.
+`/cleanup [дней]` — свернуть устаревшие · `/stats [дней]` — исходы по полосам балла.
 
 ## Обработка сбоев — см. `docs/OPERATIONS.md` (плейбук).

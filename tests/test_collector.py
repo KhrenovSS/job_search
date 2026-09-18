@@ -103,6 +103,9 @@ def test_collect_dedups_stops_early_and_syncs_negotiations(monkeypatch):
     # 1001 was applied per negotiations -> skipped/applied even though the search saw it
     assert rows["1001"]["applied"] == 1 and rows["1001"]["status"] == "skipped"
     assert rows["1001"]["has_chat"] == 1
+    # v9.7: hh's own view of the conversation is kept, not just "somebody answered"
+    assert rows["1001"]["negotiation_state"] == "INTERVIEW" and rows["1001"]["negotiation_seen_at"]
+    assert rows["77"]["negotiation_state"] == "RESPONSE"
     assert rows["77"]["status"] == "skipped" and rows["77"]["search_pass"] == "negotiations"
     assert rows["5000"]["search_pass"] == "similar" and rows["5000"]["status"] == "new"
     assert rows["1002"]["status"] == "new" and rows["2001"]["search_pass"] == "remote"

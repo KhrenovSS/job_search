@@ -47,9 +47,25 @@ class EvalStats:
     bridge_calls: int = 0
 
 
+def _outcome(row) -> str:
+    """What the company answered, for the calibration block: an invitation is the goal, silence is not neutral."""
+    if not row["responded"]:
+        return ""
+    state = (row["negotiation_state"] or "").upper()
+    if state == "INTERVIEW":
+        return ". ИТОГ: компания пригласила к разговору"
+    if state == "DISCARD":
+        return ". ИТОГ: компания отказала"
+    if row["has_chat"]:
+        return ". ИТОГ: компания ответила"
+    if row["applied"]:
+        return ". ИТОГ: компания молчит"
+    return ""
+
+
 def feedback_block(conn: sqlite3.Connection, limit: int = 20) -> str:
     rows = conn.execute(
-        """SELECT f.value, f.reason, v.title, v.employer, e.verdict,
+        """SELECT f.value, f.reason, v.title, v.employer, e.verdict, v.applied, v.has_chat, v.negotiation_state,
                   EXISTS(SELECT 1 FROM lead_actions a WHERE a.vacancy_id = v.id AND a.action IN ('responded','auto_responded')) AS responded
            FROM feedback f
            JOIN vacancies v ON v.id = f.vacancy_id LEFT JOIN evaluations e ON e.vacancy_id = v.id
@@ -63,11 +79,11 @@ def feedback_block(conn: sqlite3.Connection, limit: int = 20) -> str:
         if r["value"] > 0 and r["responded"]:
             mark = "👍 (кандидат написал этой компании)"
         why = f" — причина: {reasons.get(r['reason'], r['reason'])}" if r["reason"] else ""
-        out.append(f"{mark} «{r['title']}» ({r['employer'] or '—'}){why}. Вердикт ИИ был: {r['verdict'] or '—'}")
+        out.append(f"{mark} «{r['title']}» ({r['employer'] or '—'}){why}{_outcome(r)}. Вердикт ИИ был: {r['verdict'] or '—'}")
     return "\n".join(out)
 
 
-def vacancy_payload(row: sqlite3.Row) -> dict:
+def vacancy_payload(row: sqlite3.Row, searching_days: int = 0) -> dict:
     raw = json.loads(row["raw_json"]) if row["raw_json"] else {}
     skills = raw.get("keySkills")
     if isinstance(skills, dict):
@@ -96,7 +112,9 @@ def vacancy_payload(row: sqlite3.Row) -> dict:
         # hh's own "Оформление по ГПХ или по совместительству" flag and the pass that found the vacancy
         payload.update({"accept_temporary": bool(row["accept_temporary"]),
                         "civil_law_contracts": json.loads(row["civil_law_contracts"] or "[]"),
-                        "search_pass": row["search_pass"]})
+                        "search_pass": row["search_pass"],
+                        # our own observation: for how long this employer has been advertising this role
+                        "employer_searching_days": searching_days})
     return payload
 
 
@@ -168,7 +186,8 @@ class Evaluator:
         repo.set_status(self.conn, row["hh_id"], "evaluated")
 
     def _evaluate_batch(self, system_text: str, batch: list[sqlite3.Row]) -> list[VacancyEvaluation] | None:
-        user_text = json.dumps([vacancy_payload(r) for r in batch], ensure_ascii=False)
+        user_text = json.dumps([vacancy_payload(r, repo.employer_searching_days(self.conn, r)) for r in batch],
+                               ensure_ascii=False)
         last_error = ""
         for attempt in range(2):
             prompt = user_text if attempt == 0 else user_text + _RETRY_NOTE.format(error=last_error)
