@@ -166,8 +166,17 @@ def format_queue_tail(waiting: list[sqlite3.Row], total: int) -> str:
     return "\n".join(lines)
 
 
+def _plural(n: int, one: str, few: str, many: str) -> str:
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return few
+    return many
+
+
 def digest_header(count: int, checked: int, when: datetime | None = None, open_before: int = 0,
-                  work: dict[str, int] | None = None, invited: int | None = None, invited_days: int = 14) -> str:
+                  work: dict[str, int] | None = None, invited: int | None = None, invited_days: int = 14,
+                  sent_today: int = 0) -> str:
     """`work` = repo.work_totals(): the only daily word about how the service itself is doing (quiet mode).
 
     `invited` = repo.invited_since(): what the letters actually bought over the last `invited_days`.
@@ -180,9 +189,16 @@ def digest_header(count: int, checked: int, when: datetime | None = None, open_b
     if invited is not None:
         tail += f"\nПриглашений за {invited_days} дн.: {invited} (/stats)"
     if count == 0:
+        if sent_today:
+            noun = _plural(sent_today, "лид", "лида", "лидов")
+            return (f"<b>Итог за {date}</b>: {sent_today} {noun} уже ушло сразу после подходов, "
+                    f"нового к этому часу нет. Проверено {checked} вакансий.{tail}")
         return f"Сегодня лидов не нашлось. Проверено {checked} новых вакансий.{tail}"
-    noun = "лид" if count % 10 == 1 and count % 100 != 11 else "лида" if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14 else "лидов"
-    return f"<b>Лиды за {date} — {count} {noun}</b> (проверено {checked} вакансий){tail}"
+    noun = _plural(count, "лид", "лида", "лидов")
+    head = f"<b>Лиды за {date} — {count} {noun}</b> (проверено {checked} вакансий)"
+    if sent_today:
+        head += f"\nЕщё {sent_today} ушло сразу после подходов"
+    return head + tail
 
 
 def _esc(s: str) -> str:

@@ -34,7 +34,7 @@
 | `skipped` | prefilter/collector/triage/details/dedup/digest | отсеяна; всегда с `skip_reason` |
 | `evaluation_failed` | evaluator (ИИ дважды вернул невалидный ответ / пропустил hh_id) или details (страница без `vacancyView`) | терминальная ошибка, не повторяется |
 
-Лиды выше порога, не влезшие в `DIGEST_MAX_ITEMS` (10), остаются `evaluated` до следующего дайджеста.
+Лиды выше порога, не влезшие в суточную норму `DIGEST_MAX_ITEMS` (20), остаются `evaluated` до следующей отправки.
 
 ## `vacancies.skip_reason`
 `applied` (владелец уже откликался) · `archived` · `stopword:<слово>` · `no_engineering_title`
@@ -112,6 +112,13 @@
 Заполняет `llm/company_research.py`; в карточку лида попадает строка «🏭 О компании» (`LEAD_SELECT` подмешивает
 `brief` как `company_brief`). Поля-факты собраны с прочитанных страниц, `automation_hooks` — явные предположения.
 
+## Норма суток и мгновенные отправки (v9.8)
+`digests.note = 'instant:<site>'` — лиды, ушедшие сразу после подхода, а не в дайджесте 12:00. Суточная норма
+`DIGEST_MAX_ITEMS` общая на всех: `repo.leads_sent_today` считает строки `digest_items` с полуночи по местному
+времени, и мгновенная отправка и `plan_digest` берут только остаток. `repo.last_daily_digest` /
+`evaluations_since_last_digest(daily_only=True)` пропускают `instant:*`, чтобы «проверено N» в дневной шапке
+означало сутки, а не время с последнего подхода.
+
 ## Что ответила компания (v9.7)
 `vacancies.negotiation_state` — состояние переписки на hh.ru как его отдаёт сам сайт (`RESPONSE` — отклик без ответа,
 `INTERVIEW` — пригласили, `DISCARD` — отказ), `negotiation_seen_at` — когда мы это увидели. Пишется при синхронизации
@@ -123,7 +130,7 @@
 
 ## `evaluated` — это очередь (v9.1)
 Статус `evaluated` с `total ≥ SCORE_THRESHOLD` означает не «ждёт ближайшего дайджеста», а «стоит в очереди».
-Дайджест забирает сверху `DIGEST_MAX_ITEMS` (10) по приоритету `total + MIN(суток ожидания, QUEUE_WAIT_BONUS_MAX)`,
+Отправка забирает сверху остаток суточной нормы (`DIGEST_MAX_ITEMS` 20 − `repo.leads_sent_today`) по приоритету `total + MIN(суток ожидания, QUEUE_WAIT_BONUS_MAX)`,
 остальные **остаются `evaluated`** и соревнуются с завтрашними поступлениями (`repo.lead_queue`, `repo.queue_size`).
 `reject_below` по-прежнему списывает то, что ниже порога; `repo.expire_queue` — то, что простояло дольше
 `QUEUE_TTL_DAYS`. Ожидание считается от `evaluations.created_at` (строка на вакансию одна).

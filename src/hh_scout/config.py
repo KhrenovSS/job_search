@@ -79,10 +79,10 @@ class Settings(BaseSettings):
     # Sittings: one crawl per window, its START picked at random inside the window; the daily cap is shared between
     # the sittings still ahead. Comma-separated, sorted, non-overlapping.
     crawl_windows: str = "07:00-10:00,12:00-15:00,18:00-22:00"
-    # The daily letter quota (the digest shows exactly this many leads and writes exactly this many letters).
-    # v9.1 set it to 5; v9.7 doubled it on the owner's call — an unsent offer answers with certainty, a sent one
-    # only probably (decision #41). Whether the lower score bands earn their letters is now measured, not guessed.
-    digest_max_items: int = 10
+    # The daily quota: how many leads may be sent and letters written in a day, across instant sends and the
+    # noon digest together. v9.1 set it to 5; v9.7 doubled it; v9.8 raised it to 20, which at the current supply
+    # of 8-12 leads a day holds nothing back — it stays as a fuse against a sudden flood (decision #46).
+    digest_max_items: int = 20
     queue_ttl_days: int = 30        # a lead nobody got to in a month leaves the queue (the vacancy is gone)
     queue_wait_bonus_max: int = 7   # a day of waiting is worth a point, capped: the tail must not starve
     digest_tail_items: int = 8      # how many of the waiting ones the digest lists by name

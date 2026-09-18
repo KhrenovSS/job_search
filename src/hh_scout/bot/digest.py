@@ -56,7 +56,8 @@ async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, ch
     invited = repo.invited_since(conn, (datetime.now(TZ) - timedelta(days=INVITED_DAYS)).isoformat())
     if not plan.leads:
         await bot.send_message(chat_id, digest_header(0, plan.checked, open_before=open_before, work=work,
-                                                  invited=invited, invited_days=INVITED_DAYS))
+                                                  invited=invited, invited_days=INVITED_DAYS,
+                                                  sent_today=plan.sent_today))
         finalize_digest(conn, settings, [], plan.checked, note)
         return 0
     # letters for leads that still lack one (e.g. bridge was down during the crawl)
@@ -71,7 +72,8 @@ async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, ch
         plan = plan_digest(conn, settings)
 
     await bot.send_message(chat_id, digest_header(len(plan.leads), plan.checked, open_before=open_before, work=work,
-                                                  invited=invited, invited_days=INVITED_DAYS))
+                                                  invited=invited, invited_days=INVITED_DAYS,
+                                                  sent_today=plan.sent_today))
     sent: list[tuple[sqlite3.Row, int | None, int | None]] = []
     for i, row in enumerate(plan.leads, 1):
         await asyncio.sleep(PAUSE_S)
@@ -90,25 +92,44 @@ async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, ch
     return len(sent)
 
 
-async def send_instant_leads(bot: Bot, conn: sqlite3.Connection, settings: Settings, chat_id: int, site: str = "profi") -> int:
-    """Right after a crawl: send new leads of `site` at once (profi.ru orders are taken within hours).
+INSTANT_HEADERS = {
+    "profi": "⚡ Новые заказы на profi.ru: {n}. Отклики там платные и разбирают быстро.",
+    "hh": "⚡ Новые лиды: {n}. Письма готовы — чем раньше отклик, тем он заметнее.",
+}
 
-    Same card, buttons and bid text as in the digest; recorded as a digest with note 'instant:<site>' so feedback,
+
+async def send_instant_leads(bot: Bot, conn: sqlite3.Connection, settings: Settings, chat_id: int, site: str = "profi") -> int:
+    """Right after a crawl: send the new leads of `site` at once instead of holding them until noon.
+
+    Same card, buttons and letter as in the digest; recorded as a digest with note 'instant:<site>' so feedback,
     collapsing and /inbox work. Nothing below the threshold is rejected here — that is the noon digest's job.
+
+    Two sites, two rhythms. profi.ru orders are taken within hours and their bid is short, so a missing one is
+    written here and now. hh leads come off the queue in priority order and their letters were already written
+    by the run that found them (`run.py` step 6); a lead whose letter did not make it waits for the next sitting
+    or for the noon digest rather than holding up the chat for minutes of bridge calls.
     """
-    leads = repo.evaluated_leads(conn, settings.score_threshold, site=site)
+    left = max(0, settings.digest_max_items - repo.leads_sent_today(conn))
+    if not left:
+        log.info("Мгновенная отправка (%s): суточная норма %d исчерпана", site, settings.digest_max_items)
+        return 0
+    if site == "hh":
+        leads = [r for r in repo.lead_queue(conn, settings.score_threshold, left,
+                                            wait_bonus_max=settings.queue_wait_bonus_max) if r["letter"]]
+    else:
+        leads = repo.evaluated_leads(conn, settings.score_threshold, left, site=site)
+        missing = [r for r in leads if not r["letter"]]
+        if missing:
+            try:
+                writer = CoverLetterWriter(settings, conn)
+                for r in missing:
+                    await asyncio.to_thread(writer.write_for, r)
+            except Exception as e:  # noqa: BLE001
+                log.warning("Не удалось написать предложение для заказа: %s", e)
+            leads = repo.evaluated_leads(conn, settings.score_threshold, left, site=site)
     if not leads:
         return 0
-    missing = [r for r in leads if not r["letter"]]
-    if missing:
-        try:
-            writer = CoverLetterWriter(settings, conn)
-            for r in missing:
-                await asyncio.to_thread(writer.write_for, r)
-        except Exception as e:  # noqa: BLE001
-            log.warning("Не удалось написать предложение для заказа: %s", e)
-        leads = repo.evaluated_leads(conn, settings.score_threshold, site=site)
-    await bot.send_message(chat_id, f"⚡ Новые заказы на profi.ru: {len(leads)}. Отклики там платные и разбирают быстро.")
+    await bot.send_message(chat_id, INSTANT_HEADERS[site].format(n=len(leads)))
     sent: list[tuple[sqlite3.Row, int | None, int | None]] = []
     for i, row in enumerate(leads, 1):
         await asyncio.sleep(PAUSE_S)

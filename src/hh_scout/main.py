@@ -40,14 +40,16 @@ async def run() -> int:
         n = await collapse_auto_responded(bot, conn, settings.tg_owner_chat_id)
         if n:
             await notify(f"✅ Свернул {n} лид(ов): вы уже откликнулись на них на hh.ru")
-        if settings.profi_enabled:
+        # v9.8: a ready lead is not held until noon — the sooner the letter goes, the more it is worth.
+        sites = ["hh"] + (["profi"] if settings.profi_enabled else [])
+        for site in sites:
             try:
-                k = await send_instant_leads(bot, conn, settings, settings.tg_owner_chat_id, site="profi")
+                k = await send_instant_leads(bot, conn, settings, settings.tg_owner_chat_id, site=site)
                 if k:
-                    log.info("profi.ru: отправлено сразу %d заказ(ов)", k)
+                    log.info("%s: отправлено сразу %d лид(ов)", site, k)
             except Exception as e:  # noqa: BLE001
-                log.exception("Мгновенная отправка заказов profi.ru упала")
-                await notify(f"⚠️ Заказы profi.ru не отправлены: {e}")
+                log.exception("Мгновенная отправка (%s) упала", site)
+                await notify(f"⚠️ Лиды ({site}) не отправлены: {e}")
 
     scheduler = Scheduler(settings, conn, notify, digest, after_crawl)
     dp = create_dispatcher(settings, conn, scheduler)

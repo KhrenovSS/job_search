@@ -14,10 +14,11 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class DigestPlan:
-    leads: list[sqlite3.Row]        # today's quota, best first by queue priority
+    leads: list[sqlite3.Row]        # what is left of today's quota, best first by queue priority
     checked: int
     waiting: list[sqlite3.Row]      # the next ones in the queue, listed by name in the tail
     waiting_total: int = 0          # how many are waiting altogether
+    sent_today: int = 0             # leads already delivered today by the instant sends (v9.8)
 
 
 def plan_digest(conn: sqlite3.Connection, settings: Settings) -> DigestPlan:
@@ -31,13 +32,17 @@ def plan_digest(conn: sqlite3.Connection, settings: Settings) -> DigestPlan:
         gone = repo.expire_queue(conn, settings.queue_ttl_days)
     if gone:
         log.info("Из очереди выбыло по сроку (%d дн.): %d", settings.queue_ttl_days, gone)
-    quota = settings.digest_max_items
-    leads = repo.lead_queue(conn, settings.score_threshold, quota, wait_bonus_max=settings.queue_wait_bonus_max)
+    # Since v9.8 leads go out right after every sitting, so by noon most of the quota is usually spent.
+    # What is left here is the catch-up: leads whose letter was not ready in time, or that arrived while
+    # the quota was momentarily full.
+    sent_today = repo.leads_sent_today(conn)
+    quota = max(0, settings.digest_max_items - sent_today)
+    leads = repo.lead_queue(conn, settings.score_threshold, quota, wait_bonus_max=settings.queue_wait_bonus_max) if quota else []
     waiting = repo.lead_queue(conn, settings.score_threshold, settings.digest_tail_items,
                               wait_bonus_max=settings.queue_wait_bonus_max, offset=len(leads))
     total = repo.queue_size(conn, settings.score_threshold)
-    return DigestPlan(leads=leads, checked=repo.evaluations_since_last_digest(conn),
-                      waiting=waiting, waiting_total=max(0, total - len(leads)))
+    return DigestPlan(leads=leads, checked=repo.evaluations_since_last_digest(conn, daily_only=True),
+                      waiting=waiting, waiting_total=max(0, total - len(leads)), sent_today=sent_today)
 
 
 def finalize_digest(conn: sqlite3.Connection, settings: Settings, sent: list[tuple],

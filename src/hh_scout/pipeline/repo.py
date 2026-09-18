@@ -390,10 +390,33 @@ def last_digest(conn: sqlite3.Connection) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM digests ORDER BY id DESC LIMIT 1").fetchone()
 
 
-def evaluations_since_last_digest(conn: sqlite3.Connection) -> int:
-    last = last_digest(conn)
+def last_daily_digest(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    """The last *noon* digest, ignoring instant sends between them (v9.8)."""
+    return conn.execute("SELECT * FROM digests WHERE note IS NULL OR note NOT LIKE 'instant:%' "
+                        "ORDER BY id DESC LIMIT 1").fetchone()
+
+
+def evaluations_since_last_digest(conn: sqlite3.Connection, *, daily_only: bool = False) -> int:
+    """How many vacancies were scored since the last digest — "проверено N" in its header.
+
+    `daily_only` measures from the last noon digest: since v9.8 leads also go out right after every sitting,
+    and counting from those would turn the daily summary into "since the last sitting".
+    """
+    last = last_daily_digest(conn) if daily_only else last_digest(conn)
     since = last["sent_at"] if last else "1970-01-01T00:00:00+00:00"
     return int(conn.execute("SELECT COUNT(*) FROM evaluations WHERE created_at > ?", (since,)).fetchone()[0])
+
+
+def leads_sent_today(conn: sqlite3.Connection) -> int:
+    """Leads sent since local midnight, instant sends and the noon digest together.
+
+    The daily quota is a property of the day, not of one message: without this the noon digest would happily
+    send another full quota on top of what the sittings already delivered.
+    """
+    start = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    return int(conn.execute(
+        "SELECT COUNT(*) FROM digest_items di JOIN digests d ON d.id = di.digest_id WHERE d.sent_at >= ?",
+        (start.replace(microsecond=0).isoformat(),)).fetchone()[0])
 
 
 def create_digest(conn: sqlite3.Connection, items_count: int, collected_count: int, note: str | None = None) -> int:
