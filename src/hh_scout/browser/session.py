@@ -227,13 +227,18 @@ class BrowserSession:
         when navigation returns. This is what makes the short page-load timeout safe.
         """
         d = self.driver
+        script = ("const h = document.documentElement.innerHTML;"
+                  "return arguments[0].some(m => h.indexOf(m) !== -1);")
+        wanted = list(markers)
         deadline = time.monotonic() + MARKUP_WAIT_S
         while True:
             try:
-                html = d.execute_script("return document.documentElement.innerHTML;") or ""
+                # the check runs in the page: shipping the whole innerHTML back on every poll would cost
+                # more than the wait it is saving
+                found = bool(d.execute_script(script, wanted))
             except WebDriverException:
-                html = ""
-            if any(m in html for m in markers):
+                found = False
+            if found:
                 return True
             if time.monotonic() >= deadline:
                 return False

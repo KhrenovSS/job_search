@@ -9,12 +9,13 @@ from hh_scout.config import Settings
 
 
 def test_backup_copies_the_live_db_and_keeps_only_the_newest(tmp_path):
-    conn = dbmod.connect(tmp_path / "live.db")
+    live = tmp_path / "live.db"
+    conn = dbmod.connect(live)
     dbmod.migrate(conn)
     conn.execute("INSERT INTO kv(key, value) VALUES ('probe', 'kept')")
 
     dest = tmp_path / "backups"
-    target = dbmod.backup(conn, dest, keep=2)
+    target = dbmod.backup(live, dest, keep=2)  # a path, as the scheduler passes it
     assert target.exists()
     copy = sqlite3.connect(str(target))
     assert copy.execute("SELECT value FROM kv WHERE key='probe'").fetchone()[0] == "kept"
@@ -23,25 +24,28 @@ def test_backup_copies_the_live_db_and_keeps_only_the_newest(tmp_path):
     # older copies beyond `keep` are pruned, the newest survive
     for day in ("2026-09-01", "2026-09-02", "2026-09-03"):
         (dest / f"hh_scout-{day}.db").write_bytes(b"old")
-    dbmod.backup(conn, dest, keep=2)
+    dbmod.backup(conn, dest, keep=2)  # a live connection still works
     left = sorted(p.name for p in dest.glob("hh_scout-*.db"))
     assert len(left) == 2
     assert target.name in left  # today's copy is the newest and is never the one pruned
 
 
 class _FakeDriver:
-    """Returns the page without the marker for the first `misses` polls, then with it."""
+    """The page lacks the marker for the first `misses` polls, then carries it.
+
+    The real check runs inside the page and returns a boolean, so the fake answers the same way.
+    """
 
     def __init__(self, misses: int, marker: str = HH_STATE_MARKER) -> None:
         self.misses = misses
         self.marker = marker
         self.calls = 0
 
-    def execute_script(self, script, *args):
+    def execute_script(self, script, wanted=()):
         self.calls += 1
-        if self.calls <= self.misses:
-            return "<html><body>грузится</body></html>"
-        return f'<html><template id="{self.marker}">{{}}</template></html>'
+        html = ("<html><body>грузится</body></html>" if self.calls <= self.misses
+                else f'<html><template id="{self.marker}">{{}}</template></html>')
+        return any(m in html for m in wanted)
 
 
 def _session(driver):

@@ -76,7 +76,8 @@ def mark_applied(conn: sqlite3.Connection, hh_id: str, *, has_chat: bool, state:
     """Flag a vacancy the owner already responded to; creates a stub row if unknown.
 
     `state` is hh's own view of the conversation (RESPONSE / INTERVIEW / DISCARD) — the only place the
-    method learns whether an offer led anywhere. It only ever moves forward: hh never un-invites.
+    method learns whether an offer led anywhere. The latest state wins, but a missing one never erases
+    a state we already knew: a page that failed to parse must not look like "nothing happened".
     """
     now = utcnow()
     if vacancy_exists(conn, hh_id):

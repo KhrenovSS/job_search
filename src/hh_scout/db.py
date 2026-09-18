@@ -42,21 +42,28 @@ def connect(path: Path | str) -> sqlite3.Connection:
 
 
 
-def backup(conn: sqlite3.Connection, dest_dir: Path | str, keep: int = 7) -> Path:
+def backup(src: Path | str | sqlite3.Connection, dest_dir: Path | str, keep: int = 7) -> Path:
     """Copy the live database to dest_dir/hh_scout-YYYY-MM-DD.db, keeping the newest `keep` copies.
 
     Uses SQLite's own backup API, so it is safe to run while the bot writes (WAL and all) — no
     file copying, no service stop. The feedback the owner gives every day is the only place the
     calibration data lives, and it is not reproducible from hh.ru.
+
+    Give it a path rather than a live connection where you can: the copy holds a read lock for its
+    whole duration, and the service's one connection is shared by the bot handlers.
     """
     d = Path(dest_dir)
     d.mkdir(parents=True, exist_ok=True)
     target = d / f"hh_scout-{datetime.now(timezone.utc).date().isoformat()}.db"
+    own = not isinstance(src, sqlite3.Connection)
+    source = sqlite3.connect(str(src)) if own else src
     dst = sqlite3.connect(str(target))
     try:
-        conn.backup(dst)
+        source.backup(dst)
     finally:
         dst.close()
+        if own:
+            source.close()
     old = sorted(d.glob("hh_scout-*.db"), reverse=True)[keep:]
     for f in old:
         f.unlink(missing_ok=True)

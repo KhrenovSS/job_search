@@ -240,7 +240,7 @@ class Scheduler:
     async def backup_job(self) -> None:
         """Nightly copy of the database (see db.backup). Silent on success — a failure is worth an alert."""
         try:
-            target = await asyncio.to_thread(dbmod.backup, self.conn, self.s.backup_dir, self.s.backup_keep)
+            target = await asyncio.to_thread(dbmod.backup, self.s.db_path, self.s.backup_dir, self.s.backup_keep)
             kv_set(self.conn, "last_backup", f"{dbmod.utcnow()}|{target.name}")
         except Exception as e:
             log.exception("Резервная копия БД не создана")
