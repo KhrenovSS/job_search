@@ -9,6 +9,7 @@ CLI:  python -m hh_scout.llm.cover_letter [--limit N] [--hh-id X] [--force] [--p
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import re
@@ -19,8 +20,9 @@ from hh_scout.browser.hh_pages import strip_html
 from hh_scout.config import Settings
 from hh_scout.llm.bridge_client import BridgeClient, BridgeError
 from hh_scout.llm.company_research import CompanyResearcher
-from hh_scout.llm.prompts import read_private, render
+from hh_scout.llm.prompts import PrivatePromptMissing, load_prompt_body, read_private, render
 from hh_scout.pipeline import repo
+from hh_scout.pipeline.ranker import strip_role_address
 
 log = logging.getLogger(__name__)
 
@@ -113,12 +115,44 @@ _MONEY_RE = re.compile(r"\d[\d\s  ]{2,}\s*(?:₽|руб|р\.|тыс|на рук�
 # Phrases that make the letter read as a mailshot or as flattery of the recruiter.
 _BANNED = ("помогу закрыть", "закрыть позицию", "закрыть вакансию", "уникальн", "инновацион", "уважаемые",
            "динамично развивающ", "выполните kpi", "сэкономите на зарплате")
-# The letter must never sort its reader by job title: "Для отдела кадров: подряд не требует…" reads as a mailshot,
-# and the owner deleted that label by hand from every letter that had it (v9.6, decision #38). Cutting the label is
-# cheaper and surer than regenerating the whole letter, so this lives in _clean(), not in check_letter().
-_ROLE_ADDRESS_RE = re.compile(
-    r"(?:\A|\n|(?<=\.)[ \t])[ \t]*(?:отдельно\s+)?для\s+[^:\n]{0,60}?(?:кадр|подбор|персонал|hr|рекрут)[^:\n]{0,20}:[ \t]*",
-    re.IGNORECASE)
+
+
+def rules_hash(settings: Settings, site: str = "hh") -> str:
+    """Which version of the letter rules a text was written under (decision #46).
+
+    The letter is written the day the lead is found and may leave the queue days later — by then the prompt,
+    the owner's profile or the resume may have changed, and the stored text quietly breaks a rule that now
+    exists. The stamp is the fingerprint of everything that shapes the letter: the site's prompt with the
+    profile and the resume already substituted, plus the editor's checklist for hh.
+
+    An unreadable prompt gives "" — «rules unknown», so every stored letter counts as stale and the writer
+    (which needs the same files and fails loudly) decides what happens next. The digest then sends cards
+    without letters instead of crashing on a machine where the private prompts are missing.
+    """
+    try:
+        parts = [render(settings.prompts_dir, LETTER_PROMPTS.get(site, LETTER_PROMPTS["hh"]),
+                        resume=read_private(settings.prompts_dir, "resume.md"))]
+    except (PrivatePromptMissing, OSError) as e:
+        log.warning("Не читаются промпты письма (%s) — считаю все сохранённые письма устаревшими", e)
+        return ""
+    if site == "hh":
+        try:
+            parts.append(load_prompt_body(settings.prompts_dir / REVIEW_PROMPT))
+        except OSError:
+            pass      # no checklist, no editor pass — `_review` degrades exactly the same way
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def usable_letter(row: sqlite3.Row, rules: str) -> str | None:
+    """The stored letter, but only if it was written under the current rules — otherwise None, i.e. «письма нет».
+
+    One rule instead of three: a stale letter behaves exactly like a missing one, so the digest rewrites it and
+    the instant send holds the lead back, with no new machinery on either side.
+    """
+    if "letter" not in row.keys() or not row["letter"]:
+        return None
+    stored = row["letter_rules"] if "letter_rules" in row.keys() else None
+    return row["letter"] if stored and stored == rules else None
 
 
 def check_letter(text: str, row: sqlite3.Row, company: dict | None) -> str:
@@ -146,6 +180,11 @@ def _company_words(row: sqlite3.Row, company: dict) -> list[str]:
 
 
 def _clean(text: str) -> str:
+    """The bridge answer as a letter: no fence, no label, no address by job title.
+
+    `strip_role_address` lives in `pipeline.ranker` next to the rest of the letter's format, because the same
+    cut has to happen on the way out as well — a letter written days ago is sent from the database verbatim.
+    """
     text = text.strip()
     # strip accidental code fences or a leading label
     if text.startswith("```"):
@@ -155,33 +194,7 @@ def _clean(text: str) -> str:
     for prefix in ("Отклик:", "Письмо:", "Текст письма:"):
         if text.startswith(prefix):
             text = text[len(prefix):].strip()
-    return _strip_role_address(text)
-
-
-def _strip_role_address(text: str) -> str:
-    """Drop a "Для отдела кадров:" label, keeping the sentence it introduced (decision #38).
-
-    The owner did exactly this by hand before sending: the thought is right, naming the reader's job is not.
-    """
-    out: list[str] = []
-    cuts: list[int] = []   # where in the result the sentence that lost its label now begins
-    last = pos = 0
-    for m in _ROLE_ADDRESS_RE.finditer(text):
-        log.info("Убрал из письма обращение по должности: «%s»", m.group(0).strip())
-        lead = m.group(0)[0]
-        chunk = text[last:m.start()] + (lead if lead.isspace() else "")   # keep the break, drop the label
-        out.append(chunk)
-        pos += len(chunk)
-        cuts.append(pos)
-        last = m.end()
-    if not cuts:
-        return text
-    out.append(text[last:])
-    chars = list("".join(out))
-    for i in cuts:                       # the label carried the capital letter — give it back
-        if i < len(chars):
-            chars[i] = chars[i].upper()
-    return "".join(chars)
+    return strip_role_address(text)
 
 
 class CoverLetterWriter:
@@ -195,6 +208,13 @@ class CoverLetterWriter:
         self._research_bridge = BridgeClient(settings, retries=0)
         self.researcher = CompanyResearcher(settings, conn, self._research_bridge)
         self.stats = LetterStats()
+        self._rules_cache: dict[str, str] = {}
+
+    def rules(self, site: str) -> str:
+        """The current rules stamp for `site`, read once per writer (the prompt files are re-read by design)."""
+        if site not in self._rules_cache:
+            self._rules_cache[site] = rules_hash(self.s, site)
+        return self._rules_cache[site]
 
     def answered_employer(self, row: sqlite3.Row) -> sqlite3.Row | None:
         """The vacancy of this company the owner has already answered — then no letter is written at all.
@@ -247,7 +267,8 @@ class CoverLetterWriter:
         if site == "hh":
             text = self._review(text, payload) or text
         with self.conn:
-            repo.save_cover_letter(self.conn, row["id"], text, model_note=self.s.bridge_model or "bridge-default")
+            repo.save_cover_letter(self.conn, row["id"], text, model_note=self.s.bridge_model or "bridge-default",
+                                   rules_hash=self.rules(site))
         self.stats.written += 1
         log.info("Письмо для %s «%s» (%s): %d символов", row["hh_id"], row["title"][:40], row["employer"], len(text))
         return text
@@ -264,8 +285,15 @@ class CoverLetterWriter:
         if left == 0:
             log.info("Суточная норма писем исчерпана (%d) — остальные ждут очереди", self.s.digest_max_items)
             return self.stats
-        rows = [r for r in repo.lead_queue(self.conn, self.s.score_threshold, None,
-                                           wait_bonus_max=self.s.queue_wait_bonus_max) if not r["letter"]][:left]
+        queue = repo.lead_queue(self.conn, self.s.score_threshold, None,
+                                wait_bonus_max=self.s.queue_wait_bonus_max)
+        # A lead whose letter predates a rules change needs a new one — but after the leads that have none at all,
+        # so rewriting never starves today's finds of the daily quota (decision #46).
+        fresh = [r for r in queue if not r["letter"]]
+        stale = [r for r in queue if r["letter"] and not usable_letter(r, self.rules(row_site(r)))]
+        if stale:
+            log.info("Писем, написанных по прежним правилам: %d — переписываю после новых лидов", len(stale))
+        rows = (fresh + stale)[:left]
         if not rows:
             log.info("Все лиды в норме уже с письмами")
             return self.stats
@@ -274,7 +302,9 @@ class CoverLetterWriter:
             site = row_site(row)
             if site not in systems:
                 systems[site] = self._system(site)
-            self.write_for(row, systems[site])
+            if self.write_for(row, systems[site]) is None and row["letter"]:
+                log.warning("Письмо для %s осталось по прежним правилам — лид подождёт следующего подхода",
+                            row["hh_id"])
         self.stats.bridge_calls = self.bridge.calls + self._research_bridge.calls  # research has its own client
         log.info("Письма: написано %d (правил редактор %d), отклонено %d, вызовов моста %d, cost $%.3f",
                  self.stats.written, self.stats.reviewed, self.stats.failed, self.stats.bridge_calls,

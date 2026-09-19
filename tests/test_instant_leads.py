@@ -13,10 +13,19 @@ from hh_scout.pipeline.digest_builder import finalize_digest, plan_digest
 from hh_scout.pipeline.ranker import digest_header
 
 
+RULES = "rules-of-today"   # the stamp a letter written under the current rules carries (decision #46)
+
+
 @pytest.fixture(autouse=True)
 def _no_telegram_pauses(monkeypatch):
     """The real 1 s pause between messages is politeness to Telegram, not behaviour under test."""
     monkeypatch.setattr(digest_mod, "PAUSE_S", 0)
+
+
+@pytest.fixture(autouse=True)
+def _fixed_rules(monkeypatch):
+    """The rules stamp comes from the owner's private prompts, which tests do not have."""
+    monkeypatch.setattr(digest_mod, "rules_hash", lambda settings, site="hh": RULES)
 
 
 class _FakeBot:
@@ -42,7 +51,7 @@ def _db(letters=(1, 2, 3)):
                      "VALUES (?,?,0,0,?,?,?,'maybe',0,'staff','integrator','v','p','[]','2026-09-08T10:00:00+00:00')",
                      (i, 80, 80, 60, total))
     for i in letters:
-        repo.save_cover_letter(conn, i, f"письмо {i}")
+        repo.save_cover_letter(conn, i, f"письмо {i}", rules_hash=RULES)
     return conn
 
 
@@ -64,6 +73,19 @@ def test_a_lead_without_a_letter_waits_instead_of_holding_up_the_chat():
     n = asyncio.run(send_instant_leads(_FakeBot(), conn, s, chat_id=1, site="hh"))
     assert n == 2
     assert repo.lead_by_hh_id(conn, "2")["status"] == "evaluated"
+
+
+def test_a_letter_written_under_older_rules_waits_for_the_noon_digest():
+    """v9.9: the rules changed while the lead sat in the queue — the stored text must not go out as it is."""
+    s = Settings(_env_file=None, digest_max_items=20)
+    conn = _db()
+    repo.save_cover_letter(conn, 2, "письмо 2", rules_hash="rules-of-last-week")
+    conn.execute("UPDATE cover_letters SET rules_hash = NULL WHERE vacancy_id = 3")  # written before the stamp existed
+    bot = _FakeBot()
+    assert asyncio.run(send_instant_leads(bot, conn, s, chat_id=1, site="hh")) == 1
+    assert repo.lead_by_hh_id(conn, "2")["status"] == "evaluated"
+    assert repo.lead_by_hh_id(conn, "3")["status"] == "evaluated"
+    assert not any("письмо 2" in m or "письмо 3" in m for m in bot.messages)
 
 
 def test_the_quota_is_a_property_of_the_day_not_of_one_message():

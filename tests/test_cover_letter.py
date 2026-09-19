@@ -6,7 +6,7 @@ import respx
 from hh_scout.config import Settings
 from hh_scout.db import connect, migrate
 from hh_scout.llm.bridge_client import BridgeClient
-from hh_scout.llm.cover_letter import CoverLetterWriter, letter_payload
+from hh_scout.llm.cover_letter import CoverLetterWriter, letter_payload, rules_hash, usable_letter
 from hh_scout.pipeline import repo
 
 
@@ -49,6 +49,50 @@ def test_letters_written_only_for_leads_and_not_twice(tmp_path):
     sent = route.calls[0].request.content.decode()
     assert "SYS РЕЗЮМЕ: CODESYS, MasterSCADA | ПРОФИЛЬ" in sent and "Нужен ПЛК" in sent
     # second run: nothing to do
+    assert CoverLetterWriter(s, conn, BridgeClient(s, sleep=lambda x: None)).run().written == 0
+
+
+def test_the_rules_stamp_follows_the_prompt_the_profile_and_the_resume(tmp_path):
+    """v9.9: what shapes the letter is what the stamp must notice changing (decision #46)."""
+    s = _settings(tmp_path)
+    first = rules_hash(s)
+    assert first and rules_hash(s) == first                       # same files, same stamp
+    (s.prompts_dir / "cover_letter.md").write_text("h\n---\nSYS {resume} | {candidate_profile} | без должностей",
+                                                   encoding="utf-8")
+    assert rules_hash(s) != first
+    (s.prompts_dir / "resume.md").write_text("РЕЗЮМЕ: CODESYS, MasterSCADA 4D", encoding="utf-8")
+    assert len({first, rules_hash(s)}) == 2
+    assert rules_hash(Settings(_env_file=None, prompts_dir=tmp_path / "нет")) == ""   # no prompts, no stamp
+
+
+def test_usable_letter_is_the_stored_one_only_under_the_current_rules():
+    conn = _db()
+    repo.save_cover_letter(conn, 1, "письмо", rules_hash="rules-now")
+    repo.save_cover_letter(conn, 3, "старое письмо", rules_hash="rules-of-last-week")
+    rows = {r["hh_id"]: r for r in repo.lead_queue(conn, 60)}
+    assert usable_letter(rows["1"], "rules-now") == "письмо"
+    assert usable_letter(rows["3"], "rules-now") is None          # written under older rules
+    conn.execute("UPDATE cover_letters SET rules_hash = NULL WHERE vacancy_id = 1")
+    rows = {r["hh_id"]: r for r in repo.lead_queue(conn, 60)}
+    assert usable_letter(rows["1"], "rules-now") is None          # rules unknown = stale
+    assert usable_letter(rows["1"], "") is None                   # and "" never matches anything either
+
+
+@respx.mock
+def test_a_letter_written_under_older_rules_is_rewritten_after_the_leads_that_have_none(tmp_path):
+    """The queue outlives a prompt change, so the stored text has to be refreshed before it is sent."""
+    s = _settings(tmp_path)
+    conn = _db()
+    repo.save_cover_letter(conn, 1, "письмо по прежним правилам", rules_hash="rules-of-last-week")
+    good = "Здравствуйте.\n" + "Опыт CODESYS и MasterSCADA. " * 30 + "\nИван Иванов, +7 900"
+    route = respx.post("http://bridge.test/complete").mock(
+        return_value=httpx.Response(200, json={"text": good, "usage": {}, "cost_usd": 0.01}))
+    w = CoverLetterWriter(s, conn, BridgeClient(s, sleep=lambda x: None))
+    assert w.run().written == 2                        # the lead without a letter AND the stale one
+    assert repo.get_cover_letter(conn, 1).startswith("Здравствуйте.")
+    assert conn.execute("SELECT rules_hash FROM cover_letters WHERE vacancy_id = 1").fetchone()[0] == rules_hash(s)
+    # the lead that had no letter at all went first — rewriting never starves today's finds of the quota
+    assert "Инженер 3" in route.calls[0].request.content.decode()
     assert CoverLetterWriter(s, conn, BridgeClient(s, sleep=lambda x: None)).run().written == 0
 
 

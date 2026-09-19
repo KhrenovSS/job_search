@@ -6,11 +6,15 @@ v3: a vacancy is a lead for the owner's contracting work. Salary and work format
 from __future__ import annotations
 
 import json
+import logging
+import re
 import sqlite3
 from datetime import datetime
 
 from hh_scout.config import TZ, Settings
 from hh_scout.hh.salary import human_from_raw
+
+log = logging.getLogger(__name__)
 
 WORK_FORMAT_RU = {"remote": "🏠 удалёнка", "hybrid": "гибрид", "office": "🏢 офис", "field": "🚗 разъездная", "unknown": None}
 EMPLOYMENT_RU = {"full": "штат", "part": "частичная занятость", "project": "📄 проектная работа", "fly_in_fly_out": "🚁 вахта", "unknown": None}
@@ -79,8 +83,45 @@ def _company_line(v: sqlite3.Row) -> str:
     return str(brief.get("what_they_do") or "")[:300]
 
 
+# The letter must never sort its reader by job title: "Для отдела кадров: подряд не требует…" reads as a mailshot,
+# and the owner deleted that label by hand from every letter that had it (v9.6, decision #38). Cutting the label is
+# cheaper and surer than regenerating the whole letter, so it is cut, not rejected — on the way in (the writer
+# cleans the bridge answer) and again here, on the way out: a letter written days ago under older rules is sent
+# from the database verbatim, and this is the last door before Telegram (v9.9, decision #46).
+_ROLE_ADDRESS_RE = re.compile(
+    r"(?:\A|\n|(?<=\.)[ \t])[ \t]*(?:отдельно\s+)?для\s+[^:\n]{0,60}?(?:кадр|подбор|персонал|hr|рекрут)[^:\n]{0,20}:[ \t]*",
+    re.IGNORECASE)
+
+
+def strip_role_address(text: str) -> str:
+    """Drop a "Для отдела кадров:" label, keeping the sentence it introduced (decision #38).
+
+    The owner did exactly this by hand before sending: the thought is right, naming the reader's job is not.
+    """
+    out: list[str] = []
+    cuts: list[int] = []   # where in the result the sentence that lost its label now begins
+    last = pos = 0
+    for m in _ROLE_ADDRESS_RE.finditer(text):
+        log.info("Убрал из письма обращение по должности: «%s»", m.group(0).strip())
+        lead = m.group(0)[0]
+        chunk = text[last:m.start()] + (lead if lead.isspace() else "")   # keep the break, drop the label
+        out.append(chunk)
+        pos += len(chunk)
+        cuts.append(pos)
+        last = m.end()
+    if not cuts:
+        return text
+    out.append(text[last:])
+    chars = list("".join(out))
+    for i in cuts:                       # the label carried the capital letter — give it back
+        if i < len(chars):
+            chars[i] = chars[i].upper()
+    return "".join(chars)
+
+
 def format_letter(employer: str | None, text: str, site: str = "hh") -> str:
     """Cover letter (or a profi.ru bid) as a separate Telegram message; <pre> gives one-tap copy in Telegram clients."""
+    text = strip_role_address(text)
     if site == "profi":
         return f"✉️ Предложение для «{_esc(employer or 'заказчика')}» (profi.ru):\n<pre>{_esc(text)}</pre>"
     return f"✉️ Отклик для «{_esc(employer or 'компании')}»:\n<pre>{_esc(text)}</pre>"

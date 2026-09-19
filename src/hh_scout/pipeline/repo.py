@@ -284,12 +284,15 @@ def leads_without_letter(conn: sqlite3.Connection, threshold: int, limit: int | 
     return conn.execute(sql, (threshold,)).fetchall()
 
 
-def save_cover_letter(conn: sqlite3.Connection, vacancy_id: int, text: str, model_note: str | None = None) -> None:
+def save_cover_letter(conn: sqlite3.Connection, vacancy_id: int, text: str, model_note: str | None = None,
+                      rules_hash: str | None = None) -> None:
+    """Store the letter. `rules_hash` says which version of the rules wrote it (decision #46)."""
     conn.execute(
-        """INSERT INTO cover_letters(vacancy_id, text, model_note, created_at) VALUES (?, ?, ?, ?)
+        """INSERT INTO cover_letters(vacancy_id, text, model_note, created_at, rules_hash) VALUES (?, ?, ?, ?, ?)
            ON CONFLICT(vacancy_id) DO UPDATE SET text = excluded.text, model_note = excluded.model_note,
-                                                created_at = excluded.created_at""",
-        (vacancy_id, text, model_note, utcnow()),
+                                                created_at = excluded.created_at,
+                                                rules_hash = excluded.rules_hash""",
+        (vacancy_id, text, model_note, utcnow(), rules_hash),
     )
 
 
@@ -303,6 +306,7 @@ def get_cover_letter(conn: sqlite3.Connection, vacancy_id: int) -> str | None:
 LEAD_SELECT = """SELECT v.*, e.tech_score, e.role_score, e.lead_score, e.total, e.ip_gph_possible, e.is_agency,
                         e.employment_hint, e.company_kind, e.verdict, e.pitch_hint, e.red_flags,
                         (SELECT text FROM cover_letters c WHERE c.vacancy_id = v.id) AS letter,
+                        (SELECT rules_hash FROM cover_letters c WHERE c.vacancy_id = v.id) AS letter_rules,
                         (SELECT brief FROM employers emp WHERE emp.employer_id = v.employer_id AND emp.found = 1)
                             AS company_brief,
                         (SELECT CAST(julianday('now') - julianday(MIN(o.first_seen_at)) AS INTEGER)

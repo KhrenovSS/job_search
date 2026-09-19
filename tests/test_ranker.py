@@ -52,6 +52,26 @@ def test_card_shows_lead_fields_and_hides_salary_weight():
     assert "⚠️ агентство" in card and card.endswith("https://hh.ru/vacancy/1")
 
 
+def test_format_letter_cuts_an_address_by_job_title_on_the_way_out():
+    """v9.9: the label reached the owner in a letter written two days before the rule existed (decision #46).
+
+    The writer cleans what the bridge returns, but a letter waits in the queue and is sent from the database
+    verbatim — so the same cut has to happen here, in the last door before Telegram.
+    """
+    from hh_scout.pipeline.ranker import format_letter
+
+    stored = ("Про деньги коротко: стоимость считается от объёма.\n\n"
+              "Отдельно для тех, кто ведёт подбор: такой формат не требует ставки в штатном расписании.\n\n"
+              "Сергей Хренов")
+    out = format_letter("ГЕНЕРИУМ", stored)
+    assert "ведёт подбор" not in out
+    assert "Такой формат не требует ставки в штатном расписании." in out
+    assert "стоимость считается от объёма" in out and "Сергей Хренов" in out
+    # a letter with nothing to cut passes through untouched
+    plain = "Здравствуйте.\n\nДля этого достаточно одного узла — посмотрим, как пойдёт."
+    assert plain in format_letter("ООО Ромашка", plain)
+
+
 def test_profi_order_card_and_bid_wording():
     from hh_scout.pipeline.ranker import format_letter
 

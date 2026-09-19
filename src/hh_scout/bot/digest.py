@@ -14,7 +14,7 @@ from hh_scout.bot.keyboards import vote_kb
 from hh_scout.config import TZ, Settings
 from hh_scout.db import open_db
 from hh_scout.llm.bridge_client import BridgeError
-from hh_scout.llm.cover_letter import CoverLetterWriter
+from hh_scout.llm.cover_letter import CoverLetterWriter, rules_hash, usable_letter
 from hh_scout.llm.evaluator import Evaluator
 from hh_scout.pipeline import repo
 from hh_scout.pipeline.digest_builder import finalize_digest, plan_digest
@@ -60,8 +60,10 @@ async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, ch
                                                   sent_today=plan.sent_today))
         finalize_digest(conn, settings, [], plan.checked, note)
         return 0
-    # letters for leads that still lack one (e.g. bridge was down during the crawl)
-    missing = [r for r in plan.leads if not r["letter"]]
+    # letters for leads that still lack a usable one: none at all (the bridge was down during the crawl),
+    # or one written before the rules changed — a stale letter counts as missing (decision #46)
+    rules = rules_hash(settings)
+    missing = [r for r in plan.leads if not usable_letter(r, rules)]
     if missing:
         try:
             writer = CoverLetterWriter(settings, conn)
@@ -79,9 +81,10 @@ async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, ch
         await asyncio.sleep(PAUSE_S)
         msg = await bot.send_message(chat_id, format_card(i, row, row), reply_markup=vote_kb(row["id"]))
         letter_id = None
-        if row["letter"]:
+        letter = usable_letter(row, rules)   # rewriting failed (bridge down) — the card goes out on its own
+        if letter:
             await asyncio.sleep(PAUSE_S)
-            letter_msg = await bot.send_message(chat_id, format_letter(row["employer"], row["letter"], row_site(row)))
+            letter_msg = await bot.send_message(chat_id, format_letter(row["employer"], letter, row_site(row)))
             letter_id = letter_msg.message_id
         sent.append((row, msg.message_id, letter_id))
     if plan.waiting:
@@ -107,18 +110,21 @@ async def send_instant_leads(bot: Bot, conn: sqlite3.Connection, settings: Setti
     Two sites, two rhythms. profi.ru orders are taken within hours and their bid is short, so a missing one is
     written here and now. hh leads come off the queue in priority order and their letters were already written
     by the run that found them (`run.py` step 6); a lead whose letter did not make it waits for the next sitting
-    or for the noon digest rather than holding up the chat for minutes of bridge calls.
+    or for the noon digest rather than holding up the chat for minutes of bridge calls. A letter written before
+    the rules changed is held back the same way: the noon digest rewrites it (decision #46).
     """
     left = max(0, settings.digest_max_items - repo.leads_sent_today(conn))
     if not left:
         log.info("Мгновенная отправка (%s): суточная норма %d исчерпана", site, settings.digest_max_items)
         return 0
+    rules = rules_hash(settings, site)
     if site == "hh":
         leads = [r for r in repo.lead_queue(conn, settings.score_threshold, left,
-                                            wait_bonus_max=settings.queue_wait_bonus_max) if r["letter"]]
+                                            wait_bonus_max=settings.queue_wait_bonus_max)
+                 if usable_letter(r, rules)]
     else:
         leads = repo.evaluated_leads(conn, settings.score_threshold, left, site=site)
-        missing = [r for r in leads if not r["letter"]]
+        missing = [r for r in leads if not usable_letter(r, rules)]
         if missing:
             try:
                 writer = CoverLetterWriter(settings, conn)
@@ -135,9 +141,10 @@ async def send_instant_leads(bot: Bot, conn: sqlite3.Connection, settings: Setti
         await asyncio.sleep(PAUSE_S)
         msg = await bot.send_message(chat_id, format_card(i, row, row), reply_markup=vote_kb(row["id"]))
         letter_id = None
-        if row["letter"]:
+        letter = usable_letter(row, rules)
+        if letter:
             await asyncio.sleep(PAUSE_S)
-            letter_msg = await bot.send_message(chat_id, format_letter(row["employer"], row["letter"], row_site(row)))
+            letter_msg = await bot.send_message(chat_id, format_letter(row["employer"], letter, row_site(row)))
             letter_id = letter_msg.message_id
         sent.append((row, msg.message_id, letter_id))
     finalize_digest(conn, settings, sent, checked=0, note=f"instant:{site}", reject=False)

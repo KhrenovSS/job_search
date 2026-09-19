@@ -23,6 +23,18 @@ def test_m006_adds_site_with_hh_default():
     assert conn.execute("SELECT site FROM vacancies").fetchone()[0] == "hh"
 
 
+def test_m011_stamps_letters_with_the_rules_they_were_written_under():
+    """v9.9: NULL means «rules unknown», so an old letter counts as stale and is rewritten before it goes out."""
+    conn = connect(":memory:")
+    assert migrate(conn) == len(MIGRATIONS)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(cover_letters)")}
+    assert "rules_hash" in cols
+    conn.execute("INSERT INTO vacancies(hh_id, title, url, source, search_pass, status, first_seen_at, updated_at) "
+                 "VALUES ('1','t','u','search:0','regional','evaluated','x','x')")
+    conn.execute("INSERT INTO cover_letters(vacancy_id, text, created_at) VALUES (1, 'старое письмо', 'x')")
+    assert conn.execute("SELECT rules_hash FROM cover_letters").fetchone()[0] is None
+
+
 def test_kv_roundtrip():
     conn = connect(":memory:")
     migrate(conn)

@@ -295,6 +295,18 @@ def _m010_negotiation_state(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE vacancies ADD COLUMN negotiation_seen_at TEXT")
 
 
+def _m011_letter_rules(conn: sqlite3.Connection) -> None:
+    """v9.9: which version of the letter rules the stored text was written under (decision #46).
+
+    A letter is written the day the lead is found and can leave the queue days later, so a rules change
+    (the prompt, the profile, the resume) left the stored text quietly breaking a rule that now exists —
+    that is how «Отдельно для тех, кто ведёт подбор:» reached the owner two days after it was banned.
+    NULL means «rules unknown» and therefore stale: existing letters all belong to sent/skipped vacancies,
+    which the queue never looks at, so nothing is rewritten because of this column.
+    """
+    conn.execute("ALTER TABLE cover_letters ADD COLUMN rules_hash TEXT")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m001_initial,
     _m002_triage_columns,
@@ -306,6 +318,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m008_accept_temporary,
     _m009_employers,
     _m010_negotiation_state,
+    _m011_letter_rules,
 ]
 
 
