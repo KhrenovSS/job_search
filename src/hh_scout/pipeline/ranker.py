@@ -119,6 +119,37 @@ def strip_role_address(text: str) -> str:
     return "".join(chars)
 
 
+DIMENSIONS: tuple[tuple[str, str], ...] = (
+    ("Тип компании", "company_kind"),
+    ("Формат работы", "work_format"),
+    ("Досье на компанию", "dossier"),
+    ("Ищут давно", "searching_long"),
+    ("Длина письма", "letter_len"),
+)
+
+
+def format_outcome_dimensions(blocks: list[tuple[str, list[dict]]], curve: list[tuple[str, int, int]],
+                              mature_days: int) -> str:
+    """Outcomes sliced by feature. A cell too small for a percentage shows its count instead — the whole
+    point of the report is to stop a two-observation cell from looking like a finding."""
+    lines = ["<b>Что различает вакансии, на которые отвечают</b>",
+             f"Считаются письма старше {mature_days} дн. — младшие ещё не дозрели."]
+    for title, rows in blocks:
+        if not rows:
+            continue
+        lines.append(f"\n<b>{_esc(title)}</b>")
+        lines.append("<pre>                       писем  отв.  доля</pre>")
+        for r in rows:
+            share = f"{r['rate']}%" if r["rate"] is not None else "мало данных"
+            lines.append(f"<pre>{_esc(str(r['name']))[:22]:<22} {r['tracked']:>5} {r['answered']:>5}  {share}</pre>")
+    lines.append("\n<b>Когда приходит ответ</b>")
+    lines.append("<pre>возраст    писем  отв.  доля</pre>")
+    for name, n, answered in curve:
+        if n:
+            lines.append(f"<pre>{name:<9} {n:>6} {answered:>5}  {round(100 * answered / n)}%</pre>")
+    return "\n".join(lines)
+
+
 def format_letter(employer: str | None, text: str, site: str = "hh") -> str:
     """Cover letter (or a profi.ru bid) as a separate Telegram message; <pre> gives one-tap copy in Telegram clients."""
     text = strip_role_address(text)

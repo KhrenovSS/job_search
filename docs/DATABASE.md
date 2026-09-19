@@ -6,7 +6,8 @@
 `lead_score`, `company_kind`, `pitch_hint`), `_m004_cover_letters`, `_m005_lead_actions` (`lead_actions`,
 `digest_items.letter_message_id`), `_m006_site`, `_m007_employer_id`, `_m008_accept_temporary`
 (`vacancies.accept_temporary`, `civil_law_contracts`), `_m009_employers`, `_m010_negotiation_state`
-(`vacancies.negotiation_state`, `negotiation_seen_at`), `_m011_letter_rules` (`cover_letters.rules_hash`).
+(`vacancies.negotiation_state`, `negotiation_seen_at`), `_m011_letter_rules` (`cover_letters.rules_hash`),
+`_m012_negotiation_events` (`negotiation_events` + засев из снимка).
 Время — TEXT ISO-8601 UTC.
 Весь SQL — в `src/hh_scout/pipeline/repo.py`.
 
@@ -16,6 +17,7 @@
 | `vacancies` | все увиденные вакансии; `hh_id` UNIQUE = «уже видели» |
 | `evaluations` | одна оценка на вакансию (UNIQUE `vacancy_id`); при переоценке строка пересоздаётся |
 | `cover_letters` | текст отклика (UNIQUE `vacancy_id`), `model_note`, `rules_hash` — отпечаток правил, по которым письмо написано (промпт письма + профиль + резюме + чеклист редактора, `llm.cover_letter.rules_hash`). NULL или чужой отпечаток = письмо устарело и переписывается перед отправкой (решение №46) |
+| `negotiation_events` | история переписки: `vacancy_id`, `state`, `has_messages`, `seen_at`. Строка добавляется **только при смене состояния** (`repo.record_negotiation`), поэтому три синхронизации в сутки ничего не раздувают. Отсюда берутся время до ответа и переходы `RESPONSE → INTERVIEW/DISCARD` (решение №48) |
 | `digests`, `digest_items` | отправленные подборки; `tg_message_id` карточки, `letter_message_id` письма (для сворачивания) |
 | `lead_actions` | действия владельца по отправленному лиду: `action` liked / disliked / responded / auto_responded / deferred / closed_stale, `reason`, `created_at`. Лид открыт, пока нет responded/auto_responded/disliked/closed_stale |
 | `feedback` | 👍/👎: `value` ±1, `reason` salary/format/stack/agency/NULL |

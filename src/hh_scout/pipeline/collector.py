@@ -16,15 +16,16 @@ import random
 import sqlite3
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
 from hh_scout.browser import pacing
 from hh_scout.browser.bursts import run_in_bursts
 from hh_scout.browser.hh_pages import (
-    NEGOTIATIONS_URL,
     SearchPage,
     VacancyCard,
     build_search_url,
+    negotiations_has_next,
+    negotiations_url,
     parse_negotiations,
     parse_search,
     parse_suitable,
@@ -119,12 +120,14 @@ class Collector:
         region_ids = [RUSSIA_ID] if self.s.search_all_russia else resolve_region_ids(self.conn, self.s)
         tasks = plan_tasks(region_ids, rng=self.rng)
         log.info("План сбора: %d задач, бюджет %d загрузок, регионы %s", len(tasks), self.page_budget, region_ids)
-        state = {"negotiations_done": False}
+        neg: dict[str, Any] = {"page": 0, "done": False, "seen": set()}
 
         def step(session: BrowserSession) -> bool:
-            if not state["negotiations_done"]:
-                self._sync_negotiations(session)
-                state["negotiations_done"] = True
+            # One page per step, exactly like `_one_page`: the burst deadline and `should_stop` are checked
+            # between steps (bursts.py), and a page that fails never leaves the cursor where it was.
+            if not neg["done"]:
+                self._sync_negotiations_page(session, neg)
+                return True
             return self._one_page(session, tasks)
 
         def after_burst(bs) -> None:
@@ -195,18 +198,39 @@ class Collector:
         self.stats.new_vacancies += new
         return new
 
-    def _sync_negotiations(self, session: BrowserSession) -> None:
-        state = session.open(NEGOTIATIONS_URL)
-        self._note_user_type(user_type(state))
+    def _sync_negotiations_page(self, session: BrowserSession, neg: dict[str, Any]) -> None:
+        """Read one page of the owner's responses and record what the companies did (decision #48).
+
+        The cursor advances *before* the load: a page interrupted by the budget or a blocked site is skipped,
+        not re-read blind on the next burst — the sync runs again in a few hours anyway.
+        """
+        page = int(neg["page"])
+        neg["page"] = page + 1
+        state = session.open(negotiations_url(page))
         items = parse_negotiations(state)
         with transaction(self.conn):
             for n in items:
                 repo.mark_applied(self.conn, n.hh_id, has_chat=n.has_messages, state=n.state,
                                   title=n.title, employer=n.employer)
-        self.stats.applied_synced = len(items)
-        similar = parse_suitable(state)
-        new_similar = self._store_cards(similar, "similar_to_resume", PASS_SIMILAR)
-        log.info("Отклики: %d синхронизировано; подходящих по резюме на странице: %d, новых %d", len(items), len(similar), new_similar)
+        ids = {n.hh_id for n in items}
+        fresh = ids - neg["seen"]
+        self.stats.applied_synced += len(fresh)
+        if page == 0:   # the recommendations block and the login check live on the first page only
+            self._note_user_type(user_type(state))
+            similar = parse_suitable(state)
+            new_similar = self._store_cards(similar, "similar_to_resume", PASS_SIMILAR)
+            log.info("Отклики, страница 1: %d; подходящих по резюме: %d, новых %d", len(items), len(similar), new_similar)
+        else:
+            log.info("Отклики, страница %d: %d, из них новых для этого подхода %d", page + 1, len(items), len(fresh))
+        if items and not fresh:
+            # hh ignored `page=` and served the same list again — stop after one wasted load, not every sitting.
+            log.warning("Список откликов повторился на странице %d — параметр page= не работает, листать перестаю", page + 1)
+        neg["seen"] |= ids
+        neg["done"] = (not items or not fresh
+                       or page + 1 >= self.s.negotiations_pages
+                       or not negotiations_has_next(state, page))
+        if neg["done"]:
+            log.info("Отклики: синхронизировано %d за %d стр.", self.stats.applied_synced, page + 1)
 
     def _note_user_type(self, ut: str) -> None:
         if ut != "applicant" and not self.stats.not_logged_in:

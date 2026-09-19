@@ -87,7 +87,16 @@ def vacancy_url(hh_id: str | int) -> str:
     return f"{BASE_URL}/vacancy/{hh_id}"
 
 
-NEGOTIATIONS_URL = f"{BASE_URL}/applicant/negotiations?filter=all"
+def negotiations_url(page: int = 0) -> str:
+    """The owner's own responses. `page` is 0-based, like the search URL.
+
+    hh documents `page=` for search; for this address it is unverified, so the caller must also
+    guard against a page that comes back identical to the previous one (v9.10, decision #48).
+    """
+    return f"{BASE_URL}/applicant/negotiations?filter=all" + (f"&page={page}" if page else "")
+
+
+NEGOTIATIONS_URL = negotiations_url()
 
 
 # --- normalisation ------------------------------------------------------------
@@ -351,6 +360,12 @@ class NegotiationItem:
     has_messages: bool         # employer wrote back (more than the owner's own response)
     title: str | None = None
     employer: str | None = None
+
+
+def negotiations_has_next(state: dict[str, Any], page: int) -> bool:
+    """Does the responses list have a page after `page`? Same `paging` shape as the search results."""
+    block = state.get("applicantNegotiations")
+    return _has_next(block.get("paging"), page) if isinstance(block, dict) else False
 
 
 def _short_vacancies_map(state: dict[str, Any]) -> dict[str, dict[str, Any]]:

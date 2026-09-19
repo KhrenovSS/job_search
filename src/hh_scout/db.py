@@ -307,6 +307,27 @@ def _m011_letter_rules(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE cover_letters ADD COLUMN rules_hash TEXT")
 
 
+def _m012_negotiation_events(conn: sqlite3.Connection) -> None:
+    """v9.10: the history of a conversation, not just its latest state (decision #48).
+
+    `negotiation_state` is overwritten on every sync and `negotiation_seen_at` was written but never read,
+    so "how long until the company answered" and "RESPONSE → DISCARD" could not be computed at all — and
+    those are exactly what the owner wants to learn from. A row is appended only when the state actually
+    changes, so three syncs a day over 60 responses cost nothing.
+    """
+    conn.execute("""CREATE TABLE negotiation_events (
+                        id INTEGER PRIMARY KEY,
+                        vacancy_id INTEGER NOT NULL,
+                        state TEXT,
+                        has_messages INTEGER NOT NULL DEFAULT 0,
+                        seen_at TEXT NOT NULL)""")
+    conn.execute("CREATE INDEX ix_negotiation_events ON negotiation_events(vacancy_id, seen_at)")
+    # Seed from what the snapshot already knows, so the history does not start empty.
+    conn.execute("""INSERT INTO negotiation_events(vacancy_id, state, has_messages, seen_at)
+                    SELECT id, negotiation_state, has_chat, COALESCE(negotiation_seen_at, updated_at)
+                      FROM vacancies WHERE negotiation_state IS NOT NULL""")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m001_initial,
     _m002_triage_columns,
@@ -319,6 +340,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m009_employers,
     _m010_negotiation_state,
     _m011_letter_rules,
+    _m012_negotiation_events,
 ]
 
 

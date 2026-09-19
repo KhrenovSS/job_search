@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime, time, timedelta, timezone
-from typing import Any
+from typing import Any, Callable, Sequence
 
 from hh_scout.browser.hh_pages import VacancyCard, VacancyDetail
 from hh_scout.config import TZ
@@ -71,6 +71,22 @@ def count_site(conn: sqlite3.Connection, site: str) -> int:
     return int(conn.execute("SELECT COUNT(*) FROM vacancies WHERE site = ?", (site,)).fetchone()[0])
 
 
+def record_negotiation(conn: sqlite3.Connection, vacancy_id: int, state: str | None, has_messages: bool) -> bool:
+    """Append a conversation event, but only when something actually changed (decision #48).
+
+    The sync re-reads the same list three times a day; without this check the history would be 180 identical
+    rows a day. Returns True when a row was appended.
+    """
+    last = conn.execute(
+        "SELECT state, has_messages FROM negotiation_events WHERE vacancy_id = ? ORDER BY id DESC LIMIT 1",
+        (vacancy_id,)).fetchone()
+    if last is not None and (last["state"] or "") == (state or "") and bool(last["has_messages"]) == bool(has_messages):
+        return False
+    conn.execute("INSERT INTO negotiation_events(vacancy_id, state, has_messages, seen_at) VALUES (?,?,?,?)",
+                 (vacancy_id, state, int(has_messages), utcnow()))
+    return True
+
+
 def mark_applied(conn: sqlite3.Connection, hh_id: str, *, has_chat: bool, state: str | None = None,
                  title: str | None = None, employer: str | None = None, url: str | None = None) -> None:
     """Flag a vacancy the owner already responded to; creates a stub row if unknown.
@@ -99,6 +115,10 @@ def mark_applied(conn: sqlite3.Connection, hh_id: str, *, has_chat: bool, state:
             (hh_id, title or "(отклик)", employer, url or f"https://hh.ru/vacancy/{hh_id}", "negotiations",
              "negotiations", "skipped", "applied", 1, int(has_chat), state, now if state else None, now, now),
         )
+    # The snapshot above keeps only the latest state; the history is what "time to answer" is computed from.
+    row = conn.execute("SELECT id FROM vacancies WHERE hh_id = ?", (hh_id,)).fetchone()
+    if row is not None:
+        record_negotiation(conn, int(row["id"]), state, has_chat)
 
 
 def set_status(conn: sqlite3.Connection, hh_id: str, status: str, reason: str | None = None) -> None:
@@ -471,19 +491,120 @@ def employer_searching_days(conn: sqlite3.Connection, row: sqlite3.Row) -> int:
 SCORE_BANDS: tuple[tuple[str, int, int], ...] = (("60-64", 60, 64), ("65-69", 65, 69), ("70-74", 70, 74), ("75+", 75, 1000))
 
 _OUTCOMES_SQL = """
-    SELECT e.total AS total,
+    SELECT v.id AS vacancy_id,
+           e.total AS total,
            v.applied AS applied,
            v.has_chat AS has_chat,
-           v.negotiation_state AS state
+           v.negotiation_state AS state,
+           e.company_kind AS company_kind,
+           e.is_agency AS is_agency,
+           v.work_format AS work_format,
+           v.area_name AS area_name,
+           c.created_at AS letter_at,
+           LENGTH(c.text) AS letter_len,
+           MIN(d.sent_at) AS sent_at,
+           (SELECT 1 FROM employers emp
+             WHERE emp.employer_id = v.employer_id AND emp.found = 1) AS dossier,
+           (SELECT MIN(ne.seen_at) FROM negotiation_events ne
+             WHERE ne.vacancy_id = v.id AND ne.has_messages = 1) AS first_reply_at,
+           (SELECT CAST(julianday('now') - julianday(MIN(o.first_seen_at)) AS INTEGER)
+              FROM vacancies o
+             WHERE o.site = 'hh' AND casefold(o.title) = casefold(v.title)
+               AND ((v.employer_id IS NOT NULL AND o.employer_id = v.employer_id)
+                    OR (v.employer_id IS NULL AND casefold(o.employer) = casefold(v.employer)))) AS searching_days
     FROM vacancies v
     JOIN evaluations e ON e.vacancy_id = v.id
     JOIN digest_items di ON di.vacancy_id = v.id
     JOIN digests d ON d.id = di.digest_id
+    LEFT JOIN cover_letters c ON c.vacancy_id = v.id
     WHERE v.site = 'hh' AND d.sent_at >= ?
       AND EXISTS (SELECT 1 FROM lead_actions a WHERE a.vacancy_id = v.id
                   AND a.action IN ('responded', 'auto_responded'))
     GROUP BY v.id
 """
+
+
+def outcome_rows(conn: sqlite3.Connection, since_iso: str) -> list[sqlite3.Row]:
+    """One row per lead the owner actually wrote to, with everything the report slices by.
+
+    Only leads he wrote to count — a lead he waved away says nothing about the score or about the letter.
+    """
+    return conn.execute(_OUTCOMES_SQL, (since_iso,)).fetchall()
+
+
+def _age_days(row: sqlite3.Row) -> float:
+    """How long the letter has had to produce an answer. Age is the confounder that breaks naive tables:
+    measured 19.09, letters 0-1 days old answered 0 % and 9-10 days old 78-82 %."""
+    started = row["letter_at"] or row["sent_at"]
+    if not started:
+        return 0.0
+    try:
+        when = datetime.fromisoformat(str(started))
+    except ValueError:
+        return 0.0
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - when).total_seconds() / 86400.0
+
+
+def outcome_of(row: sqlite3.Row) -> str:
+    """invited / refused / answered / silent / blind — what the company did about this letter."""
+    if not row["applied"]:
+        return "blind"       # sent outside hh.ru: the answer is invisible to us, never a failure
+    state = (row["state"] or "").upper()
+    if state == "INTERVIEW":
+        return "invited"
+    if state == "DISCARD":
+        return "refused"
+    return "answered" if row["has_chat"] else "silent"
+
+
+MIN_CELL = 8   # below this a percentage is noise dressed as a finding, so the report prints the count instead
+
+
+def outcome_by(rows: Sequence[sqlite3.Row], key: Callable[[sqlite3.Row], str | None],
+               mature_days: int) -> list[dict[str, Any]]:
+    """Cross-tab of outcomes by any feature, counting only letters old enough to have an answer.
+
+    `rate` is None when the cell is too small to mean anything (`MIN_CELL`): printing "2 of 2 = 100 %"
+    would invent a finding out of two observations.
+    """
+    buckets: dict[str, list[sqlite3.Row]] = {}
+    for r in rows:
+        if _age_days(r) < mature_days:
+            continue
+        name = key(r)
+        if name is not None:
+            buckets.setdefault(name, []).append(r)
+    out = []
+    for name, cell in sorted(buckets.items(), key=lambda kv: -len(kv[1])):
+        tracked = [r for r in cell if r["applied"]]
+        answered = sum(1 for r in tracked if outcome_of(r) in ("answered", "invited"))
+        out.append({
+            "name": name,
+            "n": len(cell),
+            "tracked": len(tracked),
+            "answered": answered,
+            "invited": sum(1 for r in tracked if outcome_of(r) == "invited"),
+            "refused": sum(1 for r in tracked if outcome_of(r) == "refused"),
+            "rate": round(100 * answered / len(tracked)) if len(tracked) >= MIN_CELL else None,
+        })
+    return out
+
+
+def maturing(rows: Sequence[sqlite3.Row], mature_days: int) -> int:
+    """Letters too young to count yet — reported so their silence is never read as a failure."""
+    return sum(1 for r in rows if _age_days(r) < mature_days)
+
+
+def reply_delay_curve(rows: Sequence[sqlite3.Row]) -> list[tuple[str, int, int]]:
+    """(bucket, letters, answered) by letter age — the evidence the maturity threshold rests on."""
+    buckets = (("0-1 дн.", 0, 2), ("2-4 дн.", 2, 5), ("5-7 дн.", 5, 8), ("8+ дн.", 8, 10_000))
+    out = []
+    for name, lo, hi in buckets:
+        cell = [r for r in rows if r["applied"] and lo <= _age_days(r) < hi]
+        out.append((name, len(cell), sum(1 for r in cell if outcome_of(r) in ("answered", "invited"))))
+    return out
 
 
 def outcome_stats(conn: sqlite3.Connection, since_iso: str) -> list[dict[str, int | str]]:
@@ -493,7 +614,7 @@ def outcome_stats(conn: sqlite3.Connection, since_iso: str) -> list[dict[str, in
     `blind` are the ones sent outside hh.ru (no `applied`), where the answer is invisible to us: they
     are reported separately instead of quietly diluting the conversion.
     """
-    rows = conn.execute(_OUTCOMES_SQL, (since_iso,)).fetchall()
+    rows = outcome_rows(conn, since_iso)
     out = []
     for name, lo, hi in SCORE_BANDS:
         band = [r for r in rows if lo <= int(r["total"] or 0) <= hi]

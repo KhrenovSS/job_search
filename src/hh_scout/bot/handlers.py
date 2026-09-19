@@ -21,7 +21,9 @@ from hh_scout.config import TZ, Settings
 from hh_scout.db import kv_get
 from hh_scout.llm.cover_letter import CoverLetterWriter
 from hh_scout.pipeline import repo
-from hh_scout.pipeline.ranker import format_card, format_inbox, format_letter, row_site
+from hh_scout.pipeline.ranker import (COMPANY_RU, DIMENSIONS, SEARCHING_LONG_DAYS, WORK_FORMAT_RU,
+                                      format_card, format_inbox, format_letter,
+                                      format_outcome_dimensions, row_site)
 
 log = logging.getLogger(__name__)
 router = Router(name="commands")
@@ -148,9 +150,26 @@ async def resume_cmd(m: Message, scheduler) -> None:
     await m.answer("▶️ Автоматические сборы возобновлены.")
 
 
+def _dimension_key(name: str):
+    """How a row is bucketed for one breakdown. None drops the row from that breakdown entirely."""
+    if name == "company_kind":
+        return lambda r: COMPANY_RU.get(r["company_kind"] or "", None) or (r["company_kind"] or "не определён")
+    if name == "work_format":
+        return lambda r: WORK_FORMAT_RU.get(r["work_format"] or "", None) or "не указан"
+    if name == "dossier":
+        return lambda r: "собрано" if r["dossier"] else "пусто"
+    if name == "searching_long":
+        return lambda r: None if r["searching_days"] is None else (
+            f"ищут {SEARCHING_LONG_DAYS}+ дн." if int(r["searching_days"]) >= SEARCHING_LONG_DAYS else "свежая вакансия")
+    if name == "letter_len":
+        return lambda r: None if not r["letter_len"] else (
+            "до 2500" if r["letter_len"] < 2500 else "2500-3000" if r["letter_len"] < 3000 else "3000+")
+    raise ValueError(name)
+
+
 @router.message(Command("stats"))
-async def stats_cmd(m: Message, command: CommandObject, conn: sqlite3.Connection) -> None:
-    """What the letters bought, by score band — the calibration the threshold decision rests on."""
+async def stats_cmd(m: Message, command: CommandObject, settings: Settings, conn: sqlite3.Connection) -> None:
+    """What the letters bought: by score band (the calibration the threshold rests on), then by feature."""
     days = min(int(command.args), 365) if command.args and command.args.strip().isdigit() else 30
     since = (datetime.now(TZ) - timedelta(days=days)).isoformat()
     bands = repo.outcome_stats(conn, since)
@@ -164,9 +183,18 @@ async def stats_cmd(m: Message, command: CommandObject, conn: sqlite3.Connection
     blind = sum(int(b["blind"]) for b in bands)
     lines.append(f"Всего писем {written} · ответов {sum(int(b['answered']) for b in bands)} · "
                  f"приглашений {sum(int(b['invited']) for b in bands)}")
+    rows = repo.outcome_rows(conn, since)
+    young = repo.maturing(rows, settings.outcome_mature_days)
+    if young:
+        lines.append(f"Дозревает: {young} — письма моложе {settings.outcome_mature_days} дн., "
+                     f"их молчание пока ничего не значит.")
     if blind:
         lines.append(f"Без канала измерения: {blind} — письмо ушло мимо hh.ru, ответ компании нам не виден.")
     await m.answer("\n".join(lines))
+    blocks = [(title, repo.outcome_by(rows, _dimension_key(key), settings.outcome_mature_days))
+              for title, key in DIMENSIONS]
+    if any(rows_ for _, rows_ in blocks):
+        await m.answer(format_outcome_dimensions(blocks, repo.reply_delay_curve(rows), settings.outcome_mature_days))
 
 
 @router.message(Command("skipped"))

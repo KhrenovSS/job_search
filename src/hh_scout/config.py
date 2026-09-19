@@ -40,11 +40,17 @@ class Settings(BaseSettings):
     gap_minutes: str = "4-9"
     items_per_page: int = 50
     max_pages_per_query: int = 6
+    # Pages of the owner's own responses read per sitting (20 per page). One page saw only the newest 20 of 77
+    # and the loop learned from a truncated sample; 3 covers the current rate (v9.10, decision #48).
+    negotiations_pages: int = 3
     # Share of a run's page budget held back for vacancy pages, so collection cannot eat it all
     # and leave DetailsFetcher with nothing (cards pile up in `to_fetch`, no evaluations, no leads).
     # A floor, not a ceiling: details also get whatever collection did not spend.
     details_budget_share: float = 0.55  # v9.5: 243 cards collected per sitting against 14 pages opened — cards
                                         # were never the scarce side, and a lead is born only from an opened page
+    # A letter younger than this has not had time to be answered and is left out of every rate
+    # (measured 19.09: 0-1 days old -> 0 % answered, 9-10 days -> 78-82 %). Reported separately instead.
+    outcome_mature_days: int = 5
     low_priority_ttl_days: int = 3  # triage priority 3 cards still unopened after this many days are dropped
     # One lead per company: further vacancies of an employer that already got a lead are skipped (duplicate_employer)
     # for this many days after the lead was sent; 0 = forever. Same-employer twins inside one digest always collapse to one.
