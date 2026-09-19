@@ -19,9 +19,32 @@ for a in "$@"; do
   esac
 done
 
+# Command lines that really drive the browser. Listed one by one on purpose: the old pattern was
+# 'hh_scout.(pipeline|browser)' anywhere in a command line, which was wrong in both directions —
+# it matched the agent's own shell whenever its command text merely mentioned the module (a heredoc with
+# `from hh_scout.pipeline import repo` was enough to refuse a restart, 19.09), and it missed
+# scripts/sync_negotiations.py, whose command line does not contain that substring at all.
+# Browser-free CLIs (prefilter, audit_title_filter, tg_whoami, the llm/* tools) must NOT match.
+BROWSER_CMD_RE='python[^ ]*[[:space:]].*(-m[[:space:]]+hh_scout\.(pipeline\.(run|collector|details)|browser\.)|scripts/(check_browser|profi_snapshot|sync_negotiations)\.py)'
+
+_own_pids() {
+  # this shell and everything that spawned it: the check must never see itself as a crawl
+  local pid=$$
+  while [ "${pid:-0}" -gt 1 ]; do
+    printf '%s\n' "$pid"
+    pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+  done
+}
+
 crawl_running() {
-  # manual CLI with the browser, or a scheduled sitting inside the service (runs.status='running')
-  if pgrep -f 'hh_scout.(pipeline|browser)' >/dev/null 2>&1; then return 0; fi
+  # a manual CLI holding the Marionette session...
+  local mine pid rest
+  mine="|$(_own_pids | tr '\n' '|')"
+  while read -r pid rest; do
+    case "$mine" in *"|$pid|"*) continue ;; esac
+    return 0
+  done < <(pgrep -af "$BROWSER_CMD_RE" 2>/dev/null || true)
+  # ...or a scheduled sitting, which runs INSIDE the service process where pgrep cannot see it
   if [ -f "$DB" ] && command -v sqlite3 >/dev/null; then
     local n
     n="$(sqlite3 "$DB" "select count(*) from runs where status='running';" 2>/dev/null || echo 0)"
