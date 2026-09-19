@@ -584,7 +584,7 @@ def outcome_by(rows: Sequence[sqlite3.Row], key: Callable[[sqlite3.Row], str | N
             "name": name,
             "n": len(cell),
             "tracked": len(tracked),
-            "answered": answered,
+            "answered": answered,      # a refusal is an answer, but not the kind we are optimising for
             "invited": sum(1 for r in tracked if outcome_of(r) == "invited"),
             "refused": sum(1 for r in tracked if outcome_of(r) == "refused"),
             "rate": round(100 * answered / len(tracked)) if len(tracked) >= MIN_CELL else None,
@@ -598,12 +598,16 @@ def maturing(rows: Sequence[sqlite3.Row], mature_days: int) -> int:
 
 
 def reply_delay_curve(rows: Sequence[sqlite3.Row]) -> list[tuple[str, int, int]]:
-    """(bucket, letters, answered) by letter age — the evidence the maturity threshold rests on."""
+    """(bucket, letters, reacted) by letter age — the evidence the maturity threshold rests on.
+
+    Here a refusal counts: the question is how long a company takes to react at all, and that is what
+    says when a letter's silence stops being "too early" and starts being an answer in itself.
+    """
     buckets = (("0-1 дн.", 0, 2), ("2-4 дн.", 2, 5), ("5-7 дн.", 5, 8), ("8+ дн.", 8, 10_000))
     out = []
     for name, lo, hi in buckets:
         cell = [r for r in rows if r["applied"] and lo <= _age_days(r) < hi]
-        out.append((name, len(cell), sum(1 for r in cell if outcome_of(r) in ("answered", "invited"))))
+        out.append((name, len(cell), sum(1 for r in cell if outcome_of(r) != "silent")))
     return out
 
 
@@ -613,6 +617,10 @@ def outcome_stats(conn: sqlite3.Connection, since_iso: str) -> list[dict[str, in
     Only leads the owner actually wrote to count — a lead he waved away says nothing about the score.
     `blind` are the ones sent outside hh.ru (no `applied`), where the answer is invisible to us: they
     are reported separately instead of quietly diluting the conversion.
+
+    `answered` excludes refusals. It used to be plain `has_chat`, which counted a rejection as an answer —
+    harmless while we knew of 8 refusals, misleading once the full sync found 22 of them among 36 replies
+    (v9.10). The columns are now disjoint: blind + silent + answered + invited + refused = written.
     """
     rows = outcome_rows(conn, since_iso)
     out = []
@@ -623,9 +631,10 @@ def outcome_stats(conn: sqlite3.Connection, since_iso: str) -> list[dict[str, in
             "band": name,
             "written": len(band),
             "blind": len(band) - len(tracked),
-            "answered": sum(1 for r in tracked if r["has_chat"]),
-            "invited": sum(1 for r in tracked if (r["state"] or "") == "INTERVIEW"),
-            "refused": sum(1 for r in tracked if (r["state"] or "") == "DISCARD"),
+            "answered": sum(1 for r in tracked if outcome_of(r) == "answered"),
+            "invited": sum(1 for r in tracked if outcome_of(r) == "invited"),
+            "refused": sum(1 for r in tracked if outcome_of(r) == "refused"),
+            "silent": sum(1 for r in tracked if outcome_of(r) == "silent"),
         })
     return out
 

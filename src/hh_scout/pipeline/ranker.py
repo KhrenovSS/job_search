@@ -133,20 +133,22 @@ def format_outcome_dimensions(blocks: list[tuple[str, list[dict]]], curve: list[
     """Outcomes sliced by feature. A cell too small for a percentage shows its count instead — the whole
     point of the report is to stop a two-observation cell from looking like a finding."""
     lines = ["<b>Что различает вакансии, на которые отвечают</b>",
-             f"Считаются письма старше {mature_days} дн. — младшие ещё не дозрели."]
+             f"Считаются письма старше {mature_days} дн. — младшие ещё не дозрели. "
+             "«Ответ» — компания написала и не отказала; отказ показан отдельно."]
     for title, rows in blocks:
         if not rows:
             continue
         lines.append(f"\n<b>{_esc(title)}</b>")
-        lines.append("<pre>                       писем  отв.  доля</pre>")
+        lines.append("<pre>                       писем  отв.  отказ  доля</pre>")
         for r in rows:
             share = f"{r['rate']}%" if r["rate"] is not None else "мало данных"
-            lines.append(f"<pre>{_esc(str(r['name']))[:22]:<22} {r['tracked']:>5} {r['answered']:>5}  {share}</pre>")
-    lines.append("\n<b>Когда приходит ответ</b>")
-    lines.append("<pre>возраст    писем  отв.  доля</pre>")
+            lines.append(f"<pre>{_esc(str(r['name']))[:22]:<22} {r['tracked']:>5} {r['answered']:>5} "
+                         f"{r['refused']:>5}  {share}</pre>")
+    lines.append("\n<b>Когда компания вообще реагирует</b> (ответ или отказ)")
+    lines.append("<pre>возраст    писем  реакц.  доля</pre>")
     for name, n, answered in curve:
         if n:
-            lines.append(f"<pre>{name:<9} {n:>6} {answered:>5}  {round(100 * answered / n)}%</pre>")
+            lines.append(f"<pre>{name:<9} {n:>6} {answered:>6}  {round(100 * answered / n)}%</pre>")
     return "\n".join(lines)
 
 

@@ -136,6 +136,27 @@ def test_the_reply_curve_is_what_the_maturity_threshold_rests_on():
     assert curve["0-1 дн."] == (1, 0) and curve["8+ дн."] == (1, 1)
 
 
+def test_a_rejection_is_not_counted_as_an_answer():
+    """hh marks a refusal with has_chat=1 too. While we knew of 8 refusals that overlap was harmless;
+    the full sync found 22 of them among 36 replies, and «ответов 36» would have been a lie (v9.10)."""
+    conn = _db()
+    _lead(conn, "20", 78, has_chat=1, state="DISCARD")
+    _lead(conn, "21", 78, has_chat=1, state=None)
+    _lead(conn, "22", 78, has_chat=0, state=None)
+    _lead(conn, "23", 78, applied=0)
+    band = {b["band"]: b for b in repo.outcome_stats(conn, "2000-01-01")}["75+"]
+    assert band["refused"] == 1 and band["answered"] == 1 and band["silent"] == 1 and band["blind"] == 1
+    # the columns are disjoint, so they add up to what was written
+    assert band["blind"] + band["silent"] + band["answered"] + band["invited"] + band["refused"] == band["written"]
+
+
+def test_the_reaction_curve_counts_a_refusal_because_it_measures_timing_not_quality():
+    conn = _db()
+    _lead(conn, "24", 70, letter_age=9, has_chat=1, state="DISCARD")
+    curve = dict((name, (n, a)) for name, n, a in repo.reply_delay_curve(repo.outcome_rows(conn, "2000-01-01")))
+    assert curve["8+ дн."] == (1, 1)
+
+
 def test_score_bands_still_work_the_way_the_digest_header_reads_them():
     """`/stats` and the digest header share one slice; the rewrite must not change it."""
     conn = _db()
