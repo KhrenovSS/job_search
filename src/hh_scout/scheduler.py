@@ -33,6 +33,7 @@ log = logging.getLogger(__name__)
 MIN_LEAD_MINUTES = 20
 MIN_SITTING_MINUTES = 60   # a sitting starts no later than this before its window closes
 SITTING_GRACE_MIN = health.WINDOW_GRACE_MIN  # ...and stops this long after the window closes, budget or not
+MANUAL_SITTING_MINUTES = 90   # /crawl browses at most this long: an owner's command, but not an open-ended one
 
 Window = tuple[time, time]
 
@@ -71,6 +72,11 @@ def next_sitting(now: datetime, windows: list[Window], done_idx_today: int | Non
 def sitting_deadline(day: date, windows: list[Window], idx: int) -> datetime:
     """When a sitting planned for window `idx` on `day` must stop browsing: window end + SITTING_GRACE_MIN."""
     return _at(day, windows[idx][1]) + timedelta(minutes=SITTING_GRACE_MIN)
+
+
+def in_window(now: datetime, windows: list[Window]) -> bool:
+    """Is `now` inside one of the day's browsing windows?"""
+    return any(_at(now.date(), start) <= now < _at(now.date(), end) for start, end in windows)
 
 
 def sittings_left(now: datetime, windows: list[Window], current_idx: int | None = None) -> int:
@@ -129,6 +135,11 @@ class Scheduler:
         self.aps.add_job(self.digest_job, CronTrigger(hour=dt.hour, minute=dt.minute, timezone=TZ), id="digest", replace_existing=True)
         with self.conn:
             kv_set(self.conn, "crawl_attempts", None)  # v5 leftover
+            # A scheduled run lives only inside this process: whatever is still 'running' was killed with it,
+            # and waiting STALE_RUN_HOURS for that row would block the next sittings (v9.11).
+            stale = repo.fail_stale_runs(self.conn, 0.0, trigger="schedule")
+        if stale:
+            log.warning("Плановых прогонов, прерванных вместе с сервисом: %d", stale)
         self._restore_crawl()
         self.aps.add_job(self.watchdog_job, IntervalTrigger(minutes=health.WATCHDOG_INTERVAL_MIN, timezone=TZ), id="watchdog",
                          replace_existing=True)
@@ -215,11 +226,20 @@ class Scheduler:
                     return
             self._schedule_crawl(when)
         else:
-            # missed while the service was down: run soon (see docs/ARCHITECTURE.md)
+            # missed while the service was down. Its window may still be open (a short outage): then run soon.
+            # If the window has closed — yesterday's evening restored at 02:00 — the sitting is simply lost:
+            # browsing happens only inside the windows, never "as soon as the service is back" (v9.11, decision #17).
+            idx = self.next_window_idx()
+            deadline = self.planned_deadline(when.date(), idx if idx is not None else self._window_idx_for(when))
+            if deadline <= now:
+                nxt = self.plan_next_crawl(now)
+                log.info("Пропущенный подход (%s): его окно уже закрылось — следующий %s",
+                         when.strftime("%d.%m %H:%M"), nxt.strftime("%d.%m %H:%M"))
+                return
             soon = now + timedelta(minutes=self.rng.uniform(2, 5))
             log.info("Пропущенный подход (%s) — запускаю в %s", when.strftime("%d.%m %H:%M"), soon.strftime("%H:%M"))
-            self._set_next_crawl(soon, self.next_window_idx())
-            with self.conn:  # keep the planned day: a sitting missed yesterday must not "use up" today's window
+            self._set_next_crawl(soon, idx)
+            with self.conn:  # keep the planned day: the window we are catching up on is that day's
                 kv_set(self.conn, "crawl_window_date", when.date().isoformat())
             self._schedule_crawl(soon)
 
@@ -229,6 +249,16 @@ class Scheduler:
         self._set_next_crawl(when, idx)
         self._schedule_crawl(when)
         return when
+
+    def planned_deadline(self, day: date, idx: int) -> datetime:
+        return sitting_deadline(day, self.windows, idx)
+
+    def _planned_day(self, now: datetime) -> date:
+        raw = kv_get(self.conn, "crawl_window_date")
+        try:
+            return date.fromisoformat(raw) if raw else now.date()
+        except ValueError:
+            return now.date()
 
     def _budget_share(self, now: datetime) -> int:
         used = repo.page_loads_today(self.conn)
@@ -309,26 +339,39 @@ class Scheduler:
             return None
         if self.crawl_lock.locked():
             log.warning("Сбор уже идёт — новый не стартую")
+            if trigger == "schedule":
+                # The DateTrigger has fired and is gone: without a new plan the schedule would be dead until
+                # the next restart, and the watchdog only re-plans when nothing is planned at all (v9.11).
+                self._mark_sitting_done(now)
+                when = self.plan_next_crawl(now)
+                log.info("Плановый подход совпал с ручным — следующий %s", when.strftime("%d.%m %H:%M"))
             return None
         async with self.crawl_lock:
             budget = None if trigger == "schedule" else manual_budget
             deadline: datetime | None = None
             if trigger == "schedule":
                 idx = self.next_window_idx()
-                deadline = sitting_deadline(now.date(), self.windows, idx if idx is not None else self._window_idx_for(now))
+                # The deadline belongs to the window this sitting was planned for — on its planned day. A sitting
+                # carried over from yesterday therefore has a deadline in the past and is skipped (decision #17).
+                deadline = self.planned_deadline(self._planned_day(now), idx if idx is not None else self._window_idx_for(now))
                 self._mark_sitting_done(now)  # a restart mid-run must not plan this window again
                 self._set_next_crawl(None, idx)
                 if deadline <= now:  # e.g. restored long after the window closed: the night is for sleeping
                     when = self.plan_next_crawl(now)
-                    log.info("Подход пропущен: окно уже закрылось (%s). Следующий: %s", f"{deadline:%H:%M}", when.strftime("%d.%m %H:%M"))
+                    log.info("Подход пропущен: окно уже закрылось (%s). Следующий: %s", f"{deadline:%d.%m %H:%M}", when.strftime("%d.%m %H:%M"))
                     return None
                 budget = self._budget_share(now)
+            else:
+                deadline = now + timedelta(minutes=MANUAL_SITTING_MINUTES)
             start_note = (f"Начинаю сбор ({trigger}" + (f", до {budget} страниц" if budget is not None else "")
                           + (f", не позже {deadline:%H:%M}" if deadline else "") + ")")
             if trigger == "schedule":
                 log.info("%s", start_note)  # quiet mode: a scheduled sitting is routine, the owner hears only about trouble
             else:
-                await self.notify("▶️ " + start_note + ". Листаю сериями по ~10 мин с паузами ~5 мин.")
+                note = "▶️ " + start_note + ". Листаю сериями по ~10 мин с паузами ~5 мин."
+                if not in_window(now, self.windows):
+                    note += f"\n⚠️ Сейчас не окно подхода ({_fmt_windows(self.windows)}) — листаю по вашей команде."
+                await self.notify(note)
             try:
                 report = await asyncio.to_thread(run_crawl, self.s, self.s.db_path, trigger, budget=budget, deadline=deadline)
             except Exception as e:  # noqa: BLE001

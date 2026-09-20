@@ -95,18 +95,26 @@ def test_restore_keeps_v5_plan_and_fills_window_index():
     assert kv_get(conn, "crawl_window_idx") == "0" and kv_get(conn, "crawl_window_date") == "2026-09-10"
 
 
-def test_restore_after_a_missed_sitting_runs_soon_and_keeps_planned_day():
+def test_restore_after_a_missed_sitting_skips_it_when_its_window_is_over():
+    """v9.11: yesterday's evening sitting restored at 06:00 is lost, not run at dawn — browsing stays in the windows."""
     sch, conn = _scheduler()
     kv_set(conn, "next_crawl_at", _dt(18, 30, day=8).isoformat())
     kv_set(conn, "crawl_window_idx", "2")
     kv_set(conn, "crawl_window_date", "2026-09-08")
     sch._restore_crawl(now=_dt(6, 0))
     when = sch.next_crawl_at()
-    assert _dt(6, 2) <= when <= _dt(6, 5)
-    assert kv_get(conn, "crawl_window_date") == "2026-09-08"  # yesterday's sitting: today's windows stay available
-    # after that run the planner sees no sitting done today and picks window 0 today
-    nxt = sch.plan_next_crawl(now=_dt(6, 40))
-    assert nxt.day == 9 and _in(nxt, (7, 0), (10, 0)) and kv_get(conn, "crawl_window_idx") == "0"
+    assert when.day == 9 and _in(when, (7, 0), (10, 0)) and kv_get(conn, "crawl_window_idx") == "0"
+    assert kv_get(conn, "crawl_window_date") == "2026-09-09"
+
+
+def test_restore_after_a_short_outage_still_catches_up_inside_the_window():
+    sch, conn = _scheduler()
+    kv_set(conn, "next_crawl_at", _dt(19, 30).isoformat())
+    kv_set(conn, "crawl_window_idx", "2")
+    kv_set(conn, "crawl_window_date", "2026-09-09")
+    sch._restore_crawl(now=_dt(19, 50))
+    when = sch.next_crawl_at()
+    assert _dt(19, 52) <= when <= _dt(19, 55) and kv_get(conn, "crawl_window_date") == "2026-09-09"
 
 
 def test_plan_next_after_todays_sitting_moves_to_next_window():
@@ -225,6 +233,60 @@ async def test_crawl_job_passes_the_window_deadline_and_skips_a_closed_window(mo
 
 
 @pytest.mark.asyncio
+async def test_a_carried_over_sitting_is_skipped_by_its_planned_day_not_todays(monkeypatch):
+    """Restart at 02:00 with yesterday's evening plan: the deadline is yesterday 22:30, so nothing browses at night."""
+    import hh_scout.scheduler as sched_mod
+
+    sch, conn = _scheduler()
+    calls = []
+    monkeypatch.setattr(sched_mod, "run_crawl", lambda *a, **kw: calls.append(kw) or None)
+    monkeypatch.setattr(sched_mod, "datetime", _FrozenDatetime.at(_dt(2, 0, day=10)))
+    kv_set(conn, "crawl_window_idx", "2")
+    kv_set(conn, "crawl_window_date", "2026-09-09")
+    await sch.crawl_job("schedule")
+    assert not calls
+    assert sch.next_crawl_at().day == 10 and _in(sch.next_crawl_at(), (7, 0), (10, 0))
+
+
+@pytest.mark.asyncio
+async def test_manual_crawl_gets_a_deadline_and_warns_outside_the_windows(monkeypatch):
+    import hh_scout.scheduler as sched_mod
+
+    sch, conn = _scheduler()
+    notes, calls = [], []
+
+    async def notify(text):
+        notes.append(text)
+
+    sch.notify = notify
+    monkeypatch.setattr(sched_mod, "run_crawl", lambda *a, **kw: calls.append(kw) or None)
+    monkeypatch.setattr(sched_mod, "datetime", _FrozenDatetime.at(_dt(23, 30)))
+    await sch.crawl_job("manual", manual_budget=5)
+    assert calls[0]["deadline"] == _dt(23, 30) + timedelta(minutes=sched_mod.MANUAL_SITTING_MINUTES)
+    assert notes and "не окно подхода" in notes[0]
+    notes.clear()
+    monkeypatch.setattr(sched_mod, "datetime", _FrozenDatetime.at(_dt(13, 0)))
+    await sch.crawl_job("manual", manual_budget=5)
+    assert "не окно" not in notes[0]
+
+
+@pytest.mark.asyncio
+async def test_scheduled_sitting_colliding_with_a_manual_run_is_replanned(monkeypatch):
+    import hh_scout.scheduler as sched_mod
+
+    sch, conn = _scheduler()
+    monkeypatch.setattr(sched_mod, "datetime", _FrozenDatetime.at(_dt(13, 0)))
+    kv_set(conn, "next_crawl_at", _dt(13, 0).isoformat())
+    kv_set(conn, "crawl_window_idx", "1")
+    kv_set(conn, "crawl_window_date", "2026-09-09")
+    async with sch.crawl_lock:                      # a /crawl is running
+        await sch.crawl_job("schedule")
+    nxt = sch.next_crawl_at()
+    assert nxt > _dt(13, 0) and kv_get(conn, "sitting_done") == "2026-09-09:1"
+    assert kv_get(conn, "crawl_window_idx") == "2"  # the midday window is used up; the evening one is next
+
+
+@pytest.mark.asyncio
 async def test_crawl_job_is_quiet_unless_something_went_wrong(monkeypatch):
     """Scheduled sittings: silence when ok; the report when not ok; an alert instead of the report when health knows why.
     Manual /crawl: always the start note and the report."""
@@ -265,7 +327,7 @@ async def test_crawl_job_is_quiet_unless_something_went_wrong(monkeypatch):
     notes.clear()
     reports.append(CrawlReport(trigger="manual", page_loads=5))
     await sch.crawl_job("manual", manual_budget=5)
-    assert len(notes) == 2 and notes[0].startswith("▶️ Начинаю сбор (manual, до 5 страниц)") and notes[1].startswith("✅ Сбор завершён")
+    assert len(notes) == 2 and notes[0].startswith("▶️ Начинаю сбор (manual, до 5 страниц, не позже 15:00)") and notes[1].startswith("✅ Сбор завершён")
 
 
 @pytest.mark.asyncio
