@@ -328,6 +328,17 @@ def _m012_negotiation_events(conn: sqlite3.Connection) -> None:
                       FROM vacancies WHERE negotiation_state IS NOT NULL""")
 
 
+def _m013_letter_context(conn: sqlite3.Connection) -> None:
+    """v9.11: what the letter was written with, so a rewrite keeps it and a change makes the letter stale.
+
+    `owner_hint` — the wish the owner typed in `/letter <id> <пожелание>`; a rewrite after a rules change used to
+    drop it silently. `with_dossier` — whether a company dossier was available when the text was written: a letter
+    written blind stays "current" forever otherwise, while the card next to it already shows «🏭 О компании».
+    """
+    conn.execute("ALTER TABLE cover_letters ADD COLUMN owner_hint TEXT")
+    conn.execute("ALTER TABLE cover_letters ADD COLUMN with_dossier INTEGER NOT NULL DEFAULT 0")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m001_initial,
     _m002_triage_columns,
@@ -341,6 +352,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m010_negotiation_state,
     _m011_letter_rules,
     _m012_negotiation_events,
+    _m013_letter_context,
 ]
 
 

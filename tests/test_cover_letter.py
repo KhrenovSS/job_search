@@ -10,6 +10,10 @@ from hh_scout.llm.cover_letter import CoverLetterWriter, letter_payload, rules_h
 from hh_scout.pipeline import repo
 
 
+SIGNATURE = "\n\nИван Иванов\nинженер-программист ПЛК и SCADA, работаю по договору (ИП)\n+7 900 123-45-67"
+GOOD = "Здравствуйте.\n" + "Опыт CODESYS и MasterSCADA. " * 30 + SIGNATURE
+
+
 def _settings(tmp_path):
     prompts = tmp_path / "prompts"
     prompts.mkdir()
@@ -38,7 +42,7 @@ def _db():
 def test_letters_written_only_for_leads_and_not_twice(tmp_path):
     s = _settings(tmp_path)
     conn = _db()
-    good = "Здравствуйте.\n" + "Опыт CODESYS и MasterSCADA. " * 30 + "\nИван Иванов, +7 900"
+    good = GOOD
     route = respx.post("http://bridge.test/complete").mock(
         return_value=httpx.Response(200, json={"text": "```text\n" + good + "\n```", "usage": {}, "cost_usd": 0.01}))
     w = CoverLetterWriter(s, conn, BridgeClient(s, sleep=lambda x: None))
@@ -84,7 +88,7 @@ def test_a_letter_written_under_older_rules_is_rewritten_after_the_leads_that_ha
     s = _settings(tmp_path)
     conn = _db()
     repo.save_cover_letter(conn, 1, "письмо по прежним правилам", rules_hash="rules-of-last-week")
-    good = "Здравствуйте.\n" + "Опыт CODESYS и MasterSCADA. " * 30 + "\nИван Иванов, +7 900"
+    good = GOOD
     route = respx.post("http://bridge.test/complete").mock(
         return_value=httpx.Response(200, json={"text": good, "usage": {}, "cost_usd": 0.01}))
     w = CoverLetterWriter(s, conn, BridgeClient(s, sleep=lambda x: None))
@@ -190,12 +194,19 @@ def test_code_checks_catch_money_and_cliches():
     row = _row_with_company(conn)
     company = {"industry": "химическое производство", "products": ["пенополиуретан"]}
 
-    ok = "Вижу, что вы производите пенополиуретан. Работаю по ИП."
+    ok = "Вижу, что вы производите пенополиуретан. Работаю по ИП." + SIGNATURE
     assert check_letter(ok, row, company) == ""
-    assert "сумма" in check_letter(ok + " Ставка 150 000 ₽ в месяц.", row, company)
-    assert "оборот" in check_letter(ok + " Помогу закрыть позицию.", row, company)
-    assert "не называет" in check_letter("Здравствуйте. Работаю по ИП, готов обсудить.", row, company)
-    assert check_letter("Здравствуйте. Работаю по ИП.", row, None) == ""   # no dossier — no such demand
+    assert "сумма" in check_letter("Ставка 150 000 ₽ в месяц. " + ok, row, company)
+    assert "сумма" in check_letter("Вижу вилку 180 000–250 000 на позицию. " + ok, row, company)
+    assert "сумма" in check_letter("Ставка от 2500 в час. " + ok, row, company)
+    assert "оборот" in check_letter("Помогу закрыть позицию. " + ok, row, company)
+    assert "оборот" in check_letter("Сэкономите бюджет. " + ok, row, company)
+    assert "не называет" in check_letter("Здравствуйте. Работаю по ИП, готов обсудить." + SIGNATURE, row, company)
+    assert check_letter("Здравствуйте. Работаю по ИП." + SIGNATURE, row, None) == ""   # no dossier — no such demand
+    # the signature is checked by code too (decision #46 said no regex could *repair* it; it can refuse it)
+    assert "подпис" in check_letter("Здравствуйте. Работаю по ИП.\n\nИван Иванов\n+7 900 123-45-67", row, None)
+    # a phone, a vacancy id, a year and «100 %» are not money
+    assert check_letter("Сдал объект в 2024 году, 100 % удалённо, вакансия 137256632." + SIGNATURE, row, None) == ""
 
 
 @respx.mock
@@ -205,7 +216,7 @@ def test_daily_quota_limits_letters_across_runs(tmp_path):
     s = s.model_copy(update={"digest_max_items": 2})
     conn = _db()
     respx.post("http://bridge.test/complete").mock(
-        return_value=httpx.Response(200, json={"text": "x" * 600, "cost_usd": 0.01}))
+        return_value=httpx.Response(200, json={"text": GOOD, "cost_usd": 0.01}))
 
     first = CoverLetterWriter(s, conn, BridgeClient(s, retries=0)).run()
     assert first.written == 2
@@ -233,7 +244,7 @@ def test_research_gets_its_own_client_without_retries(tmp_path):
 def test_reported_cost_covers_research_too(tmp_path, caplog):
     s = _settings(tmp_path)
     conn = _db()
-    good = "Здравствуйте.\n" + "Опыт CODESYS и MasterSCADA. " * 30 + "\nИван Иванов, +7 900"
+    good = GOOD
     respx.post("http://bridge.test/complete").mock(
         return_value=httpx.Response(200, json={"text": good, "usage": {}, "cost_usd": 0.01}))
     w = CoverLetterWriter(s, conn, BridgeClient(s, sleep=lambda x: None))
@@ -298,3 +309,46 @@ def test_normal_letter_text_is_not_touched():
                  "По вашим задачам:\n\n— Программирование ПЛК: CODESYS 3.5, Structured Text.",
                  "Беру программную часть для вашей линии розлива: ПЛК, экраны панелей, обмен."):
         assert _clean(text) == text
+
+
+def test_the_rules_stamp_follows_the_code_rules_too(tmp_path, monkeypatch):
+    """Decision #46 was born from a *code* rule the stored letters violated; the stamp must see code changes."""
+    from hh_scout.llm import letter_checks
+
+    s = _settings(tmp_path)
+    before = rules_hash(s)
+    monkeypatch.setattr(letter_checks, "CODE_RULES", letter_checks.CODE_RULES + "\nbanned:+ещё один штамп")
+    assert rules_hash(s) != before
+    assert rules_hash(s, "profi") == rules_hash(s, "profi")            # the bid stamp is unaffected by hh's checks
+
+
+@respx.mock
+def test_the_editors_answer_goes_through_the_same_checks_as_the_draft(tmp_path):
+    """The editor is the last model to touch the text: a sum it puts back must not reach the owner."""
+    s = _settings(tmp_path)
+    (s.prompts_dir / "letter_review.md").write_text("h\n---\nREVIEW {resume}", encoding="utf-8")
+    conn = _db()
+    answers = iter([GOOD, "Ориентир 250 000 ₽ в месяц. " + GOOD, GOOD, "OK"])
+    respx.post("http://bridge.test/complete").mock(
+        side_effect=lambda request: httpx.Response(200, json={"text": next(answers), "cost_usd": 0.01}))
+    w = CoverLetterWriter(s, conn, BridgeClient(s, sleep=lambda x: None))
+    stats = w.run()
+    assert stats.written == 2 and stats.reviewed == 0
+    assert repo.get_cover_letter(conn, 1) == GOOD                      # the draft, not the editor's version with money
+    assert repo.get_cover_letter(conn, 3) == GOOD
+
+
+@respx.mock
+def test_a_rewrite_keeps_the_owners_hint(tmp_path):
+    s = _settings(tmp_path)
+    conn = _db()
+    route = respx.post("http://bridge.test/complete").mock(return_value=httpx.Response(200, json={"text": GOOD, "cost_usd": 0.01}))
+    w = CoverLetterWriter(s, conn, BridgeClient(s, sleep=lambda x: None))
+    row = repo.lead_by_hh_id(conn, "1")
+    assert w.write_for(row, hint="больше про SCADA")
+    assert conn.execute("SELECT owner_hint FROM cover_letters WHERE vacancy_id = 1").fetchone()[0] == "больше про SCADA"
+    # rules change, the queue rewrites the letter — with the same wish in the payload
+    repo.save_cover_letter(conn, 1, GOOD, rules_hash="rules-of-last-week")
+    w.run()
+    assert "больше про SCADA" in route.calls[-1].request.content.decode()
+    assert conn.execute("SELECT owner_hint FROM cover_letters WHERE vacancy_id = 1").fetchone()[0] == "больше про SCADA"

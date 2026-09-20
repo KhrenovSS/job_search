@@ -12,7 +12,7 @@ import pytest
 from hh_scout.browser.hh_pages import negotiations_has_next, negotiations_url
 from hh_scout.config import Settings
 from hh_scout.db import MIGRATIONS, connect, migrate, utcnow
-from hh_scout.pipeline import repo
+from hh_scout.pipeline import outcomes, repo
 
 
 def _iso(days_ago: float) -> str:
@@ -103,18 +103,21 @@ def test_a_letter_too_young_to_have_an_answer_is_not_counted_as_silence():
     _lead(conn, "3", 70, letter_age=0.5)          # sent this morning
     _lead(conn, "4", 70, letter_age=9, has_chat=1)
     rows = repo.outcome_rows(conn, "2000-01-01")
-    assert repo.maturing(rows, 5) == 1
-    by = repo.outcome_by(rows, lambda r: "все", mature_days=5)
+    assert outcomes.maturing(rows, 5) == 1
+    by = outcomes.outcome_by(rows, lambda r: "все", mature_days=5)
     assert by[0]["n"] == 1 and by[0]["answered"] == 1      # the young one is out of the rate entirely
+    # the band table applies the same maturity rule as the breakdowns (v9.11)
+    bands = {b["band"]: b for b in outcomes.outcome_stats(rows, 5)}
+    assert bands["70-74"]["written"] == 1 and bands["70-74"]["answered"] == 1
 
 
 def test_a_cell_smaller_than_the_floor_shows_a_count_instead_of_a_percentage():
     conn = _db()
-    for i in range(repo.MIN_CELL):
+    for i in range(outcomes.MIN_CELL):
         _lead(conn, f"big{i}", 70, has_chat=i % 2, company_kind="integrator")
     _lead(conn, "small", 70, has_chat=1, company_kind="manufacturer")
     rows = repo.outcome_rows(conn, "2000-01-01")
-    by = {b["name"]: b for b in repo.outcome_by(rows, lambda r: r["company_kind"], mature_days=5)}
+    by = {b["name"]: b for b in outcomes.outcome_by(rows, lambda r: r["company_kind"], mature_days=5)}
     assert by["integrator"]["rate"] == 50                  # 8 observations: a number worth printing
     assert by["manufacturer"]["rate"] is None              # 1 observation: "мало данных", not "100 %"
 
@@ -124,7 +127,7 @@ def test_outcome_of_separates_silence_from_a_letter_sent_outside_hh():
     _lead(conn, "5", 70, applied=0)                        # by e-mail: hh cannot tell us anything
     _lead(conn, "6", 70, applied=1, has_chat=0)            # sent on hh, nobody answered
     _lead(conn, "7", 70, applied=1, state="INTERVIEW")
-    got = {r["vacancy_id"]: repo.outcome_of(r) for r in repo.outcome_rows(conn, "2000-01-01")}
+    got = {r["vacancy_id"]: outcomes.outcome_of(r) for r in repo.outcome_rows(conn, "2000-01-01")}
     assert sorted(got.values()) == ["blind", "invited", "silent"]
 
 
@@ -132,7 +135,7 @@ def test_the_reply_curve_is_what_the_maturity_threshold_rests_on():
     conn = _db()
     _lead(conn, "8", 70, letter_age=0.5, has_chat=0)
     _lead(conn, "9", 70, letter_age=9, has_chat=1)
-    curve = dict((name, (n, a)) for name, n, a in repo.reply_delay_curve(repo.outcome_rows(conn, "2000-01-01")))
+    curve = dict((name, (n, a)) for name, n, a in outcomes.reply_delay_curve(repo.outcome_rows(conn, "2000-01-01")))
     assert curve["0-1 дн."] == (1, 0) and curve["8+ дн."] == (1, 1)
 
 
@@ -144,7 +147,7 @@ def test_a_rejection_is_not_counted_as_an_answer():
     _lead(conn, "21", 78, has_chat=1, state=None)
     _lead(conn, "22", 78, has_chat=0, state=None)
     _lead(conn, "23", 78, applied=0)
-    band = {b["band"]: b for b in repo.outcome_stats(conn, "2000-01-01")}["75+"]
+    band = {b["band"]: b for b in outcomes.outcome_stats(repo.outcome_rows(conn, "2000-01-01"), 5)}["75+"]
     assert band["refused"] == 1 and band["answered"] == 1 and band["silent"] == 1 and band["blind"] == 1
     # the columns are disjoint, so they add up to what was written
     assert band["blind"] + band["silent"] + band["answered"] + band["invited"] + band["refused"] == band["written"]
@@ -153,7 +156,7 @@ def test_a_rejection_is_not_counted_as_an_answer():
 def test_the_reaction_curve_counts_a_refusal_because_it_measures_timing_not_quality():
     conn = _db()
     _lead(conn, "24", 70, letter_age=9, has_chat=1, state="DISCARD")
-    curve = dict((name, (n, a)) for name, n, a in repo.reply_delay_curve(repo.outcome_rows(conn, "2000-01-01")))
+    curve = dict((name, (n, a)) for name, n, a in outcomes.reply_delay_curve(repo.outcome_rows(conn, "2000-01-01")))
     assert curve["8+ дн."] == (1, 1)
 
 
@@ -162,9 +165,9 @@ def test_score_bands_still_work_the_way_the_digest_header_reads_them():
     conn = _db()
     _lead(conn, "10", 78, has_chat=1, state="INTERVIEW")
     _lead(conn, "11", 62, has_chat=0)
-    bands = {b["band"]: b for b in repo.outcome_stats(conn, "2000-01-01")}
+    bands = {b["band"]: b for b in outcomes.outcome_stats(repo.outcome_rows(conn, "2000-01-01"), 5)}
     assert bands["75+"]["invited"] == 1 and bands["60-64"]["written"] == 1
-    assert repo.invited_since(conn, "2000-01-01") == 1
+    assert outcomes.invited_count(repo.outcome_rows(conn, "2000-01-01")) == 1
 
 
 def test_settings_carry_the_two_new_knobs():

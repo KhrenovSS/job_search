@@ -28,11 +28,17 @@ async def run() -> int:
     bot = create_bot(settings)
     notify = Notifier(bot, settings.tg_owner_chat_id)
 
+    # The noon digest and the instant sends after a sitting read the quota and the queue head before sending and
+    # commit after — interleaved on one event loop they could send the same lead twice (v9.11).
+    send_lock = asyncio.Lock()
+
     async def digest() -> int:
         if settings.tg_owner_chat_id is None:
             log.warning("Нет TG_OWNER_CHAT_ID — дайджест не отправлен")
             return 0
-        return await send_digest(bot, conn, settings, settings.tg_owner_chat_id)
+        async with send_lock:
+            return await send_digest(bot, conn, settings, settings.tg_owner_chat_id,
+                                     evaluate=not scheduler.crawl_lock.locked())
 
     async def after_crawl() -> None:
         if settings.tg_owner_chat_id is None:
@@ -44,7 +50,8 @@ async def run() -> int:
         sites = ["hh"] + (["profi"] if settings.profi_enabled else [])
         for site in sites:
             try:
-                k = await send_instant_leads(bot, conn, settings, settings.tg_owner_chat_id, site=site)
+                async with send_lock:
+                    k = await send_instant_leads(bot, conn, settings, settings.tg_owner_chat_id, site=site)
                 if k:
                     log.info("%s: отправлено сразу %d лид(ов)", site, k)
             except Exception as e:  # noqa: BLE001
@@ -53,6 +60,7 @@ async def run() -> int:
 
     scheduler = Scheduler(settings, conn, notify, digest, after_crawl)
     dp = create_dispatcher(settings, conn, scheduler)
+    dp["send_lock"] = send_lock
 
     # First start: leads the owner already saw as previews must not be re-sent tomorrow.
     if kv_get(conn, "preview_marked") is None:

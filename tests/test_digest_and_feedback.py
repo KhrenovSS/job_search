@@ -118,3 +118,55 @@ def test_letter_cmd_refuses_for_a_company_the_owner_already_answered(tmp_path):
     asyncio.run(letter_cmd(_Msg(), CommandObject(args="2"), s, conn))
     assert len(said) == 1 and said[0].startswith("Вы уже откликались")
     assert "2026-09-14" in said[0] and "Инженер 1" in said[0]
+
+
+def test_letter_cmd_on_a_queue_lead_records_it_as_sent(tmp_path, monkeypatch):
+    """v9.11: the owner now holds the card and the letter — ✅ must close the company, /stats must see it,
+    and the queue must not deliver the same lead again."""
+    import asyncio
+
+    from aiogram.filters import CommandObject
+
+    from hh_scout.bot import handlers
+    from hh_scout.llm.cover_letter import CoverLetterWriter
+
+    conn = _db()
+    said = []
+
+    class _Msg:
+        chat = type("C", (), {"id": 1})()
+        bot = None
+        _n = 100
+
+        async def answer(self, text, **kw):
+            said.append(text)
+            _Msg._n += 1
+            return type("M", (), {"message_id": _Msg._n})()
+
+    monkeypatch.setattr(CoverLetterWriter, "answered_employer", lambda self, row: None)
+    monkeypatch.setattr(CoverLetterWriter, "write_for", lambda self, row, system_text=None, hint=None: "готовое письмо")
+    s = Settings(_env_file=None, prompts_dir=tmp_path, bridge_url="http://bridge.test", bridge_token="t")
+    asyncio.run(handlers.letter_cmd(_Msg(), CommandObject(args="3"), s, conn))
+    row = repo.lead_by_hh_id(conn, "3")
+    assert row["status"] == "sent" and repo.is_lead_open(conn, 3)
+    assert repo.lead_messages(conn, 3) == (102, 103)                     # card, then letter
+    assert repo.last_digest(conn)["note"] == "manual:/letter"
+    assert [r["hh_id"] for r in repo.lead_queue(conn, 60)] == ["1", "4"]  # gone from the queue
+    assert repo.evaluations_since_last_digest(conn, daily_only=True) == 4  # a manual letter is not a noon digest
+
+
+def test_iso_utc_compares_like_the_stored_timestamps():
+    from datetime import datetime, timedelta
+
+    from hh_scout.config import TZ
+
+    when = datetime(2026, 9, 20, 12, 0, tzinfo=TZ)
+    assert repo.iso_utc(when) == "2026-09-20T09:00:00+00:00"
+    conn = _db()
+    conn.execute("INSERT INTO digests(sent_at, items_count, collected_count) VALUES ('2026-09-20T10:30:00+00:00', 1, 1)")
+    conn.execute("INSERT INTO digest_items(digest_id, vacancy_id, position) VALUES (1, 1, 1)")
+    conn.execute("INSERT INTO lead_actions(vacancy_id, action, created_at) VALUES (1, 'responded', 'x')")
+    conn.execute("UPDATE vacancies SET status = 'sent' WHERE id = 1")
+    # 13:00 Moscow is 10:00 UTC — the row sent at 10:30 UTC is inside the window; the naive local string would miss it
+    assert len(repo.outcome_rows(conn, repo.iso_utc(when + timedelta(hours=1)))) == 1
+    assert len(repo.outcome_rows(conn, (when + timedelta(hours=1)).isoformat())) == 0

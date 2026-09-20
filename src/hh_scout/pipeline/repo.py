@@ -1,16 +1,33 @@
-"""Thin DAO over SQLite for the pipeline. No business rules here — just SQL."""
+"""Thin DAO over SQLite for the pipeline. SQL only — the analytics over these rows live in `pipeline/outcomes.py`."""
 
 from __future__ import annotations
 
 import json
 import sqlite3
 from datetime import datetime, time, timedelta, timezone
-from typing import Any, Callable, Sequence
+from typing import Any
 
 from hh_scout.browser.hh_pages import VacancyCard, VacancyDetail
 from hh_scout.config import TZ
 from hh_scout.db import utcnow
 from hh_scout.hh.salary import normalize
+
+
+def iso_utc(when: datetime) -> str:
+    """An aware datetime as the ISO text every timestamp column is compared with (UTC, no microseconds).
+
+    SQLite compares ISO strings as text: a Moscow-local `…+03:00` next to stored `…+00:00` values is off by
+    three hours, silently (v9.11).
+    """
+    return when.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _ago(days: float) -> str:
+    return iso_utc(datetime.now(timezone.utc) - timedelta(days=days))
+
+
+def _today_start_utc() -> str:
+    return iso_utc(datetime.combine(datetime.now(TZ).date(), time(0, 0), tzinfo=TZ))
 
 
 # --- vacancies ------------------------------------------------------------------
@@ -87,6 +104,10 @@ def record_negotiation(conn: sqlite3.Connection, vacancy_id: int, state: str | N
     return True
 
 
+# Statuses a vacancy can still be in before it is a lead; an owner's own response ends that journey.
+_PRE_LEAD = ("new", "triage", "to_fetch", "prefiltered", "evaluated")
+
+
 def mark_applied(conn: sqlite3.Connection, hh_id: str, *, has_chat: bool, state: str | None = None,
                  title: str | None = None, employer: str | None = None, url: str | None = None) -> None:
     """Flag a vacancy the owner already responded to; creates a stub row if unknown.
@@ -94,31 +115,41 @@ def mark_applied(conn: sqlite3.Connection, hh_id: str, *, has_chat: bool, state:
     `state` is hh's own view of the conversation (RESPONSE / INTERVIEW / DISCARD) — the only place the
     method learns whether an offer led anywhere. The latest state wins, but a missing one never erases
     a state we already knew: a page that failed to parse must not look like "nothing happened".
+
+    `updated_at` moves only when something changed: the sync re-reads the same list three times a day, and a
+    row touched every time looked like "the owner answered today" to `employer_responded` — forever (v9.11).
     """
     now = utcnow()
-    if vacancy_exists(conn, hh_id):
-        conn.execute(
-            """UPDATE vacancies SET applied = 1, has_chat = MAX(has_chat, ?),
-                      negotiation_state = COALESCE(?, negotiation_state),
-                      negotiation_seen_at = CASE WHEN ? IS NULL THEN negotiation_seen_at ELSE ? END,
-                      updated_at = ?,
-                      status = CASE WHEN status IN ('new', 'prefiltered', 'evaluated') THEN 'skipped' ELSE status END,
-                      skip_reason = CASE WHEN status IN ('new', 'prefiltered', 'evaluated') THEN 'applied' ELSE skip_reason END
-               WHERE hh_id = ?""",
-            (int(has_chat), state, state, now, now, hh_id),
-        )
+    row = conn.execute("SELECT id, applied, has_chat, negotiation_state, status FROM vacancies WHERE hh_id = ?",
+                       (hh_id,)).fetchone()
+    if row is not None:
+        changed = (not row["applied"] or (has_chat and not row["has_chat"])
+                   or (state is not None and state != row["negotiation_state"]) or row["status"] in _PRE_LEAD)
+        if changed:
+            conn.execute(
+                """UPDATE vacancies SET applied = 1, has_chat = MAX(has_chat, ?),
+                          negotiation_state = COALESCE(?, negotiation_state),
+                          negotiation_seen_at = CASE WHEN ? IS NULL THEN negotiation_seen_at ELSE ? END,
+                          updated_at = ?,
+                          status = CASE WHEN status IN ('new', 'triage', 'to_fetch', 'prefiltered', 'evaluated')
+                                        THEN 'skipped' ELSE status END,
+                          skip_reason = CASE WHEN status IN ('new', 'triage', 'to_fetch', 'prefiltered', 'evaluated')
+                                             THEN 'applied' ELSE skip_reason END
+                   WHERE hh_id = ?""",
+                (int(has_chat), state, state, now, now, hh_id),
+            )
+        vacancy_id = int(row["id"])
     else:
-        conn.execute(
+        cur = conn.execute(
             """INSERT INTO vacancies(hh_id, title, employer, url, source, search_pass, status, skip_reason,
                                      applied, has_chat, negotiation_state, negotiation_seen_at, first_seen_at, updated_at)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (hh_id, title or "(отклик)", employer, url or f"https://hh.ru/vacancy/{hh_id}", "negotiations",
              "negotiations", "skipped", "applied", 1, int(has_chat), state, now if state else None, now, now),
         )
+        vacancy_id = int(cur.lastrowid)
     # The snapshot above keeps only the latest state; the history is what "time to answer" is computed from.
-    row = conn.execute("SELECT id FROM vacancies WHERE hh_id = ?", (hh_id,)).fetchone()
-    if row is not None:
-        record_negotiation(conn, int(row["id"]), state, has_chat)
+    record_negotiation(conn, vacancy_id, state, has_chat)
 
 
 def set_status(conn: sqlite3.Connection, hh_id: str, status: str, reason: str | None = None) -> None:
@@ -184,9 +215,7 @@ def save_details(conn: sqlite3.Connection, detail: VacancyDetail) -> str:
 
 def page_loads_today(conn: sqlite3.Connection) -> int:
     """Sum of page loads over all runs started today (Europe/Moscow), any status."""
-    start_local = datetime.combine(datetime.now(TZ).date(), time(0, 0), tzinfo=TZ)
-    start_utc = start_local.astimezone(timezone.utc).replace(microsecond=0).isoformat()
-    row = conn.execute("SELECT COALESCE(SUM(page_loads), 0) AS n FROM runs WHERE started_at >= ?", (start_utc,)).fetchone()
+    row = conn.execute("SELECT COALESCE(SUM(page_loads), 0) AS n FROM runs WHERE started_at >= ?", (_today_start_utc(),)).fetchone()
     return int(row["n"])
 
 
@@ -204,14 +233,24 @@ def list_vacancies(conn: sqlite3.Connection, status: str, limit: int | None = No
 
 def expire_low_priority(conn: sqlite3.Connection, ttl_days: int, min_priority: int = 3) -> int:
     """Drop `to_fetch` cards of low triage priority that waited longer than ttl_days (skip_reason low_priority_expired)."""
-    from datetime import timedelta
-
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=ttl_days)).replace(microsecond=0).isoformat()
     cur = conn.execute(
         "UPDATE vacancies SET status = 'skipped', skip_reason = 'low_priority_expired', updated_at = ? "
         "WHERE status = 'to_fetch' AND COALESCE(triage_priority, 3) >= ? AND updated_at < ?",
-        (utcnow(), min_priority, cutoff),
+        (utcnow(), min_priority, _ago(ttl_days)),
     )
+    return cur.rowcount
+
+
+def requeue_skipped(conn: sqlite3.Connection, skip_reason: str, since_days: int) -> int:
+    """Cards skipped by a rule that no longer exists go back to `triage` (one-off, after a rules change).
+
+    Only rows first seen within `since_days`: an old card is most likely a closed vacancy, and a page load
+    on it would be a page load wasted.
+    """
+    cur = conn.execute(
+        "UPDATE vacancies SET status = 'triage', skip_reason = NULL, updated_at = ? "
+        "WHERE status = 'skipped' AND skip_reason = ? AND first_seen_at >= ?",
+        (utcnow(), skip_reason, _ago(since_days)))
     return cur.rowcount
 
 
@@ -232,16 +271,24 @@ def same_employer_params(employer_id: str | None, employer: str | None) -> list:
     return [employer_id, employer_id, employer or None, employer or None]
 
 
+# Correlated form of the same identity, for use inside a SELECT over `v`: rows `o` of v's employer.
+_SAME_EMPLOYER_AS_V = ("o.site = 'hh' AND ((v.employer_id IS NOT NULL AND o.employer_id = v.employer_id) "
+                       "OR (v.employer_id IS NULL AND casefold(o.employer) = casefold(v.employer)))")
+
+# For how many days we have been seeing v's employer advertise this very role (decision #44). hh bumps the
+# publication date on every refresh, so the posting's age says nothing; our own first sighting does.
+SEARCHING_DAYS_SQL = f"""(SELECT CAST(julianday('now') - julianday(MIN(o.first_seen_at)) AS INTEGER)
+                           FROM vacancies o
+                          WHERE {_SAME_EMPLOYER_AS_V} AND casefold(o.title) = casefold(v.title))"""
+
+
 def employer_lead(conn: sqlite3.Connection, employer_id: str | None, employer: str | None, *, exclude_id: int | None,
                   threshold: int, repeat_days: int) -> sqlite3.Row | None:
     """The vacancy of this employer that already is a lead (sent within `repeat_days`; 0 = ever) or is about to become one
     (`prefiltered`, or `evaluated` at/above the threshold and waiting for the digest). None if the company is still free."""
     if employer_id is None and not employer:
         return None
-    from datetime import timedelta
-
-    cutoff = ((datetime.now(timezone.utc) - timedelta(days=repeat_days)).replace(microsecond=0).isoformat()
-              if repeat_days > 0 else "1970-01-01T00:00:00+00:00")
+    cutoff = _ago(repeat_days) if repeat_days > 0 else "1970-01-01T00:00:00+00:00"
     sql = (f"SELECT v.id, v.hh_id, v.status FROM vacancies v WHERE {same_employer_sql('v')} AND v.id IS NOT ? "
            "AND ((v.status = 'sent' AND v.updated_at >= ?) OR v.status = 'prefiltered' "
            "     OR (v.status = 'evaluated' AND EXISTS (SELECT 1 FROM evaluations e WHERE e.vacancy_id = v.id AND e.total >= ?))) "
@@ -257,20 +304,21 @@ def employer_responded(conn: sqlite3.Connection, employer_id: str | None, employ
     (`vacancies.applied = 1`), or he pressed «✅ Написал» on a lead card (`lead_actions.responded` / `auto_responded`).
     A letter goes to the company's HR, not to a branch, so one answer closes the whole company — writing again would
     land on the same desk.
+
+    When the answer happened: the button press is exact; for a response made on hh.ru itself the best we have is the
+    first time the sync saw it (`negotiation_events`), never `updated_at` — that column moves for other reasons and
+    once kept every company closed for good (v9.11).
     """
     if employer_id is None and not employer:
         return None
-    from datetime import timedelta
-
-    cutoff = ((datetime.now(timezone.utc) - timedelta(days=within_days)).replace(microsecond=0).isoformat()
-              if within_days > 0 else "1970-01-01T00:00:00+00:00")
+    cutoff = _ago(within_days) if within_days > 0 else "1970-01-01T00:00:00+00:00"
     sql = (f"""SELECT * FROM (
                  SELECT v.id, v.hh_id, v.title, v.status,
                         COALESCE((SELECT MAX(a.created_at) FROM lead_actions a
                                     WHERE a.vacancy_id = v.id
                                       AND a.action IN ('responded', 'auto_responded')),
-                                 v.updated_at) AS answered_at   -- «✅ Написал» точен; у откликов с hh.ru есть
-                                                                -- только момент, когда бот их увидел
+                                 (SELECT MIN(ne.seen_at) FROM negotiation_events ne WHERE ne.vacancy_id = v.id),
+                                 v.updated_at) AS answered_at
                    FROM vacancies v
                   WHERE {same_employer_sql('v')} AND v.id IS NOT ?
                     AND (v.applied = 1 OR EXISTS (SELECT 1 FROM lead_actions a WHERE a.vacancy_id = v.id
@@ -293,26 +341,21 @@ def skip_as_responded(conn: sqlite3.Connection, vacancy_id: int, of_hh_id: str) 
 
 # --- cover letters ----------------------------------------------------------------
 
-def leads_without_letter(conn: sqlite3.Connection, threshold: int, limit: int | None = None) -> list[sqlite3.Row]:
-    sql = """SELECT v.*, e.total, e.verdict, e.pitch_hint, e.company_kind, e.ip_gph_possible, e.employment_hint
-             FROM vacancies v JOIN evaluations e ON e.vacancy_id = v.id
-             LEFT JOIN cover_letters c ON c.vacancy_id = v.id
-             WHERE v.status IN ('evaluated', 'sent') AND e.total >= ? AND c.id IS NULL
-             ORDER BY e.total DESC, v.published_at DESC"""
-    if limit:
-        sql += f" LIMIT {int(limit)}"
-    return conn.execute(sql, (threshold,)).fetchall()
-
-
 def save_cover_letter(conn: sqlite3.Connection, vacancy_id: int, text: str, model_note: str | None = None,
-                      rules_hash: str | None = None) -> None:
-    """Store the letter. `rules_hash` says which version of the rules wrote it (decision #46)."""
+                      rules_hash: str | None = None, *, owner_hint: str | None = None, with_dossier: bool = False) -> None:
+    """Store the letter. `rules_hash` says which version of the rules wrote it (decision #46); `owner_hint` and
+    `with_dossier` say what it was written with, so a rewrite keeps the hint and a new dossier makes it stale.
+
+    `created_at` is the time of the *latest* write on purpose: it is what the daily letter quota counts.
+    """
     conn.execute(
-        """INSERT INTO cover_letters(vacancy_id, text, model_note, created_at, rules_hash) VALUES (?, ?, ?, ?, ?)
+        """INSERT INTO cover_letters(vacancy_id, text, model_note, created_at, rules_hash, owner_hint, with_dossier)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(vacancy_id) DO UPDATE SET text = excluded.text, model_note = excluded.model_note,
-                                                created_at = excluded.created_at,
-                                                rules_hash = excluded.rules_hash""",
-        (vacancy_id, text, model_note, utcnow(), rules_hash),
+                                                created_at = excluded.created_at, rules_hash = excluded.rules_hash,
+                                                owner_hint = COALESCE(excluded.owner_hint, cover_letters.owner_hint),
+                                                with_dossier = excluded.with_dossier""",
+        (vacancy_id, text, model_note, utcnow(), rules_hash, owner_hint, int(with_dossier)),
     )
 
 
@@ -323,19 +366,21 @@ def get_cover_letter(conn: sqlite3.Connection, vacancy_id: int) -> str | None:
 
 # --- digests & feedback -------------------------------------------------------------
 
-LEAD_SELECT = """SELECT v.*, e.tech_score, e.role_score, e.lead_score, e.total, e.ip_gph_possible, e.is_agency,
+# Everything a lead card, a letter and the queue need in one row. `{extra}` takes further columns (with a leading
+# comma) for callers that need them, instead of surgery on the string.
+LEAD_SELECT = f"""SELECT v.*, e.tech_score, e.role_score, e.lead_score, e.total, e.ip_gph_possible, e.is_agency,
                         e.employment_hint, e.company_kind, e.verdict, e.pitch_hint, e.red_flags,
-                        (SELECT text FROM cover_letters c WHERE c.vacancy_id = v.id) AS letter,
-                        (SELECT rules_hash FROM cover_letters c WHERE c.vacancy_id = v.id) AS letter_rules,
+                        c.text AS letter, c.rules_hash AS letter_rules, c.owner_hint AS letter_hint,
+                        c.with_dossier AS letter_dossier,
                         (SELECT brief FROM employers emp WHERE emp.employer_id = v.employer_id AND emp.found = 1)
                             AS company_brief,
-                        (SELECT CAST(julianday('now') - julianday(MIN(o.first_seen_at)) AS INTEGER)
-                           FROM vacancies o
-                          WHERE o.site = 'hh' AND casefold(o.title) = casefold(v.title)
-                            AND ((v.employer_id IS NOT NULL AND o.employer_id = v.employer_id)
-                                 OR (v.employer_id IS NULL AND casefold(o.employer) = casefold(v.employer))))
-                            AS searching_days
-                 FROM vacancies v JOIN evaluations e ON e.vacancy_id = v.id"""
+                        {SEARCHING_DAYS_SQL} AS searching_days{{extra}}
+                 FROM vacancies v JOIN evaluations e ON e.vacancy_id = v.id
+                 LEFT JOIN cover_letters c ON c.vacancy_id = v.id"""
+
+
+def _lead_select(extra: str = "") -> str:
+    return LEAD_SELECT.format(extra=extra)
 
 
 # --- the lead queue -----------------------------------------------------------------
@@ -343,16 +388,15 @@ LEAD_SELECT = """SELECT v.*, e.tech_score, e.role_score, e.lead_score, e.total, 
 # threshold), so `evaluated` is a queue that outlives the day. Order in it is score plus a small bonus for
 # waiting: a fresh strong vacancy always goes before a stale weak one, but a week of waiting is worth 7 points,
 # so the tail cannot starve forever. `evaluations` has one row per vacancy, so `created_at` is when it queued.
-PRIORITY_SQL = ("(e.total + MIN(CAST(julianday('now') - julianday(e.created_at) AS INTEGER), {bonus}))")
+_WAITING_DAYS_SQL = "CAST(julianday('now') - julianday(e.created_at) AS INTEGER)"
+PRIORITY_SQL = f"(e.total + MIN({_WAITING_DAYS_SQL}, {{bonus}}))"
 
 
 def lead_queue(conn: sqlite3.Connection, threshold: int, limit: int | None = None, *, wait_bonus_max: int = 7,
                offset: int = 0) -> list[sqlite3.Row]:
     """The pending leads, best first by priority. `offset` skips the ones already taken (the digest tail)."""
     prio = PRIORITY_SQL.format(bonus=int(wait_bonus_max))
-    sql = (LEAD_SELECT.replace(" FROM vacancies v",
-                               ", CAST(julianday('now') - julianday(e.created_at) AS INTEGER) AS waiting_days"
-                               " FROM vacancies v")
+    sql = (_lead_select(f", {_WAITING_DAYS_SQL} AS waiting_days")
            + " WHERE v.status = 'evaluated' AND e.total >= ? "
            f"ORDER BY {prio} DESC, e.total DESC, v.published_at DESC")
     if limit is not None:
@@ -368,27 +412,24 @@ def queue_size(conn: sqlite3.Connection, threshold: int) -> int:
 
 
 def letters_written_today(conn: sqlite3.Connection) -> int:
-    """Letters written since local midnight — the daily quota must hold across all three sittings, not per run."""
-    start = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
-    return int(conn.execute("SELECT COUNT(*) FROM cover_letters WHERE created_at >= ?",
-                            (start.replace(microsecond=0).isoformat(),)).fetchone()[0])
+    """Letters written (or rewritten) since local midnight — the daily quota holds across all three sittings."""
+    return int(conn.execute("SELECT COUNT(*) FROM cover_letters WHERE created_at >= ?", (_today_start_utc(),)).fetchone()[0])
 
 
 def expire_queue(conn: sqlite3.Connection, ttl_days: int) -> int:
     """Leads nobody got to within `ttl_days` leave the queue: by then the vacancy is usually gone."""
     if ttl_days <= 0:
         return 0
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=ttl_days)).replace(microsecond=0).isoformat()
     cur = conn.execute(
         "UPDATE vacancies SET status = 'rejected', skip_reason = 'queue_expired', updated_at = ? "
         "WHERE status = 'evaluated' AND id IN (SELECT vacancy_id FROM evaluations WHERE created_at < ?)",
-        (utcnow(), cutoff))
+        (utcnow(), _ago(ttl_days)))
     return cur.rowcount
 
 
 def evaluated_leads(conn: sqlite3.Connection, threshold: int, limit: int | None = None,
                     site: str | None = None) -> list[sqlite3.Row]:
-    sql = LEAD_SELECT + " WHERE v.status = 'evaluated' AND e.total >= ?"
+    sql = _lead_select() + " WHERE v.status = 'evaluated' AND e.total >= ?"
     params: list = [threshold]
     if site:
         sql += " AND v.site = ?"
@@ -399,8 +440,13 @@ def evaluated_leads(conn: sqlite3.Connection, threshold: int, limit: int | None 
     return conn.execute(sql, params).fetchall()
 
 
+def evaluated_all(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Every evaluated vacancy, best first — for the CLI preview, which also lists what is below the threshold."""
+    return conn.execute(_lead_select() + " WHERE v.status = 'evaluated' ORDER BY e.total DESC, v.published_at DESC").fetchall()
+
+
 def lead_by_hh_id(conn: sqlite3.Connection, hh_id: str) -> sqlite3.Row | None:
-    return conn.execute(LEAD_SELECT + " WHERE v.hh_id = ?", (hh_id,)).fetchone()
+    return conn.execute(_lead_select() + " WHERE v.hh_id = ?", (hh_id,)).fetchone()
 
 
 def reject_below(conn: sqlite3.Connection, threshold: int) -> int:
@@ -414,9 +460,9 @@ def last_digest(conn: sqlite3.Connection) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM digests ORDER BY id DESC LIMIT 1").fetchone()
 
 
-def last_daily_digest(conn: sqlite3.Connection) -> sqlite3.Row | None:
-    """The last *noon* digest, ignoring instant sends between them (v9.8)."""
-    return conn.execute("SELECT * FROM digests WHERE note IS NULL OR note NOT LIKE 'instant:%' "
+def _last_daily_digest(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    """The last *noon* digest, ignoring instant sends and manual letters between them (v9.8)."""
+    return conn.execute("SELECT * FROM digests WHERE note IS NULL OR (note NOT LIKE 'instant:%' AND note NOT LIKE 'manual:%') "
                         "ORDER BY id DESC LIMIT 1").fetchone()
 
 
@@ -426,7 +472,7 @@ def evaluations_since_last_digest(conn: sqlite3.Connection, *, daily_only: bool 
     `daily_only` measures from the last noon digest: since v9.8 leads also go out right after every sitting,
     and counting from those would turn the daily summary into "since the last sitting".
     """
-    last = last_daily_digest(conn) if daily_only else last_digest(conn)
+    last = _last_daily_digest(conn) if daily_only else last_digest(conn)
     since = last["sent_at"] if last else "1970-01-01T00:00:00+00:00"
     return int(conn.execute("SELECT COUNT(*) FROM evaluations WHERE created_at > ?", (since,)).fetchone()[0])
 
@@ -437,10 +483,9 @@ def leads_sent_today(conn: sqlite3.Connection) -> int:
     The daily quota is a property of the day, not of one message: without this the noon digest would happily
     send another full quota on top of what the sittings already delivered.
     """
-    start = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
     return int(conn.execute(
         "SELECT COUNT(*) FROM digest_items di JOIN digests d ON d.id = di.digest_id WHERE d.sent_at >= ?",
-        (start.replace(microsecond=0).isoformat(),)).fetchone()[0])
+        (_today_start_utc(),)).fetchone()[0])
 
 
 def create_digest(conn: sqlite3.Connection, items_count: int, collected_count: int, note: str | None = None) -> int:
@@ -458,60 +503,33 @@ def add_digest_item(conn: sqlite3.Connection, digest_id: int, vacancy_id: int, p
 
 # --- "they have been searching for a while" (v9.7) ---------------------------------------
 
-# A vacancy hh shows as published today may have been re-posted for weeks: hh bumps the date on every
-# refresh, so the age of the posting says nothing (in 3745 of 4059 rows we first saw it on its own
-# publication date, and not one was older than 21 days). What does say something is our own history:
-# how long this employer has been advertising this same role to us. 14+ days means they cannot fill
-# the seat, which is exactly when a contract starts to look like the obvious answer (decision #44).
-_SEARCHING_DAYS_SQL = """
-    SELECT CAST(julianday('now') - julianday(MIN(v.first_seen_at)) AS INTEGER) AS days
-    FROM vacancies v
-    WHERE v.site = 'hh' AND casefold(v.title) = casefold(?)
-      AND (""" + "(? IS NOT NULL AND v.employer_id = ?) OR (? IS NULL AND casefold(v.employer) = casefold(?))" + """)
-"""
-
-
 def employer_searching_days(conn: sqlite3.Connection, row: sqlite3.Row) -> int:
-    """For how many days we have been seeing this employer advertise this very role.
+    """For how many days we have been seeing this employer advertise this very role (decision #44).
 
     Title match is exact (case-folded) on purpose: a company hiring both a programmer and a fitter is
     not "searching long" for either. 0 means we are seeing it for the first time, which is not a signal.
     """
-    emp_id = row["employer_id"] if "employer_id" in row.keys() else None
-    name = row["employer"] if "employer" in row.keys() else None
-    title = row["title"] or ""
-    got = conn.execute(_SEARCHING_DAYS_SQL, (title, emp_id, emp_id, emp_id, name)).fetchone()
-    return int(got["days"] or 0) if got else 0
+    got = conn.execute(f"SELECT {SEARCHING_DAYS_SQL} AS days FROM vacancies v WHERE v.id = ?", (row["id"],)).fetchone()
+    return int(got["days"] or 0) if got and got["days"] is not None else 0
 
 
 # --- outcomes: what came back from the companies (v9.7) ----------------------------------
+# The rows only; what they mean is `pipeline/outcomes.py`.
 
-# Score bands the method is calibrated on. Kept here, not in the query, so the digest, /stats and
-# any later threshold decision all slice the data the same way.
-SCORE_BANDS: tuple[tuple[str, int, int], ...] = (("60-64", 60, 64), ("65-69", 65, 69), ("70-74", 70, 74), ("75+", 75, 1000))
-
-_OUTCOMES_SQL = """
+_OUTCOMES_SQL = f"""
     SELECT v.id AS vacancy_id,
            e.total AS total,
            v.applied AS applied,
            v.has_chat AS has_chat,
            v.negotiation_state AS state,
            e.company_kind AS company_kind,
-           e.is_agency AS is_agency,
            v.work_format AS work_format,
-           v.area_name AS area_name,
            c.created_at AS letter_at,
            LENGTH(c.text) AS letter_len,
            MIN(d.sent_at) AS sent_at,
            (SELECT 1 FROM employers emp
              WHERE emp.employer_id = v.employer_id AND emp.found = 1) AS dossier,
-           (SELECT MIN(ne.seen_at) FROM negotiation_events ne
-             WHERE ne.vacancy_id = v.id AND ne.has_messages = 1) AS first_reply_at,
-           (SELECT CAST(julianday('now') - julianday(MIN(o.first_seen_at)) AS INTEGER)
-              FROM vacancies o
-             WHERE o.site = 'hh' AND casefold(o.title) = casefold(v.title)
-               AND ((v.employer_id IS NOT NULL AND o.employer_id = v.employer_id)
-                    OR (v.employer_id IS NULL AND casefold(o.employer) = casefold(v.employer)))) AS searching_days
+           {SEARCHING_DAYS_SQL} AS searching_days
     FROM vacancies v
     JOIN evaluations e ON e.vacancy_id = v.id
     JOIN digest_items di ON di.vacancy_id = v.id
@@ -530,118 +548,6 @@ def outcome_rows(conn: sqlite3.Connection, since_iso: str) -> list[sqlite3.Row]:
     Only leads he wrote to count — a lead he waved away says nothing about the score or about the letter.
     """
     return conn.execute(_OUTCOMES_SQL, (since_iso,)).fetchall()
-
-
-def _age_days(row: sqlite3.Row) -> float:
-    """How long the letter has had to produce an answer. Age is the confounder that breaks naive tables:
-    measured 19.09, letters 0-1 days old answered 0 % and 9-10 days old 78-82 %."""
-    started = row["letter_at"] or row["sent_at"]
-    if not started:
-        return 0.0
-    try:
-        when = datetime.fromisoformat(str(started))
-    except ValueError:
-        return 0.0
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - when).total_seconds() / 86400.0
-
-
-def outcome_of(row: sqlite3.Row) -> str:
-    """invited / refused / answered / silent / blind — what the company did about this letter."""
-    if not row["applied"]:
-        return "blind"       # sent outside hh.ru: the answer is invisible to us, never a failure
-    state = (row["state"] or "").upper()
-    if state == "INTERVIEW":
-        return "invited"
-    if state == "DISCARD":
-        return "refused"
-    return "answered" if row["has_chat"] else "silent"
-
-
-MIN_CELL = 8   # below this a percentage is noise dressed as a finding, so the report prints the count instead
-
-
-def outcome_by(rows: Sequence[sqlite3.Row], key: Callable[[sqlite3.Row], str | None],
-               mature_days: int) -> list[dict[str, Any]]:
-    """Cross-tab of outcomes by any feature, counting only letters old enough to have an answer.
-
-    `rate` is None when the cell is too small to mean anything (`MIN_CELL`): printing "2 of 2 = 100 %"
-    would invent a finding out of two observations.
-    """
-    buckets: dict[str, list[sqlite3.Row]] = {}
-    for r in rows:
-        if _age_days(r) < mature_days:
-            continue
-        name = key(r)
-        if name is not None:
-            buckets.setdefault(name, []).append(r)
-    out = []
-    for name, cell in sorted(buckets.items(), key=lambda kv: -len(kv[1])):
-        tracked = [r for r in cell if r["applied"]]
-        answered = sum(1 for r in tracked if outcome_of(r) in ("answered", "invited"))
-        out.append({
-            "name": name,
-            "n": len(cell),
-            "tracked": len(tracked),
-            "answered": answered,      # a refusal is an answer, but not the kind we are optimising for
-            "invited": sum(1 for r in tracked if outcome_of(r) == "invited"),
-            "refused": sum(1 for r in tracked if outcome_of(r) == "refused"),
-            "rate": round(100 * answered / len(tracked)) if len(tracked) >= MIN_CELL else None,
-        })
-    return out
-
-
-def maturing(rows: Sequence[sqlite3.Row], mature_days: int) -> int:
-    """Letters too young to count yet — reported so their silence is never read as a failure."""
-    return sum(1 for r in rows if _age_days(r) < mature_days)
-
-
-def reply_delay_curve(rows: Sequence[sqlite3.Row]) -> list[tuple[str, int, int]]:
-    """(bucket, letters, reacted) by letter age — the evidence the maturity threshold rests on.
-
-    Here a refusal counts: the question is how long a company takes to react at all, and that is what
-    says when a letter's silence stops being "too early" and starts being an answer in itself.
-    """
-    buckets = (("0-1 дн.", 0, 2), ("2-4 дн.", 2, 5), ("5-7 дн.", 5, 8), ("8+ дн.", 8, 10_000))
-    out = []
-    for name, lo, hi in buckets:
-        cell = [r for r in rows if r["applied"] and lo <= _age_days(r) < hi]
-        out.append((name, len(cell), sum(1 for r in cell if outcome_of(r) != "silent")))
-    return out
-
-
-def outcome_stats(conn: sqlite3.Connection, since_iso: str) -> list[dict[str, int | str]]:
-    """Per score band: how many leads the owner wrote to, and what the companies did about it.
-
-    Only leads the owner actually wrote to count — a lead he waved away says nothing about the score.
-    `blind` are the ones sent outside hh.ru (no `applied`), where the answer is invisible to us: they
-    are reported separately instead of quietly diluting the conversion.
-
-    `answered` excludes refusals. It used to be plain `has_chat`, which counted a rejection as an answer —
-    harmless while we knew of 8 refusals, misleading once the full sync found 22 of them among 36 replies
-    (v9.10). The columns are now disjoint: blind + silent + answered + invited + refused = written.
-    """
-    rows = outcome_rows(conn, since_iso)
-    out = []
-    for name, lo, hi in SCORE_BANDS:
-        band = [r for r in rows if lo <= int(r["total"] or 0) <= hi]
-        tracked = [r for r in band if r["applied"]]
-        out.append({
-            "band": name,
-            "written": len(band),
-            "blind": len(band) - len(tracked),
-            "answered": sum(1 for r in tracked if outcome_of(r) == "answered"),
-            "invited": sum(1 for r in tracked if outcome_of(r) == "invited"),
-            "refused": sum(1 for r in tracked if outcome_of(r) == "refused"),
-            "silent": sum(1 for r in tracked if outcome_of(r) == "silent"),
-        })
-    return out
-
-
-def invited_since(conn: sqlite3.Connection, since_iso: str) -> int:
-    """How many companies invited the owner to talk since `since_iso` — the digest header line."""
-    return sum(int(b["invited"]) for b in outcome_stats(conn, since_iso))
 
 
 # --- lead lifecycle (v5) --------------------------------------------------------------
@@ -703,6 +609,7 @@ def add_feedback(conn: sqlite3.Connection, vacancy_id: int, value: int, reason: 
 
 
 def update_feedback_reason(conn: sqlite3.Connection, vacancy_id: int, reason: str | None) -> None:
+    """Attach a reason to the latest 👎 on this lead: a code (salary / format / stack / agency) or free text (v9.11)."""
     conn.execute("""UPDATE feedback SET reason = ? WHERE id = (SELECT id FROM feedback WHERE vacancy_id = ? AND value < 0
                     ORDER BY id DESC LIMIT 1)""", (reason, vacancy_id))
 
@@ -719,11 +626,6 @@ def vacancy_by_id(conn: sqlite3.Connection, vacancy_id: int) -> sqlite3.Row | No
 
 
 # --- runs -----------------------------------------------------------------------
-
-def _today_start_utc() -> str:
-    start_local = datetime.combine(datetime.now(TZ).date(), time(0, 0), tzinfo=TZ)
-    return start_local.astimezone(timezone.utc).replace(microsecond=0).isoformat()
-
 
 def run_starts_today(conn: sqlite3.Connection) -> list[datetime]:
     """Start times (aware, Europe/Moscow) of every run started today, any trigger or status."""
@@ -742,9 +644,8 @@ def day_totals(conn: sqlite3.Connection, threshold: int) -> dict[str, int]:
 
 def work_totals(conn: sqlite3.Connection, since: datetime) -> dict[str, int]:
     """Work done since `since` (aware) for the digest's one-line report: scheduled sittings and page loads (all runs)."""
-    since_utc = since.astimezone(timezone.utc).replace(microsecond=0).isoformat()
     r = conn.execute("SELECT COUNT(*) FILTER (WHERE trigger = 'schedule') AS s, COALESCE(SUM(page_loads), 0) AS p "
-                     "FROM runs WHERE started_at >= ?", (since_utc,)).fetchone()
+                     "FROM runs WHERE started_at >= ?", (iso_utc(since),)).fetchone()
     return {"sittings": int(r["s"]), "page_loads": int(r["p"])}
 
 
@@ -757,7 +658,7 @@ def fail_stale_runs(conn: sqlite3.Connection, max_age_hours: float = 3.0, trigge
     `trigger` narrows it to one kind of run: the service calls it with `'schedule'` and 0 hours at start-up,
     because a scheduled run cannot outlive the service that ran it.
     """
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_age_hours)).replace(microsecond=0).isoformat()
+    cutoff = iso_utc(datetime.now(timezone.utc) - timedelta(hours=max_age_hours))
     sql = ("UPDATE runs SET status = 'failed', finished_at = ?, error = 'прерван внешне (процесс убит)' "
            "WHERE status = 'running' AND started_at < ?")
     params: list = [utcnow(), cutoff]
@@ -772,15 +673,18 @@ def start_run(conn: sqlite3.Connection, trigger: str) -> int:
     return int(cur.lastrowid)
 
 
+_RUN_METRICS = ("collected", "prefiltered", "evaluated", "sent", "bridge_calls", "page_loads")
+
+
 def finish_run(conn: sqlite3.Connection, run_id: int, status: str, error: str | None = None, **metrics: Any) -> None:
-    cols = {k: v for k, v in metrics.items() if k in ("collected", "prefiltered", "evaluated", "sent", "bridge_calls", "page_loads")}
+    cols = {k: v for k, v in metrics.items() if k in _RUN_METRICS}
     sets = ", ".join(f"{k} = ?" for k in cols)
     sql = f"UPDATE runs SET finished_at = ?, status = ?, error = ?{', ' + sets if sets else ''} WHERE id = ?"
     conn.execute(sql, (utcnow(), status, error, *cols.values(), run_id))
 
 
 def update_run(conn: sqlite3.Connection, run_id: int, **metrics: Any) -> None:
-    cols = {k: v for k, v in metrics.items() if k in ("collected", "prefiltered", "evaluated", "sent", "bridge_calls", "page_loads")}
+    cols = {k: v for k, v in metrics.items() if k in _RUN_METRICS}
     if not cols:
         return
     sets = ", ".join(f"{k} = ?" for k in cols)

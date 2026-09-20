@@ -20,10 +20,10 @@ from hh_scout.bot.lead_actions import cleanup_stale, collapse_lead
 from hh_scout.config import TZ, Settings
 from hh_scout.db import kv_get
 from hh_scout.llm.cover_letter import CoverLetterWriter
-from hh_scout.pipeline import repo
-from hh_scout.pipeline.ranker import (COMPANY_RU, DIMENSIONS, SEARCHING_LONG_DAYS, WORK_FORMAT_RU,
-                                      format_card, format_inbox, format_letter,
-                                      format_outcome_dimensions, row_site)
+from hh_scout.pipeline import outcomes, repo
+from hh_scout.pipeline.digest_builder import record_manual_letter
+from hh_scout.pipeline.ranker import format_card, format_inbox, format_letter, format_outcome_dimensions
+from hh_scout.pipeline.rows import row_site
 
 log = logging.getLogger(__name__)
 router = Router(name="commands")
@@ -116,8 +116,10 @@ async def status_cmd(m: Message, settings: Settings, conn: sqlite3.Connection, s
 
 
 @router.message(Command("digest"))
-async def digest_cmd(m: Message, settings: Settings, conn: sqlite3.Connection) -> None:
-    n = await send_digest(m.bot, conn, settings, m.chat.id, note="manual /digest")
+async def digest_cmd(m: Message, settings: Settings, conn: sqlite3.Connection, scheduler, send_lock: asyncio.Lock) -> None:
+    async with send_lock:   # never interleaved with the instant sends of a sitting that is just finishing
+        n = await send_digest(m.bot, conn, settings, m.chat.id, note="manual /digest",
+                              evaluate=not scheduler.crawl_lock.locked())
     if n:
         await m.answer(f"Отправлено лидов: {n}")
 
@@ -150,51 +152,36 @@ async def resume_cmd(m: Message, scheduler) -> None:
     await m.answer("▶️ Автоматические сборы возобновлены.")
 
 
-def _dimension_key(name: str):
-    """How a row is bucketed for one breakdown. None drops the row from that breakdown entirely."""
-    if name == "company_kind":
-        return lambda r: COMPANY_RU.get(r["company_kind"] or "", None) or (r["company_kind"] or "не определён")
-    if name == "work_format":
-        return lambda r: WORK_FORMAT_RU.get(r["work_format"] or "", None) or "не указан"
-    if name == "dossier":
-        return lambda r: "собрано" if r["dossier"] else "пусто"
-    if name == "searching_long":
-        return lambda r: None if r["searching_days"] is None else (
-            f"ищут {SEARCHING_LONG_DAYS}+ дн." if int(r["searching_days"]) >= SEARCHING_LONG_DAYS else "свежая вакансия")
-    if name == "letter_len":
-        return lambda r: None if not r["letter_len"] else (
-            "до 2500" if r["letter_len"] < 2500 else "2500-3000" if r["letter_len"] < 3000 else "3000+")
-    raise ValueError(name)
-
-
 @router.message(Command("stats"))
 async def stats_cmd(m: Message, command: CommandObject, settings: Settings, conn: sqlite3.Connection) -> None:
-    """What the letters bought: by score band (the calibration the threshold rests on), then by feature."""
+    """What the letters bought: by score band (the calibration the threshold rests on), then by feature.
+
+    Both tables come from the same rows, the same maturity rule and the same meaning of «ответ» (v9.11).
+    """
     days = min(int(command.args), 365) if command.args and command.args.strip().isdigit() else 30
-    since = (datetime.now(TZ) - timedelta(days=days)).isoformat()
-    bands = repo.outcome_stats(conn, since)
-    written = sum(int(b["written"]) for b in bands)
-    if not written:
+    mature_days = settings.outcome_mature_days
+    rows = repo.outcome_rows(conn, repo.iso_utc(datetime.now(TZ) - timedelta(days=days)))
+    if not rows:
         await m.answer(f"За {days} дн. писем ещё не отправлено — считать нечего.")
         return
-    lines = [f"<b>Что ответили компании за {days} дн.</b>", "<pre>полоса  писем  ответ  пригл.  отказ</pre>"]
+    bands = outcomes.outcome_stats(rows, mature_days)
+    written = sum(int(b["written"]) for b in bands)
+    young = outcomes.maturing(rows, mature_days)
+    lines = [f"<b>Что ответили компании за {days} дн.</b> (письма старше {mature_days} дн.)",
+             "<pre>полоса  писем  ответ  пригл.  отказ</pre>"]
     for b in bands:
         lines.append(f"<pre>{str(b['band']):<7} {b['written']:>5}  {b['answered']:>5}  {b['invited']:>6}  {b['refused']:>5}</pre>")
     blind = sum(int(b["blind"]) for b in bands)
     lines.append(f"Всего писем {written} · ответов {sum(int(b['answered']) for b in bands)} · "
-                 f"приглашений {sum(int(b['invited']) for b in bands)}")
-    rows = repo.outcome_rows(conn, since)
-    young = repo.maturing(rows, settings.outcome_mature_days)
+                 f"приглашений {outcomes.invited_count(rows)}")
     if young:
-        lines.append(f"Дозревает: {young} — письма моложе {settings.outcome_mature_days} дн., "
-                     f"их молчание пока ничего не значит.")
+        lines.append(f"Дозревает: {young} — письма моложе {mature_days} дн., их молчание пока ничего не значит.")
     if blind:
         lines.append(f"Без канала измерения: {blind} — письмо ушло мимо hh.ru, ответ компании нам не виден.")
     await m.answer("\n".join(lines))
-    blocks = [(title, repo.outcome_by(rows, _dimension_key(key), settings.outcome_mature_days))
-              for title, key in DIMENSIONS]
+    blocks = [(title, outcomes.outcome_by(rows, key, mature_days)) for title, key in outcomes.DIMENSIONS]
     if any(rows_ for _, rows_ in blocks):
-        await m.answer(format_outcome_dimensions(blocks, repo.reply_delay_curve(rows), settings.outcome_mature_days))
+        await m.answer(format_outcome_dimensions(blocks, outcomes.reply_delay_curve(rows), mature_days))
 
 
 @router.message(Command("skipped"))
@@ -267,8 +254,10 @@ async def letter_cmd(m: Message, command: CommandObject, settings: Settings, con
         await m.answer("ИИ вернул текст неподходящей длины, попробуйте ещё раз.")
         return
     row = repo.lead_by_hh_id(conn, hh_id)
-    await m.answer(format_card(1, row, row), reply_markup=vote_kb(row["id"]))
-    await m.answer(format_letter(row["employer"], text, row_site(row)))
+    card = await m.answer(format_card(1, row, row), reply_markup=vote_kb(row["id"]))
+    letter = await m.answer(format_letter(row["employer"], text, row_site(row)))
+    # a queue lead the owner just received is a sent lead from here on: closable, counted, never re-sent
+    record_manual_letter(conn, settings, row, getattr(card, "message_id", None), getattr(letter, "message_id", None))
 
 
 _ID_RE = re.compile(r"^[A-Za-z0-9:_.-]{1,64}$")

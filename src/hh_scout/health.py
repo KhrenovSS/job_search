@@ -165,7 +165,6 @@ class Alerter:
                 continue
             with self.conn:
                 kv_set(self.conn, f"alert:{a.key}:{now.date().isoformat()}", now.isoformat())
-                kv_set(self.conn, "alerts_today", str(self.count_today(now.date()) + 1))
             await self.notify(a.text)
             log.warning("Тревога %s: %s", a.key, a.text)
             sent += 1

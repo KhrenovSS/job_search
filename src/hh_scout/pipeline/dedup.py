@@ -26,12 +26,9 @@ import sqlite3
 from hh_scout.config import Settings
 from hh_scout.db import transaction
 from hh_scout.pipeline import repo
+from hh_scout.pipeline.rows import is_hh as _is_hh
 
 log = logging.getLogger(__name__)
-
-
-def _is_hh(row: sqlite3.Row) -> bool:
-    return (row["site"] if "site" in row.keys() else "hh") == "hh"
 
 
 def covering_lead(conn: sqlite3.Connection, settings: Settings, row: sqlite3.Row) -> sqlite3.Row | None:

@@ -191,3 +191,36 @@ def test_revive_orphans_leaves_answered_companies_closed():
     dedup.skip_covered(conn, s, "triage")
     assert dedup.revive_orphans(conn, s) == 0
     assert _status(conn, "a") == ("skipped", "employer_responded:A")
+
+
+def test_a_response_seen_by_the_sync_every_day_does_not_stay_fresh_forever():
+    """v9.11: `mark_applied` runs three times a day on the same rows; the answer date must not move with it."""
+    from hh_scout.db import kv_get  # noqa: F401 — same connection helpers
+
+    s = Settings(_env_file=None, employer_repeat_days=90)
+    conn = _conn()
+    vid = _vac(conn, "A", "skipped", skip_reason="applied")
+    repo.mark_applied(conn, "A", has_chat=False, state="RESPONSE")
+    long_ago = (datetime.now(timezone.utc) - timedelta(days=120)).replace(microsecond=0).isoformat()
+    conn.execute("UPDATE negotiation_events SET seen_at = ? WHERE vacancy_id = ?", (long_ago, vid))
+    conn.execute("UPDATE vacancies SET updated_at = ? WHERE id = ?", (long_ago, vid))
+    repo.mark_applied(conn, "A", has_chat=False, state="RESPONSE")          # today's sync: nothing changed
+    assert conn.execute("SELECT updated_at FROM vacancies WHERE id = ?", (vid,)).fetchone()[0] == long_ago
+    _vac(conn, "a", "triage")
+    assert dedup.skip_covered(conn, s, "triage") == 0                       # 120 days ago is outside the window
+    assert _status(conn, "a")[0] == "triage"
+    # a real change still moves the row and the history
+    repo.mark_applied(conn, "A", has_chat=True, state="INTERVIEW")
+    assert conn.execute("SELECT updated_at FROM vacancies WHERE id = ?", (vid,)).fetchone()[0] != long_ago
+    assert conn.execute("SELECT COUNT(*) FROM negotiation_events WHERE vacancy_id = ?", (vid,)).fetchone()[0] == 2
+
+
+def test_mark_applied_takes_a_card_out_of_the_pipeline_at_any_stage():
+    conn = _conn()
+    for hh_id, status in (("t", "triage"), ("f", "to_fetch"), ("p", "prefiltered")):
+        _vac(conn, hh_id, status)
+        repo.mark_applied(conn, hh_id, has_chat=False)
+        assert _status(conn, hh_id) == ("skipped", "applied"), status
+    _vac(conn, "s", "sent")
+    repo.mark_applied(conn, "s", has_chat=False)
+    assert _status(conn, "s")[0] == "sent"                                  # a delivered lead keeps its status

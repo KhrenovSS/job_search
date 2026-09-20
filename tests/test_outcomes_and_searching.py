@@ -1,7 +1,7 @@
 """What the companies answered (decision #42) and how long they have been searching (decision #44)."""
 
 from hh_scout.db import connect, migrate, utcnow
-from hh_scout.pipeline import repo
+from hh_scout.pipeline import outcomes, repo
 
 
 def _db():
@@ -36,17 +36,17 @@ def test_outcome_stats_counts_only_leads_the_owner_wrote_to():
     _lead(conn, "2", 76, has_chat=1, state="DISCARD")
     _lead(conn, "3", 62, has_chat=0)
     _lead(conn, "4", 80, written=False)          # never written to -> says nothing about the band
-    bands = {b["band"]: b for b in repo.outcome_stats(conn, "2000-01-01")}
+    bands = {b["band"]: b for b in outcomes.outcome_stats(repo.outcome_rows(conn, "2000-01-01"), 0)}
     assert bands["75+"]["written"] == 2
     assert bands["75+"]["invited"] == 1 and bands["75+"]["refused"] == 1
     assert bands["60-64"]["written"] == 1 and bands["60-64"]["answered"] == 0
-    assert repo.invited_since(conn, "2000-01-01") == 1
+    assert outcomes.invited_count(repo.outcome_rows(conn, "2000-01-01")) == 1
 
 
 def test_letters_sent_outside_hh_are_reported_as_blind_not_as_failures():
     conn = _db()
     _lead(conn, "5", 77, applied=0)  # owner wrote by e-mail: hh cannot tell us what came back
-    band = {b["band"]: b for b in repo.outcome_stats(conn, "2000-01-01")}["75+"]
+    band = {b["band"]: b for b in outcomes.outcome_stats(repo.outcome_rows(conn, "2000-01-01"), 0)}["75+"]
     assert band["written"] == 1 and band["blind"] == 1 and band["answered"] == 0
 
 

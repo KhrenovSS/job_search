@@ -63,6 +63,17 @@ def finalize_digest(conn: sqlite3.Connection, settings: Settings, sent: list[tup
     return digest_id
 
 
+def record_manual_letter(conn: sqlite3.Connection, settings: Settings, row: sqlite3.Row,
+                         card_message_id: int | None, letter_message_id: int | None) -> None:
+    """`/letter <id>` on a lead still in the queue: the owner now holds its card and letter, so it is a sent lead
+    like any other — closable with «✅ Написал», counted by /stats, and never delivered a second time (v9.11).
+    """
+    if row["status"] != "evaluated":
+        return
+    finalize_digest(conn, settings, [(row, card_message_id, letter_message_id)], checked=0,
+                    note="manual:/letter", reject=False)
+
+
 def mark_previewed_as_sent(conn: sqlite3.Connection, settings: Settings, note: str) -> int:
     """First-start helper: leads the owner already saw as previews must not be re-sent."""
     leads = repo.evaluated_leads(conn, settings.score_threshold)

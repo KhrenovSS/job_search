@@ -7,23 +7,23 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import sqlite3
 from datetime import datetime
 
 from hh_scout.config import TZ, Settings
 from hh_scout.hh.salary import human_from_raw
+from hh_scout.llm.letter_checks import strip_role_address
+from hh_scout.pipeline.outcomes import COMPANY_RU as _COMPANY_KIND_RU, SEARCHING_LONG_DAYS
+from hh_scout.pipeline.rows import row_get as _row_get, row_site
 
 log = logging.getLogger(__name__)
 
 WORK_FORMAT_RU = {"remote": "🏠 удалёнка", "hybrid": "гибрид", "office": "🏢 офис", "field": "🚗 разъездная", "unknown": None}
 EMPLOYMENT_RU = {"full": "штат", "part": "частичная занятость", "project": "📄 проектная работа", "fly_in_fly_out": "🚁 вахта", "unknown": None}
-# How long an employer must have been advertising the same role before it counts as "cannot fill it".
-SEARCHING_LONG_DAYS = 14
 IP_RU = {"yes": "да", "maybe": "не указано", "no": "нет"}  # "maybe" = the vacancy says nothing, not "probably yes"
 CONTRACT_RU = {"INDIVIDUAL_ENTREPRENEUR": "ИП", "SELF_EMPLOYED": "самозанятый", "INDIVIDUAL_PERSON": "физлицо"}
-COMPANY_RU = {"integrator": "интегратор", "manufacturer": "производитель оборудования", "end_customer": "конечный заказчик",
-              "agency": "агентство", "unknown": None}
+# The card shows the company kind only when the model named one; the stats tables print «не определён» instead.
+COMPANY_RU = {**_COMPANY_KIND_RU, "unknown": None}
 
 
 def total_score(settings: Settings, tech: int, role: int, lead: int) -> int:
@@ -83,68 +83,24 @@ def _company_line(v: sqlite3.Row) -> str:
     return str(brief.get("what_they_do") or "")[:300]
 
 
-# The letter must never sort its reader by job title: "Для отдела кадров: подряд не требует…" reads as a mailshot,
-# and the owner deleted that label by hand from every letter that had it (v9.6, decision #38). Cutting the label is
-# cheaper and surer than regenerating the whole letter, so it is cut, not rejected — on the way in (the writer
-# cleans the bridge answer) and again here, on the way out: a letter written days ago under older rules is sent
-# from the database verbatim, and this is the last door before Telegram (v9.9, decision #46).
-_ROLE_ADDRESS_RE = re.compile(
-    r"(?:\A|\n|(?<=\.)[ \t])[ \t]*(?:отдельно\s+)?для\s+[^:\n]{0,60}?(?:кадр|подбор|персонал|hr|рекрут)[^:\n]{0,20}:[ \t]*",
-    re.IGNORECASE)
-
-
-def strip_role_address(text: str) -> str:
-    """Drop a "Для отдела кадров:" label, keeping the sentence it introduced (decision #38).
-
-    The owner did exactly this by hand before sending: the thought is right, naming the reader's job is not.
-    """
-    out: list[str] = []
-    cuts: list[int] = []   # where in the result the sentence that lost its label now begins
-    last = pos = 0
-    for m in _ROLE_ADDRESS_RE.finditer(text):
-        log.info("Убрал из письма обращение по должности: «%s»", m.group(0).strip())
-        lead = m.group(0)[0]
-        chunk = text[last:m.start()] + (lead if lead.isspace() else "")   # keep the break, drop the label
-        out.append(chunk)
-        pos += len(chunk)
-        cuts.append(pos)
-        last = m.end()
-    if not cuts:
-        return text
-    out.append(text[last:])
-    chars = list("".join(out))
-    for i in cuts:                       # the label carried the capital letter — give it back
-        if i < len(chars):
-            chars[i] = chars[i].upper()
-    return "".join(chars)
-
-
-DIMENSIONS: tuple[tuple[str, str], ...] = (
-    ("Тип компании", "company_kind"),
-    ("Формат работы", "work_format"),
-    ("Досье на компанию", "dossier"),
-    ("Ищут давно", "searching_long"),
-    ("Длина письма", "letter_len"),
-)
-
-
 def format_outcome_dimensions(blocks: list[tuple[str, list[dict]]], curve: list[tuple[str, int, int]],
                               mature_days: int) -> str:
     """Outcomes sliced by feature. A cell too small for a percentage shows its count instead — the whole
     point of the report is to stop a two-observation cell from looking like a finding."""
     lines = ["<b>Что различает вакансии, на которые отвечают</b>",
              f"Считаются письма старше {mature_days} дн. — младшие ещё не дозрели. "
-             "«Ответ» — компания написала и не отказала; отказ показан отдельно."]
+             "«Ответ» — компания написала и не отказала; приглашения и отказы показаны отдельно, "
+             "доля — ответы и приглашения вместе."]
     for title, rows in blocks:
         if not rows:
             continue
         lines.append(f"\n<b>{_esc(title)}</b>")
-        lines.append("<pre>                       писем  отв.  отказ  доля</pre>")
+        lines.append("<pre>                       писем  отв. пригл. отказ  доля</pre>")
         for r in rows:
             share = f"{r['rate']}%" if r["rate"] is not None else "мало данных"
-            lines.append(f"<pre>{_esc(str(r['name']))[:22]:<22} {r['tracked']:>5} {r['answered']:>5} "
+            lines.append(f"<pre>{_esc(str(r['name']))[:22]:<22} {r['tracked']:>5} {r['answered']:>5} {r['invited']:>6} "
                          f"{r['refused']:>5}  {share}</pre>")
-    lines.append("\n<b>Когда компания вообще реагирует</b> (ответ или отказ)")
+    lines.append("\n<b>Когда компания вообще реагирует</b> (ответ, приглашение или отказ)")
     lines.append("<pre>возраст    писем  реакц.  доля</pre>")
     for name, n, answered in curve:
         if n:
@@ -153,19 +109,15 @@ def format_outcome_dimensions(blocks: list[tuple[str, list[dict]]], curve: list[
 
 
 def format_letter(employer: str | None, text: str, site: str = "hh") -> str:
-    """Cover letter (or a profi.ru bid) as a separate Telegram message; <pre> gives one-tap copy in Telegram clients."""
+    """Cover letter (or a profi.ru bid) as a separate Telegram message; <pre> gives one-tap copy in Telegram clients.
+
+    The last door before Telegram: a letter written days ago is sent from the database verbatim, so the
+    role-address label is cut here too (decision #46).
+    """
     text = strip_role_address(text)
     if site == "profi":
         return f"✉️ Предложение для «{_esc(employer or 'заказчика')}» (profi.ru):\n<pre>{_esc(text)}</pre>"
     return f"✉️ Отклик для «{_esc(employer or 'компании')}»:\n<pre>{_esc(text)}</pre>"
-
-
-def _row_get(row: sqlite3.Row, column: str):
-    """Column value, or None for rows built without it (old fixtures, ad-hoc SELECTs)."""
-    try:
-        return row[column]
-    except (IndexError, KeyError):
-        return None
 
 
 def hh_contract_note(row: sqlite3.Row) -> str | None:
@@ -177,14 +129,6 @@ def hh_contract_note(row: sqlite3.Row) -> str | None:
     if _row_get(row, "accept_temporary"):
         return "✅ hh: оформление по ГПХ/совместительству"
     return None
-
-
-def row_site(row: sqlite3.Row) -> str:
-    """`vacancies.site` with a fallback for rows built without the column (old fixtures, ad-hoc SELECTs)."""
-    try:
-        return row["site"] or "hh"
-    except (IndexError, KeyError):
-        return "hh"
 
 
 COLLAPSED_LABELS = {

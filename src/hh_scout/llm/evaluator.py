@@ -29,8 +29,9 @@ from hh_scout.hh.salary import human_from_raw
 from hh_scout.llm.bridge_client import BridgeClient, BridgeError, extract_json
 from hh_scout.llm.prompts import render
 from hh_scout.llm.schemas import EvaluationBatch, VacancyEvaluation
-from hh_scout.pipeline import repo
+from hh_scout.pipeline import outcomes, repo
 from hh_scout.pipeline.ranker import total_score
+from hh_scout.pipeline.rows import row_site
 
 log = logging.getLogger(__name__)
 
@@ -47,39 +48,35 @@ class EvalStats:
     bridge_calls: int = 0
 
 
-def _outcome(row) -> str:
-    """What the company answered, for the calibration block: an invitation is the goal, silence is not neutral."""
-    if not row["responded"]:
-        return ""
-    state = (row["negotiation_state"] or "").upper()
-    if state == "INTERVIEW":
-        return ". ИТОГ: компания пригласила к разговору"
-    if state == "DISCARD":
-        return ". ИТОГ: компания отказала"
-    if row["has_chat"]:
-        return ". ИТОГ: компания ответила"
-    if row["applied"]:
-        return ". ИТОГ: компания молчит"
-    return ""
+REASON_RU = {"salary": "зарплата", "format": "формат работы", "stack": "не мой стек", "agency": "агентство"}
 
 
-def feedback_block(conn: sqlite3.Connection, limit: int = 20) -> str:
+def feedback_block(conn: sqlite3.Connection, mature_days: int = 5, limit: int = 20) -> str:
+    """The owner's 👍/👎 with reasons and what the company did — the evaluator's calibration.
+
+    A reason is a code from the keyboard or the owner's own words (v9.11); the outcome comes from the same
+    vocabulary and maturity rule as /stats, so a letter sent this morning is not shown as "silence".
+    """
     rows = conn.execute(
-        """SELECT f.value, f.reason, v.title, v.employer, e.verdict, v.applied, v.has_chat, v.negotiation_state,
-                  EXISTS(SELECT 1 FROM lead_actions a WHERE a.vacancy_id = v.id AND a.action IN ('responded','auto_responded')) AS responded
+        """SELECT f.value, f.reason, v.title, v.employer, e.verdict, v.applied, v.has_chat,
+                  v.negotiation_state AS state,
+                  EXISTS(SELECT 1 FROM lead_actions a WHERE a.vacancy_id = v.id AND a.action IN ('responded','auto_responded')) AS responded,
+                  (SELECT MIN(d.sent_at) FROM digest_items di JOIN digests d ON d.id = di.digest_id
+                    WHERE di.vacancy_id = v.id) AS sent_at,
+                  NULL AS letter_at
            FROM feedback f
            JOIN vacancies v ON v.id = f.vacancy_id LEFT JOIN evaluations e ON e.vacancy_id = v.id
            ORDER BY f.id DESC LIMIT ?""", (limit,)).fetchall()
     if not rows:
         return "(пока нет)"
-    reasons = {"salary": "зарплата", "format": "формат работы", "stack": "не мой стек", "agency": "агентство"}
     out = []
     for r in rows:
         mark = "👍" if r["value"] > 0 else "👎"
         if r["value"] > 0 and r["responded"]:
             mark = "👍 (кандидат написал этой компании)"
-        why = f" — причина: {reasons.get(r['reason'], r['reason'])}" if r["reason"] else ""
-        out.append(f"{mark} «{r['title']}» ({r['employer'] or '—'}){why}{_outcome(r)}. Вердикт ИИ был: {r['verdict'] or '—'}")
+        why = f" — причина: {REASON_RU.get(r['reason'], r['reason'])}" if r["reason"] else ""
+        note = outcomes.outcome_note(r, mature_days) if r["responded"] else ""
+        out.append(f"{mark} «{r['title']}» ({r['employer'] or '—'}){why}{note}. Вердикт ИИ был: {r['verdict'] or '—'}")
     return "\n".join(out)
 
 
@@ -118,10 +115,6 @@ def vacancy_payload(row: sqlite3.Row, searching_days: int = 0) -> dict:
     return payload
 
 
-def row_site(row: sqlite3.Row) -> str:
-    return row["site"] if "site" in row.keys() and row["site"] else "hh"
-
-
 EVAL_PROMPTS = {"hh": "vacancy_evaluation.md", "profi": "profi_order_evaluation.md"}
 
 
@@ -137,7 +130,7 @@ class Evaluator:
         if not rows:
             log.info("Оценивать нечего (нет prefiltered)")
             return self.stats
-        fb = feedback_block(self.conn)
+        fb = feedback_block(self.conn, self.s.outcome_mature_days)
         by_site: dict[str, list[sqlite3.Row]] = {}
         for r in rows:
             by_site.setdefault(row_site(r), []).append(r)
@@ -208,11 +201,7 @@ def build_digest_preview(conn: sqlite3.Connection, settings: Settings, checked: 
     """Messages the bot would send right now from evaluated vacancies (not marked sent)."""
     from hh_scout.pipeline.ranker import digest_header, format_card, format_letter
 
-    rows = conn.execute(
-        """SELECT v.*, e.tech_score, e.role_score, e.lead_score, e.total, e.ip_gph_possible, e.is_agency,
-                  e.employment_hint, e.company_kind, e.verdict, e.pitch_hint, e.red_flags
-           FROM vacancies v JOIN evaluations e ON e.vacancy_id = v.id
-           WHERE v.status = 'evaluated' ORDER BY e.total DESC, v.published_at DESC""").fetchall()
+    rows = repo.evaluated_all(conn)
     passing = [r for r in rows if r["total"] >= settings.score_threshold][: settings.digest_max_items]
     messages = [digest_header(len(passing), checked)]
     for i, r in enumerate(passing, 1):
@@ -287,7 +276,8 @@ def main() -> int:
         requeue(conn, min_total=args.min_total, threshold=settings.score_threshold, limit=args.limit)
     Evaluator(settings, conn).run(args.limit)
     if args.preview or args.send:
-        checked = conn.execute("SELECT COUNT(*) FROM vacancies WHERE status != 'skipped' OR skip_reason != 'applied'").fetchone()[0]
+        checked = conn.execute("SELECT COUNT(*) FROM vacancies WHERE status != 'skipped' "
+                               "OR COALESCE(skip_reason, '') != 'applied'").fetchone()[0]
         messages = build_digest_preview(conn, settings, checked, with_tail=args.tail)
         import re
         for m in messages:
