@@ -296,7 +296,7 @@ def _m010_negotiation_state(conn: sqlite3.Connection) -> None:
 
 
 def _m011_letter_rules(conn: sqlite3.Connection) -> None:
-    """v9.9: which version of the letter rules the stored text was written under (decision #46).
+    """v9.9: which version of the letter rules the stored text was written under (decision #50).
 
     A letter is written the day the lead is found and can leave the queue days later, so a rules change
     (the prompt, the profile, the resume) left the stored text quietly breaking a rule that now exists —

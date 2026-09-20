@@ -121,13 +121,13 @@ def render_review_prompt(settings: Settings) -> str:
 
 
 def rules_hash(settings: Settings, site: str = "hh") -> str:
-    """Which version of the letter rules a text was written under (decision #46).
+    """Which version of the letter rules a text was written under (decision #50).
 
     The letter is written the day the lead is found and may leave the queue days later — by then the prompt,
     the owner's profile, the resume or the code's own checks may have changed, and the stored text quietly
     breaks a rule that now exists. The stamp is the fingerprint of everything that shapes the letter: the site's
     prompt with the profile and the resume already substituted, the editor's checklist for hh, and the code
-    rules in `letter_checks` (the incident behind #46 was a *code* rule the stored letters violated).
+    rules in `letter_checks` (the incident behind #50 was a *code* rule the stored letters violated).
 
     An unreadable prompt gives "" — «rules unknown», so every stored letter counts as stale and the writer
     (which needs the same files and fails loudly) decides what happens next. The digest then sends cards
@@ -296,7 +296,7 @@ class CoverLetterWriter:
 
         The quota is daily, not per run: the crawl runs three times a day and would otherwise write three
         times as many. Rewrites of stale letters count against it too, after the leads that have no letter at
-        all (decision #46). What is left over keeps its place in the queue and gets its letter on a later day.
+        all (decision #50). What is left over keeps its place in the queue and gets its letter on a later day.
         """
         left = max(0, self.s.digest_max_items - repo.letters_written_today(self.conn))
         if limit is not None:

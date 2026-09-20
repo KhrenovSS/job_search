@@ -25,7 +25,7 @@
 
 hh.ru закрыл API для соискателей, поэтому бот ходит по сайту **в уже запущенном Firefox владельца** через Marionette
 под его логином, «как человек»: своё окно, три подхода в день со случайным стартом в окнах 07–10 / 12–15 / 18–22,
-внутри подхода серии ~7–13 мин листания с паузами ~4–9 мин, «чтение» страницы 6–20 с, подход стартует не позже чем за час
+внутри подхода серии ~7–13 мин листания с паузами ~4–9 мин (та же пауза между стадиями подхода), «чтение» страницы 6–20 с (каждая ~6-я 25–60 с), подход стартует не позже чем за час
 до конца окна и останавливается через 30 мин после его конца (остаток доли сгорает), дневной лимит — случайные
 150–200 загрузок, поделённые между оставшимися подходами; дайджест в 12:00 дооценивает загруженное и отправляет.
 **Только чтение**: никаких откликов и кликов по кнопкам сайта.
@@ -39,7 +39,7 @@ hh.ru закрыл API для соискателей, поэтому бот хо
 
 ## Быстрый старт для агента
 **Сначала** убедитесь, что браузером никто не пользуется: Marionette держит одну сессию, поэтому `check_browser.py`,
-`pipeline.run`, `collector`, `details`, `hh_pages` нельзя запускать, пока сервис `hh-scout` в сборе или идёт другой такой
+`pipeline.run`, `collector`, `details`, `hh_pages`, `sync_negotiations.py`, `profi_snapshot.py` нельзя запускать, пока сервис `hh-scout` в сборе или идёт другой такой
 процесс (`pgrep -f 'hh_scout.(pipeline|browser)'` должен быть пуст; в боте `/status` → «сбор идёт: нет»).
 ```bash
 cd "$(git rev-parse --show-toplevel)"                 # корень репо
@@ -70,6 +70,7 @@ bridge/   hh_scout_bridge.py  мост Claude: FastAPI → `claude -p` под п
           без инструментов по умолчанию, веб — только при `allow_web`); hh-scout-bridge.service.template, install.sh, .env.bridge(.example)
 scripts/  install_service.sh (sudo) · install_geckodriver.sh · setup_firefox.sh · check_browser.py · tg_whoami.py
           · tg_alert.sh (Telegram через curl для systemd OnFailure)
+          · sync_negotiations.py (разовый добор списка откликов, считается в лимите) · audit_title_filter.py
           · svc.sh (status/logs/start/stop/restart/reinstall/bridge-restart; не рестартует во время сбора) · grant_agent_control.sh
           (владелец, один раз: sudoers-правило из sudoers-hh-scout.template → рестарты без пароля, в т.ч. агентом)
 README.md · .gitignore · hh-scout.service.template + hh-scout-alert.service.template (юниты, рендерит install_service.sh) · pyproject.toml · requirements(-dev).txt
@@ -78,7 +79,7 @@ src/hh_scout/
   config.py        Settings из .env (порог, веса, лимиты, окна, ритм, токены) + константы: SEARCH_QUERIES (5),
                    REGION_NAMES (49 — запасной путь при SEARCH_ALL_RUSSIA=false; по умолчанию ищем по всей России),
                    TITLE_STOP/KEEP/REQUIRED_ANY;  logging_setup.py — логи в stdout/journald
-  db.py            SQLite (автокоммит, WAL), миграции _m001…_m010 (PRAGMA user_version), kv_get/kv_set, transaction(),
+  db.py            SQLite (автокоммит, WAL), миграции _m001…_m013 (PRAGMA user_version), kv_get/kv_set, transaction(),
                    backup() — ночная копия в data/backups/ (7 штук)
   main.py          сервис: aiogram polling + планировщик; первый старт помечает превью как sent
   scheduler.py     дайджест по cron, три подхода в день (окна, случайный старт, доля лимита), восстановление из kv,
@@ -88,10 +89,12 @@ src/hh_scout/
   hh/              areas.py (регионы из открытого api.hh.ru/areas, кэш) · salary.py (gross→net, только RUR/месяц; human_from_raw)
   profi/           pages.py — лента заказов profi.ru из DOM кабинета (OrderCard, parse_orders, ProfiBlocked); v7, PROFI_ENABLED
   llm/             bridge_client.py · prompts.py (сборка промптов) · schemas.py · triage.py (карточки → открывать?)
-                   evaluator.py (лид: техника/роль/лид) · cover_letter.py (письмо на лид)
+                   evaluator.py (лид: техника/роль/лид) · cover_letter.py (письмо на лид) · letter_checks.py (проверки текста кодом)
                    company_research.py (досье на работодателя из открытых источников → таблица `employers`;
                    единственный запрос, которому мост разрешает веб; идёт мимо браузера)
-  pipeline/        repo.py (весь SQL) · budget.py (дневной лимит) · collector.py (4 прохода: regional/remote/project/gph) ·
+  pipeline/        repo.py (весь SQL) · rows.py (row_get/row_site) · outcomes.py (исходы писем: полосы, зрелость, разрезы) ·
+                   negotiations.py (синхронизация откликов, общая для подхода и скрипта) · budget.py (дневной лимит) ·
+                   collector.py (4 прохода: regional/remote/project/gph) ·
                    prefilter.py · details.py · ranker.py (total, карточка)
                    digest_builder.py · dedup.py (одна компания — один лид) · run.py (оркестратор одного прогона)
   bot/             app.py (только владелец) · handlers.py (команды: /start=/help /status /digest /crawl [N] /next /pause /resume
@@ -160,7 +163,8 @@ hh отдаёт состояние переписки само:
 изменились, пока лид ждал в очереди, письмо переписывается перед отправкой, а не уходит по вчерашним правилам.
 **К читателю письмо не обращается по должности**: надписей «Для отдела кадров», «Для менеджера по подбору» и любых
 «Для <кого-то>:» в нём нет — абзац про подряд начинается сразу со смысла (п.5; уцелевшую надпись срезает
-`strip_role_address` в `pipeline/ranker.py` — и когда письмо пишется, и когда уходит в Telegram).
+`strip_role_address` в `llm/letter_checks.py` — и когда письмо пишется, и когда уходит в Telegram; там же проверки
+сумм, штампов и трёхстрочной подписи, и их текст входит в `rules_hash`).
 Финал работает на отложенный контакт: вторая фраза называет конкретный повод вернуться к подряду позже, подпись — три строки (имя, «работаю по договору (ИП)», телефон).
 Возможность ГПХ/ИП — **факт от hh**, а не мнение модели: `vacancies.accept_temporary` и `civil_law_contracts` (ИП /
 самозанятый / физлицо) из `browser/hh_pages.py`; `ip_gph_possible = "не указано"` в карточке означает, что вакансия
