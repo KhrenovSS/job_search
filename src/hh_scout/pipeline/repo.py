@@ -751,17 +751,20 @@ def work_totals(conn: sqlite3.Connection, since: datetime) -> dict[str, int]:
 def running_run(conn: sqlite3.Connection) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM runs WHERE status = 'running' ORDER BY id DESC LIMIT 1").fetchone()
 
-def fail_stale_runs(conn: sqlite3.Connection, max_age_hours: float = 3.0) -> int:
-    """Mark 'running' runs older than max_age_hours as failed (process was killed externally)."""
-    from datetime import datetime, timedelta, timezone
+def fail_stale_runs(conn: sqlite3.Connection, max_age_hours: float = 3.0, trigger: str | None = None) -> int:
+    """Mark 'running' runs older than max_age_hours as failed (process was killed externally).
 
+    `trigger` narrows it to one kind of run: the service calls it with `'schedule'` and 0 hours at start-up,
+    because a scheduled run cannot outlive the service that ran it.
+    """
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_age_hours)).replace(microsecond=0).isoformat()
-    cur = conn.execute(
-        "UPDATE runs SET status = 'failed', finished_at = ?, error = 'прерван внешне (процесс убит)' "
-        "WHERE status = 'running' AND started_at < ?",
-        (utcnow(), cutoff),
-    )
-    return cur.rowcount
+    sql = ("UPDATE runs SET status = 'failed', finished_at = ?, error = 'прерван внешне (процесс убит)' "
+           "WHERE status = 'running' AND started_at < ?")
+    params: list = [utcnow(), cutoff]
+    if trigger:
+        sql += " AND trigger = ?"
+        params.append(trigger)
+    return conn.execute(sql, params).rowcount
 
 
 def start_run(conn: sqlite3.Connection, trigger: str) -> int:

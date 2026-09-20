@@ -40,6 +40,8 @@ def policy_from_settings(settings: "Settings") -> PacingPolicy:
     gap_lo, gap_hi = settings.gap_seconds
     return PacingPolicy(
         page_delay_min_s=settings.page_delay_min_s, page_delay_max_s=settings.page_delay_max_s,
+        long_read_every=settings.long_read_every,
+        long_read_min_s=settings.long_read_min_s, long_read_max_s=settings.long_read_max_s,
         burst_min_s=burst_lo, burst_max_s=burst_hi, gap_min_s=gap_lo, gap_max_s=gap_hi,
     )
 
@@ -71,8 +73,33 @@ def monotonic() -> float:
     return time.monotonic()
 
 
+def _wheel(driver, dy: int) -> bool:
+    """Scroll with real wheel input events (what a person's mouse produces); False if the driver cannot."""
+    try:
+        from selenium.webdriver import ActionChains
+
+        ActionChains(driver).scroll_by_amount(0, dy).perform()
+        return True
+    except Exception:  # noqa: BLE001 — older driver, hidden page, anything: fall back to a scripted scroll
+        return False
+
+
+def _nudge_mouse(driver, rng: random.Random) -> None:
+    """A small pointer move, like a hand resting on the mouse. Out-of-viewport moves are simply skipped."""
+    try:
+        from selenium.webdriver import ActionChains
+
+        ActionChains(driver).move_by_offset(int(rng.uniform(20, 160)), int(rng.uniform(20, 120))).perform()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def scroll_like_human(driver, rng: random.Random | None = None) -> None:
-    """Scroll down in a few uneven steps, sometimes a bit back up. Errors are ignored."""
+    """Scroll down in a few uneven steps, sometimes a bit back up. Errors are ignored.
+
+    Wheel events first (v9.11): `window.scrollTo` moves the page but fires no input events, and a session
+    with hundreds of page views and not one wheel or pointer event is easy to tell from a person.
+    """
     rng = rng or random
     try:
         height = int(driver.execute_script("return document.body.scrollHeight") or 0)
@@ -80,17 +107,25 @@ def scroll_like_human(driver, rng: random.Random | None = None) -> None:
         return
     if height <= 0:
         return
+    if rng.random() < 0.5:
+        _nudge_mouse(driver, rng)
     target = rng.uniform(0.3, 0.9) * height
     pos = 0.0
+    scripted = False
     while pos < target:
-        pos += rng.uniform(250, 700)
-        try:
-            driver.execute_script("window.scrollTo(0, arguments[0]);", int(pos))
-        except WebDriverException:
-            return
+        step = rng.uniform(250, 700)
+        pos += step
+        if scripted or not _wheel(driver, int(step)):
+            scripted = True
+            try:
+                driver.execute_script("window.scrollTo(0, arguments[0]);", int(pos))
+            except WebDriverException:
+                return
         sleep(rng.uniform(0.3, 1.2))
     if rng.random() < 0.3:
-        try:
-            driver.execute_script("window.scrollBy(0, arguments[0]);", -int(rng.uniform(100, 400)))
-        except WebDriverException:
-            return
+        back = -int(rng.uniform(100, 400))
+        if scripted or not _wheel(driver, back):
+            try:
+                driver.execute_script("window.scrollBy(0, arguments[0]);", back)
+            except WebDriverException:
+                return

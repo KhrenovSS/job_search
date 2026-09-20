@@ -15,7 +15,7 @@ from typing import Callable
 
 from hh_scout.browser import pacing
 from hh_scout.browser.bursts import run_in_bursts
-from hh_scout.browser.session import BrowserSession, BrowserUnavailable
+from hh_scout.browser.session import BrowserSession, BrowserUnavailable, WindowRegistry
 from hh_scout.config import TZ, Settings
 from hh_scout.pipeline import repo
 from hh_scout.profi.pages import WAIT_MARKERS, ProfiBlocked, parse_orders
@@ -38,16 +38,19 @@ class ProfiStats:
 class ProfiCollector:
     def __init__(self, settings: Settings, conn: sqlite3.Connection, *,
                  session_factory: Callable[[int], BrowserSession] | None = None, rng: random.Random | None = None,
-                 gap_scale: float = 1.0, page_budget: int | None = None,
-                 should_stop: Callable[[], bool] | None = None) -> None:
+                 gap_scale: float = 1.0, page_budget: int = 0,
+                 should_stop: Callable[[], bool] | None = None, page_loads_before: int = 0) -> None:
         self.s = settings
         self.conn = conn
         self.rng = rng or random.Random()
         self.gap_scale = gap_scale
-        self.page_budget = page_budget if page_budget is not None else settings.profi_pages_per_run
+        self.page_budget = page_budget
         self.policy = pacing.policy_from_settings(settings)
-        self._session_factory = session_factory or (lambda budget: BrowserSession(settings, page_budget=budget, rng=self.rng))
+        registry = WindowRegistry(conn, reap=True)
+        self._session_factory = session_factory or (
+            lambda budget: BrowserSession(settings, page_budget=budget, rng=self.rng, registry=registry))
         self._should_stop = should_stop or (lambda: False)
+        self.page_loads_before = page_loads_before
         self.stats = ProfiStats()
 
     def _step(self, session: BrowserSession) -> bool:
@@ -66,9 +69,16 @@ class ProfiCollector:
         if self.page_budget <= 0:
             return self.stats
         log.info("profi.ru: смотрю ленту заказов (%s), бюджет %d", self.s.profi_orders_url, self.page_budget)
+
+        def after_burst(bs) -> None:
+            self.stats.page_loads = bs.page_loads   # also on a blocked feed: the page was loaded all the same
+            if run_id is not None:
+                repo.update_run(self.conn, run_id, page_loads=self.page_loads_before + bs.page_loads)
+
         try:
             bs = run_in_bursts(self._step, session_factory=self._session_factory, budget=self.page_budget, policy=self.policy,
-                               rng=self.rng, gap_scale=self.gap_scale, should_stop=self._should_stop, label="profi")
+                               rng=self.rng, gap_scale=self.gap_scale, should_stop=self._should_stop,
+                               after_burst=after_burst, label="profi")
             self.stats.page_loads = bs.page_loads
         except BrowserUnavailable as e:
             self.stats.blocked = f"браузер недоступен: {e}"

@@ -100,7 +100,7 @@ def analyze_report(report) -> list[Alert]:
     """Signs of a block or a broken parser in a finished `CrawlReport` (duck-typed, see pipeline/run.py)."""
     alerts: list[Alert] = []
     be = report.browser_error or ""
-    if "без данных" in be or "капча" in be.lower():
+    if getattr(report, "blocked", False):
         alerts.append(Alert("hh_blocked", "🚫 hh.ru не отдал данные — похоже на капчу или требование войти. Откройте hh.ru в этом "
                                           "Firefox, пройдите проверку/войдите; следующий подход продолжит сам."))
     elif "Marionette" in be or "geckodriver" in be:

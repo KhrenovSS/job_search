@@ -38,7 +38,11 @@ def run_in_bursts(
     after_burst: Callable[[BurstStats], None] | None = None,
     label: str = "",
 ) -> BurstStats:
-    """Call `step` repeatedly inside time-boxed bursts until it reports no more work or the budget is spent."""
+    """Call `step` repeatedly inside time-boxed bursts until it reports no more work or the budget is spent.
+
+    `after_burst` sees the totals after every burst — including one cut short by an exception (a blocked
+    page, a dead driver): the pages loaded before the failure happened on hh's side and must be counted.
+    """
     stats = BurstStats()
     more = True
     while more:
@@ -53,18 +57,20 @@ def run_in_bursts(
         stats.bursts += 1
         log.info("%sСерия %d: ~%.0f мин (осталось в бюджете %d)", f"[{label}] " if label else "", stats.bursts, duration / 60, remaining)
         deadline = pacing.monotonic() + duration
-        with session_factory(remaining) as session:
-            try:
-                while more and pacing.monotonic() < deadline:
-                    if should_stop and should_stop():
-                        break
-                    more = step(session)
-            except PageBudgetExceeded:
-                pass  # daily budget spent inside the burst; the loop above reports it
-            finally:
-                stats.page_loads += session.page_loads
-        if after_burst:
-            after_burst(stats)
+        try:
+            with session_factory(remaining) as session:
+                try:
+                    while more and pacing.monotonic() < deadline:
+                        if should_stop and should_stop():
+                            break
+                        more = step(session)
+                except PageBudgetExceeded:
+                    pass  # daily budget spent inside the burst; the loop above reports it
+                finally:
+                    stats.page_loads += session.page_loads
+        finally:
+            if after_burst:
+                after_burst(stats)
         if more and should_stop and should_stop():
             stats.stopped_reason = "остановлено"  # e.g. the sitting's deadline passed: no point in sleeping the gap
             break

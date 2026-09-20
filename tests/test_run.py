@@ -1,6 +1,17 @@
+import pytest
+
+from hh_scout.browser import pacing
 from hh_scout.browser.session import BrowserUnavailable
 from hh_scout.config import Settings
 from hh_scout.pipeline import repo, run as run_mod
+
+
+@pytest.fixture(autouse=True)
+def _no_real_pauses(monkeypatch):
+    """The pause between browser stages (v9.11) is real minutes; tests only record that it happened."""
+    pauses = []
+    monkeypatch.setattr(pacing, "sleep", lambda s: pauses.append(s))
+    return pauses
 
 
 class _Stats:
@@ -206,6 +217,7 @@ def test_profi_stage_runs_first_shares_the_budget_and_does_not_block_hh(monkeypa
     # the cabinet is logged out: profi is reported, hh still crawls; profi disabled -> never constructed
     class BlockedProfi(FakeProfi):
         def run(self, run_id):
+            self.stats = _Stats(page_loads=1)   # the feed page was loaded before the missing cabinet was noticed
             raise ProfiBlocked("нет кабинета")
 
     monkeypatch.setattr(run_mod, "ProfiCollector", BlockedProfi)
@@ -339,3 +351,80 @@ def _fake_stage():
             return _Stats(page_loads=0, outcomes={}, opened=0, bridge_calls=0, evaluated=0, written=0,
                           new_vacancies=0, search_pages=0, cards_seen=0, not_logged_in=False, format_errors=0)
     return Fake
+
+
+# --- v9.11: the rhythm holds across stages, a block stops the run and is reported ------------------
+
+def test_a_pause_separates_collection_from_vacancy_pages(monkeypatch, tmp_path, _no_real_pauses):
+    """collect → details used to be gapless: ~20 minutes of loading per sitting instead of 7–13-minute bursts."""
+    order = []
+
+    class FakeCollector:
+        def __init__(self, *a, **kw):
+            pass
+
+        def run(self, run_id):
+            order.append("collect")
+            return _Stats(page_loads=12, new_vacancies=3, search_pages=12, cards_seen=50, not_logged_in=False)
+
+    class FakeDetails:
+        def __init__(self, *a, **kw):
+            pass
+
+        def run(self, run_id):
+            order.append(("details", len(_no_real_pauses)))
+            return _Stats(page_loads=5, outcomes={"prefiltered": 5})
+
+    _noop_bridge_steps(monkeypatch)
+    monkeypatch.setattr(run_mod, "Collector", FakeCollector)
+    monkeypatch.setattr(run_mod, "DetailsFetcher", FakeDetails)
+    s = Settings(_env_file=None, prompts_dir=tmp_path, daily_page_loads_min=50, daily_page_loads_max=50)
+    run_mod.run_crawl(s, tmp_path / "t.db", "schedule", budget=40)
+    assert order == ["collect", ("details", 1)]         # exactly one gap slept before the vacancy pages
+    assert 4 * 60 <= _no_real_pauses[0] <= 9 * 60
+
+    # nothing was loaded by the collector -> no pause either
+    class IdleCollector(FakeCollector):
+        def run(self, run_id):
+            return _Stats(page_loads=0, new_vacancies=0, search_pages=0, cards_seen=0, not_logged_in=False)
+
+    monkeypatch.setattr(run_mod, "Collector", IdleCollector)
+    _no_real_pauses.clear()
+    run_mod.run_crawl(s, tmp_path / "t2.db", "schedule", budget=40)
+    assert _no_real_pauses == []
+
+
+def test_a_blocked_search_stops_the_run_flags_it_and_keeps_the_pages_it_loaded(monkeypatch, tmp_path):
+    from hh_scout.browser.session import HHBlocked
+
+    calls = []
+
+    class BlockedCollector:
+        def __init__(self, *a, **kw):
+            self.stats = _Stats(page_loads=4, new_vacancies=7)
+
+        def run(self, run_id):
+            calls.append("collect")
+            raise HHBlocked("hh.ru вернул страницу без данных (заголовок: 'Проверка')")
+
+    class FakeDetails:
+        def __init__(self, *a, **kw):
+            pass
+
+        def run(self, run_id):
+            calls.append("details")
+            return _Stats(page_loads=1, outcomes={})
+
+    _noop_bridge_steps(monkeypatch)
+    monkeypatch.setattr(run_mod, "Collector", BlockedCollector)
+    monkeypatch.setattr(run_mod, "DetailsFetcher", FakeDetails)
+    s = Settings(_env_file=None, prompts_dir=tmp_path, daily_page_loads_min=50, daily_page_loads_max=50)
+    report = run_mod.run_crawl(s, tmp_path / "t.db", "schedule", budget=20)
+    assert calls == ["collect"]                       # no fresh session into the block
+    assert report.blocked and not report.ok and report.page_loads == 4 and report.new_vacancies == 7
+    assert "🚫 hh.ru" in report.as_text()
+    from hh_scout import health
+    assert [a.key for a in health.analyze_report(report)] == ["hh_blocked"]
+    from hh_scout.db import open_db
+    last = repo.last_run(open_db(tmp_path / "t.db"))
+    assert last["status"] == "failed" and last["page_loads"] == 4

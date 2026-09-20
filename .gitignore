@@ -18,3 +18,6 @@ docs/archive/2026-09-08-initial-vision/
 
 # Claude Code worktrees of background agents
 .claude/worktrees/
+
+# worktree helper: symlink to the main checkout's venv
+.venv

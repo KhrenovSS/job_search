@@ -3,7 +3,10 @@
 Firefox must have been started with `--marionette` (see scripts/setup_firefox.sh); Marionette
 listens on 127.0.0.1:2828. For every pipeline run we spawn a short-lived geckodriver that
 connects to that port, open our own browser window, browse, close the window and detach.
-The owner's tabs are never touched.
+The owner's tabs are never touched: we never switch into them and never run scripts there.
+
+The window we open is remembered by its handle in the `kv` table (`WindowRegistry`), not by anything the page
+can see: `window.name` used to carry a literal "hh-scout-bot" label that any script on hh.ru could read (v9.11).
 """
 
 from __future__ import annotations
@@ -12,6 +15,7 @@ import logging
 import random
 import shutil
 import socket
+import sqlite3
 import subprocess
 import time
 from dataclasses import dataclass
@@ -24,6 +28,7 @@ from selenium.common.exceptions import TimeoutException, WebDriverException
 from hh_scout.browser import pacing
 from hh_scout.browser.hh_pages import HH_STATE_MARKER, extract_initial_state
 from hh_scout.config import Settings
+from hh_scout.db import kv_get, kv_set
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +36,8 @@ log = logging.getLogger(__name__)
 # arrives with the document), then a poll for the markup itself. See decision #39.
 PAGE_LOAD_TIMEOUT_S = 15.0
 MARKUP_WAIT_S = 20.0
+HH_HOST = "https://hh.ru"
+WINDOW_HANDLE_KEY = "bot_window_handle"
 
 
 class BrowserUnavailable(RuntimeError):
@@ -54,6 +61,26 @@ class BrowserInfo:
     title: str
 
 
+class WindowRegistry:
+    """Where the handle of our own window is kept between processes, so an interrupted run can be tidied up.
+
+    Kept in `kv` (one row), invisible to the page. Only a pipeline run may reap a stray window (`reap=True`):
+    it holds the `runs.status='running'` guard, so a remembered handle can only be a leftover. Diagnostic CLIs
+    (`check_browser.py`) never reap — the handle they would find may belong to a live sitting.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, *, reap: bool = False) -> None:
+        self.conn = conn
+        self.reap = reap
+
+    def remembered(self) -> str | None:
+        return kv_get(self.conn, WINDOW_HANDLE_KEY)
+
+    def remember(self, handle: str | None) -> None:
+        with self.conn:
+            kv_set(self.conn, WINDOW_HANDLE_KEY, handle)
+
+
 def _port_open(host: str, port: int, timeout: float = 1.0) -> bool:
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -68,21 +95,24 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-BOT_WINDOW_NAME = "hh-scout-bot"
-
-
 class BrowserSession:
-    """Context manager around geckodriver + Selenium Remote for an existing Firefox."""
+    """Context manager around geckodriver + Selenium Remote for an existing Firefox.
 
-    def __init__(self, settings: Settings, *, page_budget: int | None = None, rng: random.Random | None = None) -> None:
+    `page_budget` is how many pages this session may load; there is no implicit default — a caller that
+    forgets it gets 0, not the whole day's cap (v9.11).
+    """
+
+    def __init__(self, settings: Settings, *, page_budget: int = 0, rng: random.Random | None = None,
+                 registry: WindowRegistry | None = None) -> None:
         self._s = settings
         self._proc: subprocess.Popen[bytes] | None = None
         self._driver: webdriver.Remote | None = None
         self._own_window: str | None = None
         self.page_loads = 0
-        self.page_budget = page_budget if page_budget is not None else settings.daily_page_loads_max
+        self.page_budget = page_budget
         self._rng = rng or random.Random()
         self.policy = pacing.policy_from_settings(settings)
+        self._registry = registry
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -124,32 +154,31 @@ class BrowserSession:
             self._kill_driver()
             raise BrowserUnavailable(f"не удалось открыть сессию Marionette: {e.msg}") from e
         log.info("Подключились к Firefox %s через geckodriver :%d", self.info().browser_version, gd_port)
-        self.close_stray_bot_windows()
+        self.reap_stray_window()
         return self
 
-    def close_stray_bot_windows(self) -> int:
-        """Close windows left behind by an interrupted run (marked with window.name)."""
+    def reap_stray_window(self) -> bool:
+        """Close the window an interrupted run left behind, if the registry allows it and it still exists.
+
+        Only the remembered handle is touched — never any other window, so the owner's tabs stay where they are.
+        """
+        if self._registry is None or not self._registry.reap:
+            return False
+        handle = self._registry.remembered()
+        if not handle:
+            return False
         d = self.driver
-        closed = 0
+        closed = False
         try:
-            handles = list(d.window_handles)
-            for h in handles:
-                if len(d.window_handles) <= 1:
-                    break
-                d.switch_to.window(h)
-                try:
-                    name = d.execute_script("return window.name")
-                except WebDriverException:
-                    continue
-                if name == BOT_WINDOW_NAME:
-                    d.close()
-                    closed += 1
-            if d.window_handles:
+            if handle in d.window_handles and len(d.window_handles) > 1:
+                d.switch_to.window(handle)
+                d.close()
                 d.switch_to.window(d.window_handles[0])
+                log.info("Закрыто окно, оставшееся от прерванного прогона")
+                closed = True
         except WebDriverException as e:
-            log.warning("Не удалось проверить старые окна бота: %s", e.msg)
-        if closed:
-            log.info("Закрыто окон, оставшихся от прерванного прогона: %d", closed)
+            log.warning("Не удалось закрыть старое окно бота: %s", e.msg)
+        self._registry.remember(None)
         return closed
 
     def close(self) -> None:
@@ -160,11 +189,14 @@ class BrowserSession:
                     self._driver.switch_to.window(self._own_window)
                     if len(self._driver.window_handles) > 1:
                         self._driver.close()
+                        self._own_window = None
             except WebDriverException as e:
                 log.warning("Не удалось закрыть своё окно: %s", e.msg)
             # Do NOT call driver.quit(): in --connect-existing mode geckodriver would ask
             # Firefox to shut down. Killing geckodriver simply detaches the session.
             self._driver = None
+        if self._registry is not None and self._own_window is None:
+            self._registry.remember(None)   # a window we could not close stays remembered for the next run
         self._kill_driver()
 
     def _kill_driver(self) -> None:
@@ -213,10 +245,8 @@ class BrowserSession:
         new = set(d.window_handles) - before
         self._own_window = next(iter(new)) if new else d.current_window_handle
         d.switch_to.window(self._own_window)
-        try:
-            d.execute_script("window.name = arguments[0];", BOT_WINDOW_NAME)
-        except WebDriverException as e:
-            log.debug("Не удалось пометить окно: %s", e.msg)
+        if self._registry is not None:
+            self._registry.remember(self._own_window)
 
     # -- browsing ------------------------------------------------------------
 
@@ -244,6 +274,40 @@ class BrowserSession:
                 return False
             time.sleep(0.5)
 
+    def _navigate(self, url: str) -> None:
+        """Go to `url` the way a person's browser would.
+
+        From a page on the same site the move is made by the page itself (`location.assign`), so the request
+        carries a Referer like a click would; `driver.get()` sends none, and twenty referrer-less loads of
+        `search/vacancy?…&page=N` in a row read as a script (v9.11). The first page of a window, a move to
+        another host, or a navigation that does not commit within PAGE_LOAD_TIMEOUT_S fall back to `get()`.
+        """
+        d = self.driver
+        d.set_page_load_timeout(PAGE_LOAD_TIMEOUT_S)
+        try:
+            current = str(d.current_url or "")
+        except WebDriverException:
+            current = ""
+        same_site = current.startswith(HH_HOST) and url.startswith(HH_HOST) and current != url
+        if same_site:
+            try:
+                d.execute_script("location.assign(arguments[0]);", url)
+                deadline = time.monotonic() + PAGE_LOAD_TIMEOUT_S
+                while time.monotonic() < deadline:
+                    time.sleep(0.25)
+                    try:
+                        if d.current_url != current and d.execute_script("return document.readyState") != "loading":
+                            return
+                    except WebDriverException:
+                        pass
+                log.debug("Переход из страницы не завершился за %.0f с — открываю адресом: %s", PAGE_LOAD_TIMEOUT_S, url)
+            except WebDriverException as e:
+                log.debug("location.assign не сработал (%s) — открываю адресом", e.msg)
+        try:
+            d.get(url)
+        except TimeoutException:
+            log.debug("get() не вернулся за %.0f с — ждём разметку: %s", PAGE_LOAD_TIMEOUT_S, url)
+
     def open_raw(self, url: str, wait_for: Sequence[str] = ()) -> str:
         """Load any page in our own window like a person would and return its rendered HTML.
 
@@ -256,18 +320,11 @@ class BrowserSession:
             raise PageBudgetExceeded(f"лимит {self.page_budget} загрузок страниц за прогон исчерпан")
         self.open_own_window()
         d = self.driver
-        d.set_page_load_timeout(PAGE_LOAD_TIMEOUT_S)
-        try:
-            d.get(url)
-        except TimeoutException:
-            log.debug("get() не вернулся за %.0f с — ждём разметку: %s", PAGE_LOAD_TIMEOUT_S, url)
+        # Counted before the request leaves: a load that fails half-way still happened on hh's side.
         self.page_loads += 1
+        self._navigate(url)
         if wait_for and not self._wait_for_markers(wait_for):
             log.warning("Страница без ожидаемой разметки за %.0f с: %s", MARKUP_WAIT_S, url)
-        try:
-            d.execute_script("window.name = arguments[0];", BOT_WINDOW_NAME)
-        except WebDriverException:
-            pass
         pacing.sleep(self._rng.uniform(1.5, 3.5))  # let the SPA settle
         pacing.scroll_like_human(d, self._rng)
         source = d.page_source

@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     geckodriver_path: str = ""  # empty -> look up "geckodriver" in PATH (incl. ~/.local/bin)
     page_delay_min_s: float = 6.0  # human-like "reading" pause after each page load, seconds
     page_delay_max_s: float = 20.0
+    # Every ~N-th page gets a long "reading" pause instead (a person stops on something interesting).
+    long_read_every: int = 6
+    long_read_min_s: float = 25.0
+    long_read_max_s: float = 60.0
     # Daily page-load cap (search + vacancy pages, all processes): drawn once per day at random from this range
     # and stored in kv `daily_cap:<date>` so the number differs from day to day.
     daily_page_loads_min: int = 150   # raised from 100-140 (v9.5): sittings spend their share to the last page
@@ -125,6 +129,42 @@ class Settings(BaseSettings):
     @classmethod
     def _empty_to_none(cls, v: object) -> object:
         return None if v in ("", None) else v
+
+    # The pacing knobs are the account's safety margin: a typo in .env must not silently turn the bot into
+    # a metronome with zero pauses (v9.11). Bursts and gaps are already checked by `_parse_minutes_range`.
+    @field_validator("page_delay_min_s")
+    @classmethod
+    def _delay_min(cls, v: float) -> float:
+        if v < 3:
+            raise ValueError("PAGE_DELAY_MIN_S: пауза чтения меньше 3 с — это не человек")
+        return v
+
+    @field_validator("page_delay_max_s", "long_read_max_s")
+    @classmethod
+    def _delay_positive(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("пауза должна быть больше нуля")
+        return v
+
+    @field_validator("long_read_every")
+    @classmethod
+    def _long_read_every(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("LONG_READ_EVERY должен быть не меньше 1")
+        return v
+
+    @field_validator("details_budget_share")
+    @classmethod
+    def _share(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("DETAILS_BUDGET_SHARE должен быть долей от 0 до 1")
+        return v
+
+    def model_post_init(self, __context: object) -> None:
+        if self.page_delay_max_s < self.page_delay_min_s:
+            raise ValueError("PAGE_DELAY_MAX_S меньше PAGE_DELAY_MIN_S")
+        if self.long_read_max_s < self.long_read_min_s:
+            raise ValueError("LONG_READ_MAX_S меньше LONG_READ_MIN_S")
 
     @property
     def digest_time_parsed(self) -> time:

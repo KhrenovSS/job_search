@@ -196,22 +196,24 @@ class _PagedSession:
             "paging": {"next": {"disabled": served + 1 >= self.pages}}}}
 
 
-def _collector(conn, pages=3):
-    from hh_scout.pipeline.collector import Collector
-    return Collector(Settings(_env_file=None, negotiations_pages=pages), conn)
+def _sync(pages=3):
+    from hh_scout.pipeline.negotiations import NegotiationsSync
+    return NegotiationsSync(pages=pages)
 
 
-def _walk(collector, session):
-    neg = {"page": 0, "done": False, "seen": set()}
-    while not neg["done"]:
-        collector._sync_negotiations_page(session, neg)
-    return neg
+def _walk(conn, session, pages=3):
+    """The loop a sitting runs page by page (`Collector.run` → `negotiations.sync_page`)."""
+    from hh_scout.pipeline.negotiations import sync_page
+    sync = _sync(pages)
+    while not sync.done:
+        sync_page(conn, session, sync)
+    return sync
 
 
 def test_the_sitting_reads_three_pages_instead_of_the_newest_twenty():
     conn = _db()
     session = _PagedSession(pages=5)
-    _walk(_collector(conn, pages=3), session)
+    _walk(conn, session, pages=3)
     assert session.urls == [negotiations_url(0), negotiations_url(1), negotiations_url(2)]
     assert conn.execute("SELECT COUNT(*) FROM vacancies WHERE applied=1").fetchone()[0] == 6
 
@@ -219,7 +221,7 @@ def test_the_sitting_reads_three_pages_instead_of_the_newest_twenty():
 def test_paging_stops_at_the_end_of_the_list_without_wasting_a_load():
     conn = _db()
     session = _PagedSession(pages=2)
-    _walk(_collector(conn, pages=5), session)
+    _walk(conn, session, pages=5)
     assert len(session.urls) == 2          # `has_next` said so — no empty third load
 
 
@@ -227,7 +229,7 @@ def test_a_repeated_page_stops_the_walk_after_one_wasted_load():
     """If hh ignores `page=`, the cost of finding out must be one load, not two every sitting forever."""
     conn = _db()
     session = _PagedSession(pages=5, repeat=True)
-    _walk(_collector(conn, pages=3), session)
+    _walk(conn, session, pages=3)
     assert len(session.urls) == 2
     assert conn.execute("SELECT COUNT(*) FROM vacancies WHERE applied=1").fetchone()[0] == 2
 
@@ -235,10 +237,11 @@ def test_a_repeated_page_stops_the_walk_after_one_wasted_load():
 def test_the_budget_running_out_on_page_two_keeps_page_one(caplog):
     from hh_scout.browser.session import PageBudgetExceeded
     conn = _db()
+    from hh_scout.pipeline.negotiations import sync_page
     session = _PagedSession(pages=5, budget=1)
-    c, neg = _collector(conn), {"page": 0, "done": False, "seen": set()}
-    c._sync_negotiations_page(session, neg)
+    sync = _sync(3)
+    sync_page(conn, session, sync)
     with pytest.raises(PageBudgetExceeded):
-        c._sync_negotiations_page(session, neg)
+        sync_page(conn, session, sync)
     assert conn.execute("SELECT COUNT(*) FROM vacancies WHERE applied=1").fetchone()[0] == 2
-    assert neg["page"] == 2                # the cursor moved past the failed page, so it is not re-read blind
+    assert sync.page == 2                  # the cursor moved past the failed page, so it is not re-read blind

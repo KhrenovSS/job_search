@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import argparse
 import logging
+import random
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from hh_scout.browser import pacing
 from hh_scout.browser.session import BrowserUnavailable, HHBlocked
 from hh_scout.config import TZ, Settings
 from hh_scout.db import open_db
@@ -57,6 +59,7 @@ class CrawlReport:
     letters: int = 0
     bridge_calls: int = 0
     browser_error: str | None = None
+    blocked: bool = False              # hh.ru answered without data (captcha / login): browsing stopped for this run
     bridge_error: str | None = None
     errors: list[str] = field(default_factory=list)
     duration_s: float = 0.0
@@ -86,11 +89,25 @@ class CrawlReport:
         if self.profi_error:
             lines.append(f"profi.ru: {self.profi_error}")
         if self.browser_error:
-            lines.append(f"Браузер: {self.browser_error}")
+            lines.append(("🚫 hh.ru: " if self.blocked else "Браузер: ") + self.browser_error)
         if self.bridge_error:
             lines.append(f"Мост Claude: {self.bridge_error}")
         lines += [f"Ошибка: {e}" for e in self.errors]
         return "\n".join(lines)
+
+
+def _rest_between_stages(report: CrawlReport, settings: Settings, rng: random.Random, gap_scale: float,
+                         stop: Callable[[], bool], loaded_before: int) -> None:
+    """A pause between two browser stages of one run, the same one bursts keep between themselves.
+
+    `run_in_bursts` sleeps only while *its own* work remains, so the hand-off collect → details used to be
+    gapless: every sitting browsed ~20 minutes without a break, twice the burst it claims to keep (v9.11).
+    """
+    if report.page_loads <= loaded_before or report.browser_error or stop():
+        return
+    gap = pacing.gap_between_bursts(pacing.policy_from_settings(settings), rng) * gap_scale
+    log.info("Пауза перед следующей стадией %.0f мин", gap / 60)
+    pacing.sleep(gap)
 
 
 def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", *, budget: int | None = None,
@@ -100,6 +117,7 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
     conn = open_db(db_path)
     report = CrawlReport(trigger=trigger, deadline=deadline)
     started = time.monotonic()
+    rng = random.Random()
 
     def stop() -> bool:
         if should_stop and should_stop():
@@ -110,6 +128,15 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
             report.deadline_hit = True
             return True
         return False
+
+    def blocked(e: HHBlocked) -> None:
+        report.browser_error = str(e)
+        report.blocked = True
+
+    def loaded(stage, result) -> int:
+        """Pages a stage loaded: from its result, or from its own tally when it raised half-way."""
+        stats = result if result is not None else getattr(stage, "stats", None)
+        return int(getattr(stats, "page_loads", 0) or 0)
 
     with conn:
         repo.fail_stale_runs(conn, stale_hours)
@@ -127,42 +154,48 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
 
     # 1a. profi.ru orders feed (one page, read-only) — before hh.ru so a rare order is never starved by the budget
     if settings.profi_enabled and budget > 0:
+        pc = ProfiCollector(settings, conn, gap_scale=gap_scale, page_budget=min(settings.profi_pages_per_run, budget),
+                            should_stop=stop, page_loads_before=report.page_loads)
+        ps = None
         try:
-            pc = ProfiCollector(settings, conn, gap_scale=gap_scale, page_budget=min(settings.profi_pages_per_run, budget),
-                                should_stop=stop)
             ps = pc.run(run_id)
-            report.page_loads += ps.page_loads
             report.profi_orders, report.profi_new = ps.orders_seen, ps.new_orders
         except BrowserUnavailable as e:
             report.browser_error = str(e)
         except ProfiBlocked as e:
             report.profi_error = str(e)
-            report.page_loads += 1  # the feed page was loaded even though it had no cabinet
         except Exception as e:  # noqa: BLE001
             # A secondary source must never fail an hh.ru run: the message goes to profi_error (health.py
             # turns it into a soft alert), not to errors. Keep it short — a Marionette stacktrace would
             # otherwise land whole in runs.error and in the alert text.
             log.exception("profi.ru упал")
             report.profi_error = f"лента недоступна ({e.__class__.__name__})"
+        report.page_loads += loaded(pc, ps)   # counted even when the feed had no cabinet: it was loaded all the same
 
     # 1. collect — hold back a share of the budget so step 4 always has pages left for vacancy descriptions.
     # Without it a wide search eats the whole sitting and nothing is ever opened (no evaluations, no leads).
     details_reserve = int(round(budget * settings.details_budget_share))
     hh_budget = max(0, budget - report.page_loads - details_reserve)
     if hh_budget > 0 and report.browser_error is None:
+        _rest_between_stages(report, settings, rng, gap_scale, stop, loaded_before=0)
+        c = Collector(settings, conn, gap_scale=gap_scale, page_budget=hh_budget, should_stop=stop,
+                      page_loads_before=report.page_loads)
+        loaded_before = report.page_loads
+        st = None
         try:
-            c = Collector(settings, conn, gap_scale=gap_scale, page_budget=hh_budget, should_stop=stop)
             st = c.run(run_id)
-            report.page_loads += st.page_loads
             report.new_vacancies = st.new_vacancies
             report.search_pages, report.cards_seen, report.not_logged_in = st.page_loads, st.cards_seen, st.not_logged_in
         except BrowserUnavailable as e:
             report.browser_error = str(e)
         except HHBlocked as e:
-            report.browser_error = str(e)
+            blocked(e)
+            cs = getattr(c, "stats", None)
+            report.new_vacancies = int(getattr(cs, "new_vacancies", 0) or 0)
         except Exception as e:  # noqa: BLE001
             log.exception("Сбор упал")
             report.errors.append(f"сбор: {e}")
+        report.page_loads = loaded_before + loaded(c, st)
     elif budget - report.page_loads <= 0:
         # Genuinely out of pages. A zero hh_budget caused only by the reserve is not an error:
         # the whole budget then goes to vacancy pages in step 4.
@@ -206,20 +239,24 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
         report.errors.append(f"списание: {e}")
     remaining = max(0, budget - report.page_loads)
     if report.browser_error is None and remaining > 0:
+        _rest_between_stages(report, settings, rng, gap_scale, stop, loaded_before=0)
+        d = DetailsFetcher(settings, conn, gap_scale=gap_scale, page_budget=remaining, should_stop=stop,
+                           page_loads_before=report.page_loads)
+        loaded_before = report.page_loads
+        ds = None
         try:
-            d = DetailsFetcher(settings, conn, gap_scale=gap_scale, page_budget=remaining, should_stop=stop)
             ds = d.run(run_id)
-            report.page_loads += ds.page_loads
             report.details = ds.outcomes.get("prefiltered", 0)
             report.format_errors = ds.outcomes.get("format_error", 0)
             report.duplicate_employers += ds.outcomes.get("duplicate_employer", 0)
         except BrowserUnavailable as e:
             report.browser_error = str(e)
         except HHBlocked as e:
-            report.browser_error = str(e)
+            blocked(e)
         except Exception as e:  # noqa: BLE001
             log.exception("Описания упали")
             report.errors.append(f"описания: {e}")
+        report.page_loads = loaded_before + loaded(d, ds)
 
     # 5. evaluate + 6. letters (bridge)
     if report.bridge_error is None:

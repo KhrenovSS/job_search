@@ -175,3 +175,34 @@ def test_geography_defaults_to_the_whole_country(monkeypatch):
     regional = [u for u in loads if "area=" in u]
     assert regional and all(f"area={RUSSIA_ID}" in u for u in regional)
     assert not any("area=1&" in u or "area=2019" in u for u in loads)
+
+
+def test_a_blocked_page_is_raised_not_swallowed(monkeypatch):
+    """v9.11: the orchestrator must see the block, or it opens a new session straight into it."""
+    from hh_scout.browser.session import HHBlocked
+    import pytest
+
+    c, conn, loads = _make(monkeypatch)
+
+    class BlockedSession(FakeSession):
+        def open(self, url):
+            if len(self.log) >= 2:
+                raise HHBlocked("капча")
+            return super().open(url)
+
+    c._session_factory = lambda b: BlockedSession(b, loads)
+    with pytest.raises(HHBlocked):
+        c.run()
+    assert c.stats.page_loads == 2 and "hh.ru не отдал страницу" in c.stats.stopped_reason
+
+
+def test_backfill_walk_goes_through_bursts_and_reports_every_page(monkeypatch):
+    """scripts/sync_negotiations.py walks the list the way a sitting does, and its loads land in `runs`."""
+    from hh_scout.pipeline import negotiations
+
+    c, conn, loads = _make(monkeypatch)
+    totals = []
+    sync, stats = negotiations.walk(conn, c.s, session_factory=lambda b: FakeSession(b, loads), pages=5, budget=10,
+                                    rng=random.Random(0), after_burst=lambda bs: totals.append(bs.page_loads))
+    assert stats.page_loads == 1 and totals == [1]     # the fake list has no `paging` -> one page, then done
+    assert sync.synced == 2 and all("negotiations" in u for u in loads)

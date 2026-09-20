@@ -21,7 +21,7 @@ from typing import Callable
 from hh_scout.browser import pacing
 from hh_scout.browser.bursts import run_in_bursts
 from hh_scout.browser.hh_pages import PageFormatError, parse_vacancy, vacancy_url
-from hh_scout.browser.session import BrowserSession, BrowserUnavailable, HHBlocked
+from hh_scout.browser.session import BrowserSession, BrowserUnavailable, HHBlocked, WindowRegistry
 from hh_scout.config import Settings
 from hh_scout.pipeline import dedup, repo
 
@@ -42,16 +42,19 @@ class DetailsStats:
 
 class DetailsFetcher:
     def __init__(self, settings: Settings, conn: sqlite3.Connection, *, session_factory: Callable[[int], BrowserSession] | None = None,
-                 rng: random.Random | None = None, gap_scale: float = 1.0, page_budget: int | None = None,
-                 should_stop: Callable[[], bool] | None = None) -> None:
+                 rng: random.Random | None = None, gap_scale: float = 1.0, page_budget: int = 0,
+                 should_stop: Callable[[], bool] | None = None, page_loads_before: int = 0) -> None:
         self.s = settings
         self.conn = conn
         self.rng = rng or random.Random()
         self.gap_scale = gap_scale
-        self.page_budget = page_budget if page_budget is not None else settings.daily_page_loads_max
+        self.page_budget = page_budget
         self.policy = pacing.policy_from_settings(settings)
-        self._session_factory = session_factory or (lambda budget: BrowserSession(settings, page_budget=budget, rng=self.rng))
+        registry = WindowRegistry(conn, reap=True)
+        self._session_factory = session_factory or (
+            lambda budget: BrowserSession(settings, page_budget=budget, rng=self.rng, registry=registry))
         self._should_stop = should_stop or (lambda: False)
+        self.page_loads_before = page_loads_before   # the run's earlier stages; `runs.page_loads` is a total
         self.stats = DetailsStats()
         self._done: set[str] = set()
 
@@ -97,7 +100,8 @@ class DetailsFetcher:
         def after_burst(bs) -> None:
             self.stats.page_loads, self.stats.bursts = bs.page_loads, bs.bursts
             if run_id is not None:
-                repo.update_run(self.conn, run_id, prefiltered=self.stats.outcomes["prefiltered"], page_loads=self.stats.page_loads)
+                repo.update_run(self.conn, run_id, prefiltered=self.stats.outcomes["prefiltered"],
+                                page_loads=self.page_loads_before + self.stats.page_loads)
 
         try:
             bs = run_in_bursts(self._step, session_factory=self._session_factory, budget=self.page_budget, policy=self.policy,
@@ -110,7 +114,8 @@ class DetailsFetcher:
             raise
         except HHBlocked as e:
             self.stats.stopped_reason = f"hh.ru не отдал страницу: {e}"
-            log.error("Загрузка описаний остановлена мягко: %s", e)
+            log.error("Загрузка описаний остановлена: %s", e)
+            raise   # v9.11: the orchestrator reports the block; a swallowed one never reached the owner
         log.info("Описания: %s", self.stats.as_text())
         return self.stats
 

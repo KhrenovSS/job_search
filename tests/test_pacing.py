@@ -47,3 +47,18 @@ def test_scroll_like_human_scrolls_without_sleeping(monkeypatch):
     scrolls = [c for c in d.calls if "scrollTo" in c[0]]
     assert len(scrolls) >= 2
     assert all(0 < c[1][0] <= 3000 for c in scrolls)
+
+
+def test_settings_refuse_a_metronome():
+    import pytest
+    from hh_scout.config import Settings
+
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, page_delay_min_s=0)
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, page_delay_min_s=10, page_delay_max_s=5)
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, details_budget_share=1.5)
+    s = Settings(_env_file=None, long_read_every=4, long_read_min_s=30, long_read_max_s=40)
+    from hh_scout.browser.pacing import policy_from_settings
+    assert policy_from_settings(s).long_read_every == 4 and policy_from_settings(s).long_read_max_s == 40

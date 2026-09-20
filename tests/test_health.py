@@ -56,6 +56,7 @@ def test_day_summary_marks_shortfall():
 class _Report:
     def __init__(self, **kw):
         self.browser_error = None
+        self.blocked = False
         self.bridge_error = None
         self.details = 0
         self.__dict__.update(kw)
@@ -63,7 +64,9 @@ class _Report:
 
 def test_analyze_report_detects_block_and_markup_changes():
     keys = lambda r: [a.key for a in health.analyze_report(r)]  # noqa: E731
-    assert keys(_Report(browser_error="hh.ru вернул страницу без данных (заголовок: 'Проверка')")) == ["hh_blocked"]
+    assert keys(_Report(browser_error="hh.ru вернул страницу без данных (заголовок: 'Проверка')", blocked=True)) == ["hh_blocked"]
+    # the flag, not the wording, is the signal (v9.11): a browser error text alone is not a block
+    assert keys(_Report(browser_error="hh.ru вернул страницу без данных")) == []
     assert keys(_Report(browser_error="Marionette не отвечает на 127.0.0.1:2828")) == ["browser_down"]
     assert keys(_Report(not_logged_in=True)) == ["not_applicant"]
     assert keys(_Report(search_pages=9, cards_seen=0)) == ["no_cards"]

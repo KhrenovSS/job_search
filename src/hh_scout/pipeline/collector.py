@@ -15,27 +15,17 @@ import logging
 import random
 import sqlite3
 import time
-from dataclasses import dataclass, field
-from typing import Any, Callable
+from dataclasses import dataclass
+from typing import Callable
 
 from hh_scout.browser import pacing
 from hh_scout.browser.bursts import run_in_bursts
-from hh_scout.browser.hh_pages import (
-    SearchPage,
-    VacancyCard,
-    build_search_url,
-    negotiations_has_next,
-    negotiations_url,
-    parse_negotiations,
-    parse_search,
-    parse_suitable,
-    user_type,
-)
-from hh_scout.browser.session import BrowserSession, BrowserUnavailable, HHBlocked, PageBudgetExceeded
+from hh_scout.browser.hh_pages import SearchPage, VacancyCard, build_search_url, parse_search
+from hh_scout.browser.session import BrowserSession, BrowserUnavailable, HHBlocked, WindowRegistry
 from hh_scout.config import SEARCH_QUERIES, Settings
 from hh_scout.db import transaction
 from hh_scout.hh.areas import RUSSIA_ID, resolve_region_ids
-from hh_scout.pipeline import repo
+from hh_scout.pipeline import negotiations, repo
 
 log = logging.getLogger(__name__)
 
@@ -43,7 +33,7 @@ PASS_REGIONAL = "regional"   # geography pass: the whole country by default, or 
 PASS_REMOTE = "remote"
 PASS_PROJECT = "project"
 PASS_GPH = "gph"          # hh filter "Оформление по ГПХ или по совместительству"
-PASS_SIMILAR = "similar"
+PASS_SIMILAR = negotiations.PASS_SIMILAR
 
 
 @dataclass
@@ -101,17 +91,22 @@ class Collector:
         session_factory: Callable[[int], BrowserSession] | None = None,
         rng: random.Random | None = None,
         gap_scale: float = 1.0,
-        page_budget: int | None = None,
+        page_budget: int = 0,
         should_stop: Callable[[], bool] | None = None,
+        page_loads_before: int = 0,
     ) -> None:
         self.s = settings
         self.conn = conn
         self.rng = rng or random.Random()
         self.gap_scale = gap_scale
-        self.page_budget = page_budget if page_budget is not None else settings.daily_page_loads_max
+        self.page_budget = page_budget
         self.policy = pacing.policy_from_settings(settings)
-        self._session_factory = session_factory or (lambda budget: BrowserSession(settings, page_budget=budget, rng=self.rng))
+        registry = WindowRegistry(conn, reap=True)
+        self._session_factory = session_factory or (
+            lambda budget: BrowserSession(settings, page_budget=budget, rng=self.rng, registry=registry))
         self._should_stop = should_stop or (lambda: False)
+        # pages the run already loaded in earlier stages: `runs.page_loads` is the run's total, not this stage's
+        self.page_loads_before = page_loads_before
         self.stats = CollectStats()
 
     # -- public ------------------------------------------------------------------
@@ -120,13 +115,15 @@ class Collector:
         region_ids = [RUSSIA_ID] if self.s.search_all_russia else resolve_region_ids(self.conn, self.s)
         tasks = plan_tasks(region_ids, rng=self.rng)
         log.info("План сбора: %d задач, бюджет %d загрузок, регионы %s", len(tasks), self.page_budget, region_ids)
-        neg: dict[str, Any] = {"page": 0, "done": False, "seen": set()}
+        sync = negotiations.NegotiationsSync(pages=self.s.negotiations_pages)
 
         def step(session: BrowserSession) -> bool:
             # One page per step, exactly like `_one_page`: the burst deadline and `should_stop` are checked
             # between steps (bursts.py), and a page that fails never leaves the cursor where it was.
-            if not neg["done"]:
-                self._sync_negotiations_page(session, neg)
+            if not sync.done:
+                negotiations.sync_page(self.conn, session, sync, self._store_cards)
+                self.stats.applied_synced = sync.synced
+                self.stats.not_logged_in = sync.not_logged_in
                 return True
             return self._one_page(session, tasks)
 
@@ -134,7 +131,8 @@ class Collector:
             self.stats.page_loads = bs.page_loads
             self.stats.bursts = bs.bursts
             if run_id is not None:
-                repo.update_run(self.conn, run_id, collected=self.stats.new_vacancies, page_loads=self.stats.page_loads)
+                repo.update_run(self.conn, run_id, collected=self.stats.new_vacancies,
+                                page_loads=self.page_loads_before + self.stats.page_loads)
             log.info("Сделано %d/%d задач", len(tasks) - len(self._pending(tasks)), len(tasks))
 
         try:
@@ -147,8 +145,11 @@ class Collector:
             log.error("Сбор прерван: %s", e)
             raise
         except HHBlocked as e:
+            # Not swallowed (v9.11): the orchestrator must know, or it opens a fresh session for vacancy
+            # pages straight into the block and the owner never hears about the captcha.
             self.stats.stopped_reason = f"hh.ru не отдал страницу: {e}"
-            log.error("Сбор остановлен мягко: %s", e)
+            log.error("Сбор остановлен: %s", e)
+            raise
         log.info("Сбор завершён: %s", self.stats.as_text())
         return self.stats
 
@@ -171,7 +172,9 @@ class Collector:
         )
         state = session.open(url)  # may raise PageBudgetExceeded -> handled by run_in_bursts
         page = parse_search(state)
-        self._note_user_type(page.user_type)
+        if page.user_type != "applicant" and not self.stats.not_logged_in:
+            self.stats.not_logged_in = True
+            log.warning("hh.ru видит нас как %r — вход в аккаунт в Firefox не выполнен", page.user_type)
         new_here = self._store_cards(page.cards, task.source, task.search_pass)
         log.info("%s q%d стр.%d: карточек %d, новых %d, всего %d, есть след.: %s",
                  task.search_pass, task.query_idx, task.next_page, len(page.cards), new_here, page.total, page.has_next)
@@ -197,45 +200,6 @@ class Collector:
                     new += 1
         self.stats.new_vacancies += new
         return new
-
-    def _sync_negotiations_page(self, session: BrowserSession, neg: dict[str, Any]) -> None:
-        """Read one page of the owner's responses and record what the companies did (decision #48).
-
-        The cursor advances *before* the load: a page interrupted by the budget or a blocked site is skipped,
-        not re-read blind on the next burst — the sync runs again in a few hours anyway.
-        """
-        page = int(neg["page"])
-        neg["page"] = page + 1
-        state = session.open(negotiations_url(page))
-        items = parse_negotiations(state)
-        with transaction(self.conn):
-            for n in items:
-                repo.mark_applied(self.conn, n.hh_id, has_chat=n.has_messages, state=n.state,
-                                  title=n.title, employer=n.employer)
-        ids = {n.hh_id for n in items}
-        fresh = ids - neg["seen"]
-        self.stats.applied_synced += len(fresh)
-        if page == 0:   # the recommendations block and the login check live on the first page only
-            self._note_user_type(user_type(state))
-            similar = parse_suitable(state)
-            new_similar = self._store_cards(similar, "similar_to_resume", PASS_SIMILAR)
-            log.info("Отклики, страница 1: %d; подходящих по резюме: %d, новых %d", len(items), len(similar), new_similar)
-        else:
-            log.info("Отклики, страница %d: %d, из них новых для этого подхода %d", page + 1, len(items), len(fresh))
-        if items and not fresh:
-            # hh ignored `page=` and served the same list again — stop after one wasted load, not every sitting.
-            log.warning("Список откликов повторился на странице %d — параметр page= не работает, листать перестаю", page + 1)
-        neg["seen"] |= ids
-        neg["done"] = (not items or not fresh
-                       or page + 1 >= self.s.negotiations_pages
-                       or not negotiations_has_next(state, page))
-        if neg["done"]:
-            log.info("Отклики: синхронизировано %d за %d стр.", self.stats.applied_synced, page + 1)
-
-    def _note_user_type(self, ut: str) -> None:
-        if ut != "applicant" and not self.stats.not_logged_in:
-            self.stats.not_logged_in = True
-            log.warning("hh.ru видит нас как %r — вход в аккаунт в Firefox не выполнен, отклики не видны", ut)
 
 
 # --- CLI ----------------------------------------------------------------------------

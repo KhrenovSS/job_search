@@ -101,3 +101,24 @@ def test_should_stop_after_a_burst_skips_the_gap(monkeypatch):
                           should_stop=lambda: clock.t >= 600)
     assert stats.bursts == 1 and calls["n"] == 10 and stats.stopped_reason == "остановлено"
     assert clock.t == 600.0
+
+
+def test_pages_loaded_before_an_exception_are_still_reported(monkeypatch):
+    """A burst cut short by a blocked page must not lose its loads from `runs.page_loads` (v9.11)."""
+    clock = FakeClock()
+    monkeypatch.setattr(pacing, "monotonic", clock.monotonic)
+    monkeypatch.setattr(pacing, "sleep", clock.sleep)
+    policy = pacing.PacingPolicy(burst_min_s=600, burst_max_s=600, gap_min_s=1, gap_max_s=1)
+    seen = []
+
+    def step(session):
+        session.open()
+        if session.page_loads == 3:
+            raise RuntimeError("капча")
+        return True
+
+    import pytest
+    with pytest.raises(RuntimeError):
+        run_in_bursts(step, session_factory=FakeSession, budget=10, policy=policy, rng=random.Random(0),
+                      after_burst=lambda bs: seen.append(bs.page_loads))
+    assert seen == [3]

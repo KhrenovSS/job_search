@@ -484,22 +484,36 @@ def _cli() -> int:
             items_on_page=settings.items_per_page,
         )
     print("URL:", url)
-    with BrowserSession(settings) as b:
-        state = b.open(url)
-        print("Пользователь на hh.ru:", user_type(state))
-        if args.vacancy:
-            d = parse_vacancy(state)
-            print(f"{d.hh_id} | {d.title} | {d.employer} | {d.area_name} | {d.work_format}/{d.employment} | "
-                  f"{normalize(d.compensation).human()} | архив={d.archived} | отклик={d.applied}")
-            print("Навыки:", ", ".join(d.key_skills))
-            print("Описание:", d.description_text[:600].replace("\n", " "), "…")
-        else:
-            sp = parse_search(state)
-            print(f"Всего: {sp.total}, на странице: {len(sp.cards)}, есть следующая: {sp.has_next}")
-            for i, c in enumerate(sp.cards, 1):
-                print(f"{i:2d}. {c.hh_id} | {c.title[:60]} | {c.employer} | {c.area_name} | "
-                      f"{c.work_format}/{c.employment} | {normalize(c.compensation).human()}"
-                      f"{' | ОТКЛИК' if c.applied else ''}")
+    # One page, counted like everyone else's: the CLI gets a `runs` row so the daily cap sees it (v9.11).
+    from hh_scout.db import open_db
+    from hh_scout.pipeline import repo
+
+    conn = open_db(settings.db_path)
+    if repo.running_run(conn):
+        print("ОТКАЗ: сейчас идёт сбор (runs.status='running') — Marionette держит одну сессию.")
+        return 2
+    run_id = repo.start_run(conn, "manual")
+    try:
+        with BrowserSession(settings, page_budget=1) as b:
+            state = b.open(url)
+    except Exception as e:  # noqa: BLE001
+        repo.finish_run(conn, run_id, "failed", error=str(e)[:500], page_loads=1)
+        raise
+    repo.finish_run(conn, run_id, "ok", page_loads=1)
+    print("Пользователь на hh.ru:", user_type(state))
+    if args.vacancy:
+        d = parse_vacancy(state)
+        print(f"{d.hh_id} | {d.title} | {d.employer} | {d.area_name} | {d.work_format}/{d.employment} | "
+              f"{normalize(d.compensation).human()} | архив={d.archived} | отклик={d.applied}")
+        print("Навыки:", ", ".join(d.key_skills))
+        print("Описание:", d.description_text[:600].replace("\n", " "), "…")
+    else:
+        sp = parse_search(state)
+        print(f"Всего: {sp.total}, на странице: {len(sp.cards)}, есть следующая: {sp.has_next}")
+        for i, c in enumerate(sp.cards, 1):
+            print(f"{i:2d}. {c.hh_id} | {c.title[:60]} | {c.employer} | {c.area_name} | "
+                  f"{c.work_format}/{c.employment} | {normalize(c.compensation).human()}"
+                  f"{' | ОТКЛИК' if c.applied else ''}")
     return 0
 
 
