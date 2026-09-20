@@ -119,7 +119,16 @@ class Settings(BaseSettings):
 
     # Lead scoring (the AI returns sub-scores, the code computes the total).
     # Vacancies are leads for the owner's ИП contracting: salary and work format do not score.
-    score_threshold: int = 60
+    # 60 → 50 on 2026-09-20 (decision #52): the owner would rather write to a "near lead" than to nobody —
+    # the 45–59 band carried real pitches and was written off every noon. Bands 50–59 are measured separately in /stats.
+    score_threshold: int = 50
+    # The daily floor (decision #52): if fewer than this many leads went out in the 24 h before the noon digest,
+    # the digest tops up from the best evaluated vacancies below the threshold (not an agency, role ≥ floor_min_role,
+    # total ≥ floor_min_total), including ones already written off within floor_lookback_days. 0 disables it.
+    daily_letters_floor: int = 5
+    floor_min_total: int = 40
+    floor_min_role: int = 40
+    floor_lookback_days: int = 3
     weight_tech: float = 0.55   # CODESYS/ST/MasterSCADA/PLC programming match
     weight_role: float = 0.25   # they need a programmer (not designer / maintenance / sales)
     weight_lead: float = 0.20   # direct employer, contract-friendly signals

@@ -114,7 +114,7 @@ def revive_orphans(conn: sqlite3.Connection, settings: Settings) -> int:
     return n
 
 
-def _same_company(a: sqlite3.Row, b: sqlite3.Row) -> bool:
+def same_company(a: sqlite3.Row, b: sqlite3.Row) -> bool:
     if a["employer_id"] and b["employer_id"]:
         return a["employer_id"] == b["employer_id"]
     return bool(a["employer"]) and (a["employer"] or "").casefold() == (b["employer"] or "").casefold()
@@ -128,7 +128,7 @@ def dedupe_evaluated(conn: sqlite3.Connection, settings: Settings) -> int:
     n = 0
     with transaction(conn):
         for row in rows:
-            group = next((g for g in groups if any(_same_company(m, row) for m in g)), None)
+            group = next((g for g in groups if any(same_company(m, row) for m in g)), None)
             if group is not None:
                 twin = group[0]
                 group.append(row)

@@ -114,3 +114,10 @@ def test_m009_employers_is_keyed_by_the_hh_company_id():
                  "ON CONFLICT(employer_id) DO UPDATE SET found = excluded.found")
     assert conn.execute("SELECT found FROM employers WHERE employer_id = '1'").fetchone()[0] == 0
 
+
+
+def test_m014_marks_floor_rows():
+    conn = connect(":memory:")
+    assert migrate(conn) == len(MIGRATIONS)
+    cols = {r[1]: r for r in conn.execute("PRAGMA table_info(evaluations)")}
+    assert cols["floor"][4] == "0"

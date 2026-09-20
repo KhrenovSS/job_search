@@ -5,11 +5,47 @@ from __future__ import annotations
 import logging
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from hh_scout.config import Settings
+from hh_scout.db import transaction
 from hh_scout.pipeline import dedup, repo
 
 log = logging.getLogger(__name__)
+
+
+def promote_floor(conn: sqlite3.Connection, settings: Settings) -> int:
+    """The daily floor (decision #52): if fewer than `DAILY_LETTERS_FLOOR` leads went out in the last 24 hours,
+    take the best below-threshold vacancies into the queue so the digest has something to write to.
+
+    Runs right before the digest's scoring pass, so the same pass writes their letters. The company rules hold
+    as for any lead: a company the owner answered or that already has a lead is skipped, one vacancy per company.
+    Returns how many were taken.
+    """
+    if settings.daily_letters_floor <= 0:
+        return 0
+    since = repo.iso_utc(datetime.now(timezone.utc) - timedelta(hours=24))
+    short = settings.daily_letters_floor - repo.leads_sent_since(conn, since)
+    if short <= 0:
+        return 0
+    chosen: list[sqlite3.Row] = []
+    for row in repo.floor_candidates(conn, threshold=settings.score_threshold, min_total=settings.floor_min_total,
+                                     min_role=settings.floor_min_role, lookback_days=settings.floor_lookback_days):
+        if len(chosen) >= short:
+            break
+        # `exclude_self=False`: a row the owner already answered himself is not a candidate either
+        if (dedup.answered_employer(conn, settings, row, exclude_self=False) is not None
+                or dedup.covering_lead(conn, settings, row) is not None):
+            continue
+        if any(dedup.same_company(c, row) for c in chosen):
+            continue
+        chosen.append(row)
+    if chosen:
+        with transaction(conn):
+            repo.promote_floor(conn, [int(r["id"]) for r in chosen])
+        log.info("Дневной минимум %d не набран (%d за сутки) — добрано ниже порога: %s", settings.daily_letters_floor,
+                 settings.daily_letters_floor - short, ", ".join(f"{r['hh_id']} ({r['total']})" for r in chosen))
+    return len(chosen)
 
 
 @dataclass

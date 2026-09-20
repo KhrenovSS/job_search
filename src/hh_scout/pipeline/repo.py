@@ -291,7 +291,8 @@ def employer_lead(conn: sqlite3.Connection, employer_id: str | None, employer: s
     cutoff = _ago(repeat_days) if repeat_days > 0 else "1970-01-01T00:00:00+00:00"
     sql = (f"SELECT v.id, v.hh_id, v.status FROM vacancies v WHERE {same_employer_sql('v')} AND v.id IS NOT ? "
            "AND ((v.status = 'sent' AND v.updated_at >= ?) OR v.status = 'prefiltered' "
-           "     OR (v.status = 'evaluated' AND EXISTS (SELECT 1 FROM evaluations e WHERE e.vacancy_id = v.id AND e.total >= ?))) "
+           "     OR (v.status = 'evaluated' AND EXISTS (SELECT 1 FROM evaluations e WHERE e.vacancy_id = v.id "
+           "                                            AND (e.total >= ? OR e.floor = 1)))) "
            "ORDER BY CASE v.status WHEN 'sent' THEN 0 WHEN 'evaluated' THEN 1 ELSE 2 END, v.id LIMIT 1")
     return conn.execute(sql, same_employer_params(employer_id, employer) + [exclude_id, cutoff, threshold]).fetchone()
 
@@ -369,7 +370,7 @@ def get_cover_letter(conn: sqlite3.Connection, vacancy_id: int) -> str | None:
 # Everything a lead card, a letter and the queue need in one row. `{extra}` takes further columns (with a leading
 # comma) for callers that need them, instead of surgery on the string.
 LEAD_SELECT = f"""SELECT v.*, e.tech_score, e.role_score, e.lead_score, e.total, e.ip_gph_possible, e.is_agency,
-                        e.employment_hint, e.company_kind, e.verdict, e.pitch_hint, e.red_flags,
+                        e.employment_hint, e.company_kind, e.verdict, e.pitch_hint, e.red_flags, e.floor,
                         c.text AS letter, c.rules_hash AS letter_rules, c.owner_hint AS letter_hint,
                         c.with_dossier AS letter_dossier,
                         (SELECT brief FROM employers emp WHERE emp.employer_id = v.employer_id AND emp.found = 1)
@@ -388,6 +389,8 @@ def _lead_select(extra: str = "") -> str:
 # threshold), so `evaluated` is a queue that outlives the day. Order in it is score plus a small bonus for
 # waiting: a fresh strong vacancy always goes before a stale weak one, but a week of waiting is worth 7 points,
 # so the tail cannot starve forever. `evaluations` has one row per vacancy, so `created_at` is when it queued.
+# A row taken by the daily floor (`e.floor = 1`, decision #52) is in the queue whatever its score.
+IN_QUEUE_SQL = "v.status = 'evaluated' AND (e.total >= ? OR e.floor = 1)"
 _WAITING_DAYS_SQL = "CAST(julianday('now') - julianday(e.created_at) AS INTEGER)"
 PRIORITY_SQL = f"(e.total + MIN({_WAITING_DAYS_SQL}, {{bonus}}))"
 
@@ -397,7 +400,7 @@ def lead_queue(conn: sqlite3.Connection, threshold: int, limit: int | None = Non
     """The pending leads, best first by priority. `offset` skips the ones already taken (the digest tail)."""
     prio = PRIORITY_SQL.format(bonus=int(wait_bonus_max))
     sql = (_lead_select(f", {_WAITING_DAYS_SQL} AS waiting_days")
-           + " WHERE v.status = 'evaluated' AND e.total >= ? "
+           + f" WHERE {IN_QUEUE_SQL} "
            f"ORDER BY {prio} DESC, e.total DESC, v.published_at DESC")
     if limit is not None:
         sql += f" LIMIT {int(limit)} OFFSET {int(offset)}"
@@ -408,7 +411,7 @@ def lead_queue(conn: sqlite3.Connection, threshold: int, limit: int | None = Non
 
 def queue_size(conn: sqlite3.Connection, threshold: int) -> int:
     return int(conn.execute("SELECT COUNT(*) FROM vacancies v JOIN evaluations e ON e.vacancy_id = v.id "
-                            "WHERE v.status = 'evaluated' AND e.total >= ?", (threshold,)).fetchone()[0])
+                            f"WHERE {IN_QUEUE_SQL}", (threshold,)).fetchone()[0])
 
 
 def letters_written_today(conn: sqlite3.Connection) -> int:
@@ -429,7 +432,7 @@ def expire_queue(conn: sqlite3.Connection, ttl_days: int) -> int:
 
 def evaluated_leads(conn: sqlite3.Connection, threshold: int, limit: int | None = None,
                     site: str | None = None) -> list[sqlite3.Row]:
-    sql = _lead_select() + " WHERE v.status = 'evaluated' AND e.total >= ?"
+    sql = _lead_select() + f" WHERE {IN_QUEUE_SQL}"
     params: list = [threshold]
     if site:
         sql += " AND v.site = ?"
@@ -450,9 +453,57 @@ def lead_by_hh_id(conn: sqlite3.Connection, hh_id: str) -> sqlite3.Row | None:
 
 
 def reject_below(conn: sqlite3.Connection, threshold: int) -> int:
+    """Write off what is below the threshold — except rows the daily floor took into the queue (decision #52)."""
     cur = conn.execute(
         """UPDATE vacancies SET status = 'rejected', updated_at = ? WHERE status = 'evaluated'
-           AND id IN (SELECT vacancy_id FROM evaluations WHERE total < ?)""", (utcnow(), threshold))
+           AND id IN (SELECT vacancy_id FROM evaluations WHERE total < ? AND floor = 0)""", (utcnow(), threshold))
+    return cur.rowcount
+
+
+# --- the daily floor (decision #52) ---------------------------------------------------------
+
+def leads_sent_since(conn: sqlite3.Connection, since_iso: str) -> int:
+    """Leads delivered (any digest, instant or noon) since `since_iso` — the 24 h the floor is measured over."""
+    return int(conn.execute(
+        "SELECT COUNT(*) FROM digest_items di JOIN digests d ON d.id = di.digest_id WHERE d.sent_at >= ?",
+        (since_iso,)).fetchone()[0])
+
+
+def floor_candidates(conn: sqlite3.Connection, *, threshold: int, min_total: int, min_role: int,
+                     lookback_days: int) -> list[sqlite3.Row]:
+    """Below-threshold hh.ru vacancies worth a letter when the day came up short, best first.
+
+    Two sources: `evaluated` rows still waiting for the noon clean-up, and rows already written off (`rejected`
+    without a `skip_reason`, i.e. by score, not by age) within `lookback_days` — a vacancy two days old is as
+    alive on hh as today's. Agencies, non-programmer roles and rows already taken by the floor are out.
+    The caller still applies the company rules (answered / covered / one per employer).
+    """
+    sql = (_lead_select() + f""" WHERE v.site = 'hh' AND e.floor = 0 AND e.is_agency = 0 AND e.role_score >= ?
+              AND e.total >= ? AND e.total < ?
+              AND (v.status = 'evaluated'
+                   OR (v.status = 'rejected' AND v.skip_reason IS NULL AND e.created_at >= ?))
+            ORDER BY e.total DESC, e.created_at DESC""")
+    return conn.execute(sql, (min_role, min_total, threshold, _ago(lookback_days))).fetchall()
+
+
+def promote_floor(conn: sqlite3.Connection, vacancy_ids: list[int]) -> None:
+    """Put the chosen below-threshold vacancies into the lead queue, marked as taken by the floor."""
+    now = utcnow()
+    for vid in vacancy_ids:
+        conn.execute("UPDATE vacancies SET status = 'evaluated', skip_reason = NULL, updated_at = ? WHERE id = ?", (now, vid))
+        conn.execute("UPDATE evaluations SET floor = 1 WHERE vacancy_id = ?", (vid,))
+
+
+def readmit_rejected(conn: sqlite3.Connection, *, min_total: int, days: int) -> int:
+    """One-off after a threshold change: recently written-off hh.ru vacancies that now clear it go back into the queue.
+
+    No re-evaluation and no page load — the score stands, only the verdict about it changed (decision #52).
+    """
+    cur = conn.execute(
+        """UPDATE vacancies SET status = 'evaluated', skip_reason = NULL, updated_at = ?
+           WHERE site = 'hh' AND status = 'rejected' AND skip_reason IS NULL
+             AND id IN (SELECT vacancy_id FROM evaluations WHERE total >= ? AND created_at >= ?)""",
+        (utcnow(), min_total, _ago(days)))
     return cur.rowcount
 
 
@@ -523,6 +574,7 @@ _OUTCOMES_SQL = f"""
            v.has_chat AS has_chat,
            v.negotiation_state AS state,
            e.company_kind AS company_kind,
+           e.floor AS floor,
            v.work_format AS work_format,
            c.created_at AS letter_at,
            LENGTH(c.text) AS letter_len,

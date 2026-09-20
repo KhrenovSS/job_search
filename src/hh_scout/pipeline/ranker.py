@@ -60,6 +60,8 @@ def format_card(position: int, v: sqlite3.Row, e: sqlite3.Row) -> str:
     searching = _row_get(v, "searching_days") or 0
     if searching >= SEARCHING_LONG_DAYS:
         lines[1] += f" · 🔁 ищут {searching} дн."
+    if _row_get(e, "floor"):
+        lines.append("   📉 Ниже порога, взят по дневному минимуму: письмо предлагает отделяемый кусок работы")
     about = _company_line(v)
     if about:
         lines.append(f"   🏭 О компании: {_esc(about)}")
@@ -194,7 +196,7 @@ def _plural(n: int, one: str, few: str, many: str) -> str:
 
 def digest_header(count: int, checked: int, when: datetime | None = None, open_before: int = 0,
                   work: dict[str, int] | None = None, invited: int | None = None, invited_days: int = 14,
-                  sent_today: int = 0) -> str:
+                  sent_today: int = 0, floor_added: int = 0) -> str:
     """`work` = repo.work_totals(): the only daily word about how the service itself is doing (quiet mode).
 
     `invited` = repo.invited_since(): what the letters actually bought over the last `invited_days`.
@@ -206,6 +208,8 @@ def digest_header(count: int, checked: int, when: datetime | None = None, open_b
     tail += f"\nНеобработанных с прошлых дней: {open_before} (/inbox)" if open_before else ""
     if invited is not None:
         tail += f"\nПриглашений за {invited_days} дн.: {invited} (/stats)"
+    if floor_added:
+        tail += f"\nДобрано по дневному минимуму (ниже порога): {floor_added}"
     if count == 0:
         if sent_today:
             noun = _plural(sent_today, "лид", "лида", "лидов")

@@ -248,3 +248,16 @@ def test_the_budget_running_out_on_page_two_keeps_page_one(caplog):
         sync_page(conn, session, sync)
     assert conn.execute("SELECT COUNT(*) FROM vacancies WHERE applied=1").fetchone()[0] == 2
     assert sync.page == 2                  # the cursor moved past the failed page, so it is not re-read blind
+
+
+def test_bands_below_sixty_are_measured_on_their_own_and_floor_letters_are_a_slice():
+    """v9.12: the threshold moved to 50 and the floor goes down to 40 — /stats must show whether those answer."""
+    conn = _db()
+    _lead(conn, "40", 44, has_chat=1)
+    _lead(conn, "41", 57, has_chat=0)
+    conn.execute("UPDATE evaluations SET floor = 1 WHERE vacancy_id = (SELECT id FROM vacancies WHERE hh_id = '40')")
+    rows = repo.outcome_rows(conn, "2000-01-01")
+    bands = {b["band"]: b for b in outcomes.outcome_stats(rows, 5)}
+    assert bands["40-49"]["written"] == 1 and bands["40-49"]["answered"] == 1 and bands["55-59"]["silent"] == 1
+    by_floor = {b["name"]: b for b in outcomes.outcome_by(rows, dict(outcomes.DIMENSIONS)["Порог / минимум"], 5)}
+    assert by_floor["по дневному минимуму"]["tracked"] == 1 and by_floor["по порогу"]["tracked"] == 1

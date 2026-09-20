@@ -263,10 +263,19 @@ def main() -> int:
     ap.add_argument("--min-total", type=int, default=45, help="--requeue-rejected: lowest old score to take back")
     ap.add_argument("--requeue-id", action="append", metavar="HH_ID", default=[],
                     help="re-evaluate exactly this vacancy whatever its status (repeatable); for trying a prompt")
+    ap.add_argument("--readmit", action="store_true",
+                    help="after a threshold change: rejected hh vacancies with total >= --min-total from the last --days "
+                         "days go back into the queue without re-evaluation")
+    ap.add_argument("--days", type=int, default=3, help="--readmit: how far back to look")
     args = ap.parse_args()
     settings = load_settings()
     setup_logging(settings.log_level)
     conn = open_db(settings.db_path)
+    if args.readmit:
+        with conn:
+            n = repo.readmit_rejected(conn, min_total=args.min_total, days=args.days)
+        print(f"Возвращено в очередь: {n} (rejected с баллом ≥ {args.min_total} за {args.days} дн.)")
+        return 0
     if args.requeue_id:
         requeue(conn, hh_ids=args.requeue_id)
     elif args.requeue_rejected:

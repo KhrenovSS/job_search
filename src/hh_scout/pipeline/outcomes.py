@@ -17,7 +17,9 @@ from typing import Any, Callable, Sequence
 
 # Score bands the method is calibrated on. Kept here, not in the query, so the digest, /stats and
 # any later threshold decision all slice the data the same way.
-SCORE_BANDS: tuple[tuple[str, int, int], ...] = (("60-64", 60, 64), ("65-69", 65, 69), ("70-74", 70, 74), ("75+", 75, 1000))
+# 40–59 joined on 2026-09-20 (decision #52: threshold 50 and the daily floor down to 40); the older bands keep their edges.
+SCORE_BANDS: tuple[tuple[str, int, int], ...] = (("40-49", 40, 49), ("50-54", 50, 54), ("55-59", 55, 59),
+                                                 ("60-64", 60, 64), ("65-69", 65, 69), ("70-74", 70, 74), ("75+", 75, 1000))
 MIN_CELL = 8   # below this a percentage is noise dressed as a finding, so the report prints the count instead
 SEARCHING_LONG_DAYS = 14   # an employer advertising the same role this long "cannot fill the seat" (decision #44)
 
@@ -173,6 +175,10 @@ def _by_searching(r: sqlite3.Row) -> str | None:
     return f"ищут {SEARCHING_LONG_DAYS}+ дн." if int(r["searching_days"]) >= SEARCHING_LONG_DAYS else "свежая вакансия"
 
 
+def _by_floor(r: sqlite3.Row) -> str:
+    return "по дневному минимуму" if r["floor"] else "по порогу"
+
+
 def _by_letter_len(r: sqlite3.Row) -> str | None:
     n = r["letter_len"]
     if not n:
@@ -186,4 +192,5 @@ DIMENSIONS: tuple[tuple[str, Callable[[sqlite3.Row], str | None]], ...] = (
     ("Досье на компанию", _by_dossier),
     ("Ищут давно", _by_searching),
     ("Длина письма", _by_letter_len),
+    ("Порог / минимум", _by_floor),
 )

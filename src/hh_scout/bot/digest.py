@@ -22,7 +22,7 @@ from hh_scout.llm.bridge_client import BridgeError
 from hh_scout.llm.cover_letter import CoverLetterWriter, rules_hash, usable_letter
 from hh_scout.llm.evaluator import Evaluator
 from hh_scout.pipeline import outcomes, repo
-from hh_scout.pipeline.digest_builder import finalize_digest, plan_digest
+from hh_scout.pipeline.digest_builder import finalize_digest, plan_digest, promote_floor
 from hh_scout.pipeline.ranker import digest_header, format_card, format_letter, format_queue_tail
 from hh_scout.pipeline.rows import row_site
 
@@ -85,6 +85,12 @@ async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, ch
                       *, evaluate: bool = True) -> int:
     """The noon digest. `evaluate=False` skips the pre-digest scoring pass — while a sitting is running it would
     race the sitting's own evaluation and letter quota; the sitting sends its leads itself when it ends."""
+    # The daily floor first (DB only): the scoring pass below then writes letters for what it took (decision #52).
+    floor_added = 0
+    try:
+        floor_added = promote_floor(conn, settings)
+    except Exception as e:  # noqa: BLE001
+        log.exception("Дневной минимум не отработал: %s", e)
     if evaluate:
         try:
             evaluated, letters = await asyncio.to_thread(_evaluate_pending, settings)
@@ -101,7 +107,8 @@ async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, ch
     work = repo.work_totals(conn, datetime.now(TZ) - timedelta(hours=24))
     invited = outcomes.invited_count(repo.outcome_rows(conn, repo.iso_utc(datetime.now(TZ) - timedelta(days=INVITED_DAYS))))
     header = digest_header(len(plan.leads), plan.checked, open_before=open_before, work=work,
-                           invited=invited, invited_days=INVITED_DAYS, sent_today=plan.sent_today)
+                           invited=invited, invited_days=INVITED_DAYS, sent_today=plan.sent_today,
+                           floor_added=floor_added)
     await bot.send_message(chat_id, header)
     if not plan.leads:
         finalize_digest(conn, settings, [], plan.checked, note)

@@ -8,7 +8,7 @@
 (`vacancies.accept_temporary`, `civil_law_contracts`), `_m009_employers`, `_m010_negotiation_state`
 (`vacancies.negotiation_state`, `negotiation_seen_at`), `_m011_letter_rules` (`cover_letters.rules_hash`),
 `_m012_negotiation_events` (`negotiation_events` + засев из снимка), `_m013_letter_context` (`cover_letters.owner_hint`,
-`with_dossier`).
+`with_dossier`), `_m014_floor` (`evaluations.floor` — взята по дневному минимуму ниже порога, решение №52).
 Время — TEXT ISO-8601 UTC; границы для сравнения строятся через `repo.iso_utc` (строка с `+03:00` рядом с `+00:00`
 сравнивается как текст и сдвигает окно на три часа).
 Весь SQL — в `src/hh_scout/pipeline/repo.py`; аналитика над строками (исходы, полосы, зрелость) — в `pipeline/outcomes.py`.
@@ -35,7 +35,7 @@
 | `prefiltered` | details | страница загружена, `raw_json` заполнен, ждёт оценку |
 | `evaluated` | evaluator | оценена, строка в `evaluations`, кандидат в дайджест |
 | `sent` | digest | отправлена в дайджесте (или помечена при первом старте сервиса — `kv.preview_marked`); открыт/закрыт лид — по `lead_actions` |
-| `rejected` | digest | была `evaluated`, `total < score_threshold` на момент дайджеста; либо простояла в очереди дольше `QUEUE_TTL_DAYS` — тогда с `skip_reason = queue_expired` |
+| `rejected` | digest | была `evaluated`, `total < score_threshold` на момент дайджеста (строки с `evaluations.floor = 1` не списываются); либо простояла в очереди дольше `QUEUE_TTL_DAYS` — тогда с `skip_reason = queue_expired`. Обратимо (v9.12): дневной минимум (`digest_builder.promote_floor`) и `evaluator --readmit` возвращают `rejected` без `skip_reason` в `evaluated` |
 | `skipped` | prefilter/collector/triage/details/dedup/digest | отсеяна; всегда с `skip_reason` |
 | `evaluation_failed` | evaluator (ИИ дважды вернул невалидный ответ / пропустил hh_id) или details (страница без `vacancyView`) | терминальная ошибка, не повторяется |
 

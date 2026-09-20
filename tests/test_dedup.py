@@ -81,7 +81,7 @@ def test_dedupe_evaluated_keeps_best_and_respects_sent():
     _vac(conn, "4", "evaluated", employer="Бета", employer_id="2", total=80)
     _vac(conn, "S", "sent", employer="Бета", employer_id="2")                                 # Бета already has a lead
     _vac(conn, "5", "evaluated", employer="Гамма", employer_id="3", total=61)
-    _vac(conn, "6", "evaluated", employer="Гамма", employer_id="3", total=50)                # below threshold: not a lead, untouched
+    _vac(conn, "6", "evaluated", employer="Гамма", employer_id="3", total=45)                # below threshold (50): not a lead, untouched
     _vac(conn, "p1", "evaluated", employer="Сергей", employer_id=None, site="profi", total=90)
     _vac(conn, "p2", "evaluated", employer="Сергей", employer_id=None, site="profi", total=85)  # profi: two clients, both stay
     assert dedup.dedupe_evaluated(conn, s) == 3

@@ -339,6 +339,13 @@ def _m013_letter_context(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE cover_letters ADD COLUMN with_dossier INTEGER NOT NULL DEFAULT 0")
 
 
+def _m014_floor(conn: sqlite3.Connection) -> None:
+    """v9.12: the daily floor (decision #52). `evaluations.floor = 1` marks a vacancy taken into the queue below the
+    threshold because too few leads went out that day; the noon clean-up (`reject_below`) leaves such rows alone and
+    /stats slices them separately, so the owner can see whether "near leads" ever get answered."""
+    conn.execute("ALTER TABLE evaluations ADD COLUMN floor INTEGER NOT NULL DEFAULT 0")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m001_initial,
     _m002_triage_columns,
@@ -353,6 +360,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m011_letter_rules,
     _m012_negotiation_events,
     _m013_letter_context,
+    _m014_floor,
 ]
 
 
