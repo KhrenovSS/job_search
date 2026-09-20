@@ -59,7 +59,9 @@ class DetailsFetcher:
         self._done: set[str] = set()
 
     def _next(self) -> sqlite3.Row | None:
-        for row in repo.list_vacancies(self.conn, "to_fetch"):
+        # `site='hh'`: only an hh.ru row has a vacancy page; a catalogue company here would burn a page load
+        # on a URL that cannot exist (v9.14).
+        for row in repo.list_vacancies(self.conn, "to_fetch", site="hh"):
             if row["hh_id"] in self._done:
                 continue
             with self.conn:  # one lead per company: a twin of an existing lead is not worth a page load

@@ -289,12 +289,19 @@ def count_by_status(conn: sqlite3.Connection) -> dict[str, int]:
     return {r["status"]: r["n"] for r in conn.execute("SELECT status, COUNT(*) n FROM vacancies GROUP BY status")}
 
 
-def list_vacancies(conn: sqlite3.Connection, status: str, limit: int | None = None) -> list[sqlite3.Row]:
-    sql = ("SELECT * FROM vacancies WHERE status = ? "
-           "ORDER BY COALESCE(triage_priority, 9), published_at DESC, id")
+def list_vacancies(conn: sqlite3.Connection, status: str, limit: int | None = None,
+                   site: str | None = None) -> list[sqlite3.Row]:
+    """Rows in `status`, best first. `site` narrows to one source — the vacancy stages (prefilter, details) pass
+    `'hh'`, because only hh.ru rows have a vacancy page to open (v9.14)."""
+    sql = "SELECT * FROM vacancies WHERE status = ?"
+    params: list = [status]
+    if site:
+        sql += " AND site = ?"
+        params.append(site)
+    sql += " ORDER BY COALESCE(triage_priority, 9), published_at DESC, id"
     if limit:
         sql += f" LIMIT {int(limit)}"
-    return conn.execute(sql, (status,)).fetchall()
+    return conn.execute(sql, params).fetchall()
 
 
 def expire_low_priority(conn: sqlite3.Connection, ttl_days: int, min_priority: int = 3) -> int:
@@ -550,6 +557,22 @@ def floor_candidates(conn: sqlite3.Connection, *, threshold: int, min_total: int
                    OR (v.status = 'rejected' AND v.skip_reason IS NULL AND e.created_at >= ?))
             ORDER BY e.total DESC, e.created_at DESC""")
     return conn.execute(sql, (min_role, min_total, threshold, _ago(lookback_days))).fetchall()
+
+
+def reset_catalogue_rows(conn: sqlite3.Connection, search_pass: str = OWEN_PASS) -> int:
+    """Catalogue companies that leaked into the vacancy stages go back to waiting for admission (v9.14).
+
+    A catalogue row has no hh.ru vacancy page: `prefilter` used to pick it out of `new`, triage approved it and
+    `DetailsFetcher` then spent a page load on `hh.ru/vacancy/owen:<id>` — 76 of them in one sitting on 20.09,
+    which also raised a false «разметка вакансии изменилась» alarm. Rows that never reached evaluation are
+    returned to `new`; the ones already evaluated or sent are left alone.
+    """
+    cur = conn.execute(
+        """UPDATE vacancies SET status = 'new', skip_reason = NULL, triage_priority = NULL, triage_note = NULL,
+                  updated_at = ?
+           WHERE search_pass = ? AND status IN ('triage', 'to_fetch', 'evaluation_failed')""",
+        (utcnow(), search_pass))
+    return cur.rowcount
 
 
 def promote_floor(conn: sqlite3.Connection, vacancy_ids: list[int]) -> None:

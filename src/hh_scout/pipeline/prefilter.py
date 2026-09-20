@@ -67,7 +67,9 @@ def _facts(row: sqlite3.Row) -> CardFacts:
 def run(conn: sqlite3.Connection, settings: Settings, *, dry_run: bool = False) -> Counter:
     """Move `new` → `triage` or `skipped`. Returns a Counter of outcomes ('passed' or reason)."""
     outcomes: Counter = Counter()
-    rows = repo.list_vacancies(conn, "new")
+    # hh.ru only: catalogue companies (site='owen') wait in `new` for their daily admission and have no vacancy
+    # page to open — letting them through here sent DetailsFetcher to hh.ru/vacancy/owen:<id> (v9.14).
+    rows = repo.list_vacancies(conn, "new", site="hh")
     with transaction(conn):  # one commit for the whole batch, not one disk sync per card
         for row in rows:
             reason = decide(_facts(row))

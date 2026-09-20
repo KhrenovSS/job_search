@@ -145,3 +145,26 @@ def test_outcomes_slice_by_lead_kind_and_channel():
     dims = dict(outcomes.DIMENSIONS)
     assert outcomes.outcome_by(rows, dims["Тип лида"], 0)[0]["name"] == "компания"
     assert outcomes.outcome_by(rows, dims["Канал"], 0)[0]["name"] == "щитовики (hh)"
+
+
+def test_catalogue_rows_never_enter_the_vacancy_stages(monkeypatch):
+    """v9.14 regression: on 20.09 the ОВЕН rows went new → triage → to_fetch and DetailsFetcher spent 76 page
+    loads on `hh.ru/vacancy/owen:<id>`, which also raised a false «markup changed» alarm."""
+    from hh_scout.pipeline import prefilter
+    from hh_scout.sources import owen
+
+    conn = _db()
+    owen.store(conn, owen.parse_integrators(json.loads(
+        (__import__("pathlib").Path(__file__).parent / "fixtures" / "owen_integrators.json").read_text(encoding="utf-8"))))
+    conn.execute("INSERT INTO vacancies(hh_id,title,url,source,search_pass,status,site,first_seen_at,updated_at) "
+                 "VALUES ('1','Инженер АСУ ТП','u','s','regional','new','hh','t','t')")
+    prefilter.run(conn, Settings(_env_file=None))
+    kinds = {r["site"]: r["status"] for r in conn.execute("SELECT site, status FROM vacancies GROUP BY site")}
+    assert kinds["hh"] == "triage" and kinds["owen"] == "new"          # the catalogue waits for its admission
+    assert repo.list_vacancies(conn, "to_fetch", site="hh") == []
+
+    # even if a row somehow reaches to_fetch, the details stage refuses to open it
+    conn.execute("UPDATE vacancies SET status = 'to_fetch' WHERE site = 'owen'")
+    assert [r["site"] for r in repo.list_vacancies(conn, "to_fetch", site="hh")] == []
+    assert repo.reset_catalogue_rows(conn) == 3
+    assert {r["status"] for r in conn.execute("SELECT status FROM vacancies WHERE site='owen'")} == {"new"}
