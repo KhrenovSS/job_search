@@ -44,7 +44,9 @@ def test_triage_card_carries_hh_contract_facts():
     payload = card_payload(row)
     assert payload["accept_temporary"] is True
     assert payload["civil_law_contracts"] == CONTRACTS
-    assert payload["search_pass"] == "gph"
+    # v9.11: the pass that found the card is our crawl's shuffle, not the employer's word; the salary and the
+    # publication date do not score either — none of them goes to the model
+    assert "search_pass" not in payload and "salary" not in payload and "published_at" not in payload
 
 
 def test_evaluation_payload_carries_hh_contract_facts():
@@ -52,7 +54,7 @@ def test_evaluation_payload_carries_hh_contract_facts():
     payload = vacancy_payload(_row(conn, 1))
     assert payload["accept_temporary"] is True
     assert payload["civil_law_contracts"] == CONTRACTS
-    assert payload["search_pass"] == "gph"  # the pass that found it was never passed to the evaluator before v8.2
+    assert "search_pass" not in payload and "salary_raw" not in payload and "salary_net_human" not in payload
 
     # a profi.ru order has no hh contract fields: "accept_temporary: false" there would read as a denial
     order = vacancy_payload(_row(conn, 2))

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-REASONS = [("salary", "💰 зарплата"), ("format", "🏢 формат"), ("stack", "🔧 не мой стек"), ("agency", "🏷 агентство"), ("skip", "пропустить")]
+REASONS = [("salary", "💰 зарплата"), ("format", "🏢 формат"), ("stack", "🔧 не мой стек"), ("agency", "🏷 агентство"),
+           ("text", "✍️ своими словами"), ("skip", "пропустить")]
 
 
 def vote_kb(vacancy_id: int, *, liked: bool = False, deferred: bool = False) -> InlineKeyboardMarkup:
@@ -18,7 +19,7 @@ def vote_kb(vacancy_id: int, *, liked: bool = False, deferred: bool = False) -> 
 def reason_kb(vacancy_id: int) -> InlineKeyboardMarkup:
     row1 = [InlineKeyboardButton(text=label, callback_data=f"fbr:{vacancy_id}:{code}") for code, label in REASONS[:2]]
     row2 = [InlineKeyboardButton(text=label, callback_data=f"fbr:{vacancy_id}:{code}") for code, label in REASONS[2:4]]
-    row3 = [InlineKeyboardButton(text=REASONS[4][1], callback_data=f"fbr:{vacancy_id}:skip")]
+    row3 = [InlineKeyboardButton(text=label, callback_data=f"fbr:{vacancy_id}:{code}") for code, label in REASONS[4:]]
     return InlineKeyboardMarkup(inline_keyboard=[row1, row2, row3])
 
 

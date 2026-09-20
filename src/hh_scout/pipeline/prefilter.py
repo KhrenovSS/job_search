@@ -5,7 +5,7 @@ Applies to vacancies in status `new`. Every rejection records a `skip_reason`; s
 Rules are deliberately conservative: when in doubt, let the AI decide. Salary is not a rule —
 vacancies are leads for the owner's contracting work, a low salary says nothing about the lead.
 
-CLI:  python -m hh_scout.pipeline.prefilter [--dry-run] [--show-skipped]
+CLI:  python -m hh_scout.pipeline.prefilter [--dry-run] [--show-skipped] [--requeue-reason REASON --days N]
 """
 
 from __future__ import annotations
@@ -30,15 +30,13 @@ class CardFacts:
     title: str
     applied: bool
     archived: bool
-    employment: str | None
-    salary_to_net: int | None
 
 
 # Stop words match only at the start of a word: "водитель" must not hit "руководитель".
 _STOP_RES = [(w, re.compile(r"(?<!\w)" + re.escape(w.strip()), re.I)) for w in TITLE_STOP_WORDS]
 
 
-def decide(card: CardFacts, min_salary_net: int) -> str | None:
+def decide(card: CardFacts) -> str | None:
     """Return a skip reason, or None if the card passes."""
     if card.applied:
         return "applied"
@@ -60,14 +58,8 @@ def decide(card: CardFacts, min_salary_net: int) -> str | None:
 
 
 def _facts(row: sqlite3.Row) -> CardFacts:
-    return CardFacts(
-        hh_id=row["hh_id"],
-        title=row["title"] or "",
-        applied=bool(row["applied"]),
-        archived=(row["skip_reason"] == "archived"),
-        employment=row["employment"],
-        salary_to_net=row["salary_to"],
-    )
+    return CardFacts(hh_id=row["hh_id"], title=row["title"] or "", applied=bool(row["applied"]),
+                     archived=(row["skip_reason"] == "archived"))
 
 
 def run(conn: sqlite3.Connection, settings: Settings, *, dry_run: bool = False) -> Counter:
@@ -76,7 +68,7 @@ def run(conn: sqlite3.Connection, settings: Settings, *, dry_run: bool = False) 
     rows = repo.list_vacancies(conn, "new")
     with transaction(conn):  # one commit for the whole batch, not one disk sync per card
         for row in rows:
-            reason = decide(_facts(row), settings.min_salary_net)
+            reason = decide(_facts(row))
             key = reason or "passed"
             outcomes[key.split(":")[0]] += 1
             if dry_run:
@@ -97,10 +89,18 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="only report, do not change statuses")
     ap.add_argument("--show-skipped", action="store_true", help="list skipped titles with reasons")
+    ap.add_argument("--requeue-reason", metavar="REASON",
+                    help="one-off after a rules change: cards skipped with this reason go back to triage")
+    ap.add_argument("--days", type=int, default=14, help="--requeue-reason: only cards first seen within N days")
     args = ap.parse_args()
     settings = load_settings()
     setup_logging(settings.log_level)
     conn = open_db(settings.db_path)
+    if args.requeue_reason:
+        with conn:
+            n = repo.requeue_skipped(conn, args.requeue_reason, args.days)
+        print(f"Возвращено в triage: {n} (skipped/{args.requeue_reason}, не старше {args.days} дн.)")
+        return 0
 
     outcomes = run(conn, settings, dry_run=args.dry_run)
     print("Итог:", dict(outcomes))

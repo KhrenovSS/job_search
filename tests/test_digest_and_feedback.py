@@ -88,7 +88,7 @@ def test_feedback_roundtrip_and_callbacks():
     assert parse_callback("garbage") is None and parse_callback("fb:x:up") is None
     kb = vote_kb(5)
     assert [b.callback_data for b in kb.inline_keyboard[0]] == ["fb:5:up", "fb:5:down"]
-    assert reason_kb(5).inline_keyboard[2][0].callback_data == "fbr:5:skip"
+    assert [b.callback_data for b in reason_kb(5).inline_keyboard[2]] == ["fbr:5:text", "fbr:5:skip"]
 
 
 def test_letter_cmd_refuses_for_a_company_the_owner_already_answered(tmp_path):
@@ -170,3 +170,92 @@ def test_iso_utc_compares_like_the_stored_timestamps():
     # 13:00 Moscow is 10:00 UTC — the row sent at 10:30 UTC is inside the window; the naive local string would miss it
     assert len(repo.outcome_rows(conn, repo.iso_utc(when + timedelta(hours=1)))) == 1
     assert len(repo.outcome_rows(conn, (when + timedelta(hours=1)).isoformat())) == 0
+
+
+def test_a_dislike_in_the_owners_own_words_reaches_the_calibration_block():
+    """v9.11: «✍️ своими словами» asks for a reply; the reply lands in feedback.reason and in the evaluator's block."""
+    import asyncio
+
+    from hh_scout.bot import feedback as fb_mod, handlers
+    from hh_scout.llm.evaluator import feedback_block
+
+    conn = _db()
+    finalize_digest(conn, Settings(_env_file=None), [(repo.lead_by_hh_id(conn, "1"), 500, 501)], checked=0)
+    said = []
+
+    class _Bot:
+        async def edit_message_text(self, text, chat_id, message_id):
+            said.append(("edit", message_id, text))
+
+        async def delete_message(self, chat_id, message_id):
+            said.append(("delete", message_id))
+
+    class _Prompt:
+        message_id = 777
+
+    class _Card:
+        chat = type("C", (), {"id": 1})()
+
+        async def answer(self, text, **kw):
+            said.append(("ask", text))
+            return _Prompt()
+
+        async def edit_reply_markup(self, **kw):
+            pass
+
+    class _Cb:
+        data = "fbr:1:text"
+        bot = _Bot()
+        message = _Card()
+
+        async def answer(self, text=None):
+            said.append(("cb", text))
+
+    repo.add_feedback(conn, 1, -1)
+    asyncio.run(fb_mod.reason(_Cb(), conn))
+    assert fb_mod.awaiting_reason(conn) == (1, 777)
+    assert any(kind == "ask" for kind, *_ in said)
+
+    class _Reply:
+        chat = type("C", (), {"id": 1})()
+        bot = _Bot()
+        text = "  они хотят инженера в штат на объект в Норильске, подряд им не нужен  "
+        reply_to_message = type("R", (), {"message_id": 777})()
+
+        async def answer(self, text, **kw):
+            said.append(("done", text))
+
+    asyncio.run(handlers.reason_reply(_Reply(), conn))
+    reason = conn.execute("SELECT reason FROM feedback WHERE vacancy_id = 1").fetchone()[0]
+    assert reason.startswith("они хотят инженера в штат")
+    assert fb_mod.awaiting_reason(conn) is None
+    assert any(kind == "edit" and "Норильске" in text for kind, _, text in [s for s in said if s[0] == "edit"])
+    block = feedback_block(conn, mature_days=5)
+    assert "причина: они хотят инженера в штат" in block
+
+    # a stray reply to some other message is ignored
+    class _Other(_Reply):
+        reply_to_message = type("R", (), {"message_id": 1})()
+
+    asyncio.run(handlers.reason_reply(_Other(), conn))
+    assert conn.execute("SELECT reason FROM feedback WHERE vacancy_id = 1").fetchone()[0] == reason
+
+
+def test_calibration_block_does_not_call_a_fresh_letter_silence():
+    from hh_scout.llm.evaluator import feedback_block
+
+    conn = _db()
+    s = Settings(_env_file=None)
+    finalize_digest(conn, s, [(repo.lead_by_hh_id(conn, "1"), 1, 2), (repo.lead_by_hh_id(conn, "3"), 3, 4)], checked=0)
+    for vid in (1, 3):
+        repo.add_action(conn, vid, "responded")
+        repo.add_feedback(conn, vid, +1)
+        conn.execute("UPDATE vacancies SET applied = 1 WHERE id = ?", (vid,))
+    conn.execute("UPDATE digests SET sent_at = '2026-09-01T10:00:00+00:00'")      # both delivered long ago
+    conn.execute("UPDATE vacancies SET negotiation_state = 'INTERVIEW', has_chat = 1 WHERE id = 3")
+    block = feedback_block(conn, mature_days=5)
+    assert "«Инженер 3»" in block and "пригласила" in block
+    assert "«Инженер 1»" in block and "молчит" in block            # old enough: silence is a fact
+    conn.execute("UPDATE digests SET sent_at = ?", (repo.utcnow(),))
+    block = feedback_block(conn, mature_days=5)
+    assert "молчит" not in block                                    # sent today: silence means nothing yet

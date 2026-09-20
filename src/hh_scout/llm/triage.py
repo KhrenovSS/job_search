@@ -18,7 +18,6 @@ from dataclasses import dataclass, field
 from pydantic import ValidationError
 
 from hh_scout.config import Settings
-from hh_scout.hh.salary import normalize
 from hh_scout.llm.bridge_client import BridgeClient, BridgeError, extract_json
 from hh_scout.llm.prompts import render
 from hh_scout.llm.schemas import TriageBatch, TriageVerdict
@@ -50,10 +49,8 @@ def card_payload(row: sqlite3.Row, searching_days: int = 0) -> dict:
         "employment": row["employment"],
         "accept_temporary": bool(row["accept_temporary"]),
         "civil_law_contracts": json.loads(row["civil_law_contracts"] or "[]"),
-        "salary": normalize(json.loads(row["salary_raw"]) if row["salary_raw"] else None).human(),
-        "search_pass": row["search_pass"],
-        "published_at": (row["published_at"] or "")[:10],
-        # hh bumps the publication date on every refresh, so this is our own observation, not hh's
+        # No salary, no publication date, no search pass (v9.11): the salary does not score, hh bumps the date on
+        # every refresh (decision #44), and the pass that saw the card first is our own shuffle, not a signal.
         "employer_searching_days": searching_days,
     }
 

@@ -11,11 +11,26 @@ from aiogram.types import CallbackQuery
 
 from hh_scout.bot.keyboards import REASONS, parse_callback, reason_kb, vote_kb
 from hh_scout.bot.lead_actions import collapse_lead
+from hh_scout.db import kv_get, kv_set
 from hh_scout.pipeline import repo
 
 log = logging.getLogger(__name__)
 router = Router(name="feedback")
 _REASON_LABEL = dict(REASONS)
+AWAITING_REASON_KEY = "awaiting_reason"   # kv: "<vacancy_id>:<prompt message id>" while the owner types a reason
+ASK_REASON_TEXT = "Напишите причину ответом на это сообщение — она попадёт в калибровку оценщика."
+
+
+def awaiting_reason(conn: sqlite3.Connection) -> tuple[int, int] | None:
+    """(vacancy_id, prompt message id) if the bot is waiting for the owner's own words on a 👎."""
+    raw = kv_get(conn, AWAITING_REASON_KEY) or ""
+    vid, _, mid = raw.partition(":")
+    return (int(vid), int(mid)) if vid.isdigit() and mid.isdigit() else None
+
+
+def set_awaiting_reason(conn: sqlite3.Connection, vacancy_id: int | None, message_id: int | None = None) -> None:
+    with conn:
+        kv_set(conn, AWAITING_REASON_KEY, f"{vacancy_id}:{message_id}" if vacancy_id is not None else None)
 
 
 def _deferred(conn: sqlite3.Connection, vacancy_id: int) -> bool:
@@ -66,10 +81,14 @@ async def reason(cb: CallbackQuery, conn: sqlite3.Connection) -> None:
         await cb.answer("Не понял кнопку")
         return
     _, vacancy_id, code = parsed
-    reason_code = None if code == "skip" else code
+    reason_code = None if code in ("skip", "text") else code
     with conn:
         repo.update_feedback_reason(conn, vacancy_id, reason_code)
     collapsed = await collapse_lead(cb.bot, conn, cb.message.chat.id, vacancy_id, "disliked", reason_code)
+    if code == "text":
+        # the owner's own words (v9.11): the next reply to this prompt lands in feedback.reason as free text
+        prompt = await cb.message.answer(ASK_REASON_TEXT)
+        set_awaiting_reason(conn, vacancy_id, prompt.message_id)
     if not collapsed:  # lead was not open (e.g. preview card) — just freeze the keyboard
         from hh_scout.bot.keyboards import done_kb
         label = "👎 учтено" if code == "skip" else f"👎 {_REASON_LABEL.get(code, code)}"

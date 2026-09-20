@@ -25,7 +25,6 @@ from pydantic import ValidationError
 from hh_scout.browser.hh_pages import strip_html
 from hh_scout.config import Settings
 from hh_scout.db import utcnow
-from hh_scout.hh.salary import human_from_raw
 from hh_scout.llm.bridge_client import BridgeClient, BridgeError, extract_json
 from hh_scout.llm.prompts import render
 from hh_scout.llm.schemas import EvaluationBatch, VacancyEvaluation
@@ -85,8 +84,9 @@ def vacancy_payload(row: sqlite3.Row, searching_days: int = 0) -> dict:
     skills = raw.get("keySkills")
     if isinstance(skills, dict):
         skills = skills.get("keySkill")
-    salary_raw = json.loads(row["salary_raw"]) if row["salary_raw"] else None
     site = row_site(row)
+    # No salary here on purpose (rule 5 of the prompt: it does not score, and the card prints it from the DB);
+    # no `search_pass` either — which pass saw the card first is our crawl's shuffle, not the employer's word (v9.11).
     payload = {
         "hh_id": row["hh_id"],
         "site": site,
@@ -96,8 +96,6 @@ def vacancy_payload(row: sqlite3.Row, searching_days: int = 0) -> dict:
         "area": row["area_name"],
         "work_format": row["work_format"],
         "employment": row["employment"],
-        "salary_raw": salary_raw,
-        "salary_net_human": human_from_raw(salary_raw),
         "experience": raw.get("workExperience"),
         "key_skills": skills or [],
         "description": strip_html(raw.get("description"))[:MAX_DESCRIPTION_CHARS],
@@ -106,10 +104,9 @@ def vacancy_payload(row: sqlite3.Row, searching_days: int = 0) -> dict:
         payload.update({"client": raw.get("client"), "budget": raw.get("budget"), "when": raw.get("when"),
                         "posted": raw.get("posted")})
     else:
-        # hh's own "Оформление по ГПХ или по совместительству" flag and the pass that found the vacancy
+        # hh's own "Оформление по ГПХ или по совместительству" flag and contract forms
         payload.update({"accept_temporary": bool(row["accept_temporary"]),
                         "civil_law_contracts": json.loads(row["civil_law_contracts"] or "[]"),
-                        "search_pass": row["search_pass"],
                         # our own observation: for how long this employer has been advertising this role
                         "employer_searching_days": searching_days})
     return payload
@@ -173,7 +170,7 @@ class Evaluator:
                                        red_flags, model_note, created_at)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (row["id"], ev.tech_score, 0, 0, ev.role_score, ev.lead_score, total, ev.ip_gph_possible, int(ev.is_agency),
-             ev.employment_hint, ev.company_kind, ev.verdict, ev.pitch_hint,
+             "unknown", ev.company_kind, ev.verdict, ev.pitch_hint,
              json.dumps(ev.red_flags, ensure_ascii=False), None, utcnow()),
         )
         repo.set_status(self.conn, row["hh_id"], "evaluated")

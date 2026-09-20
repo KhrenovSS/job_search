@@ -72,9 +72,9 @@ class Settings(BaseSettings):
     company_research_model: str = ""        # empty -> the bridge's own model (BRIDGE_MODEL, opus): reading a
                                             # company's site well is what makes the letter specific
     company_research_ttl_days: int = 180
-    company_research_max_turns: int = 8     # a ceiling for the prompt's 6 network calls (hh page, site, searches,
-                                            # the company's own other vacancies), not a target: most runs take 2-4.
-                                            # The 19-minute run was retries on a dead site, not depth (v9.2)
+    company_research_max_turns: int = 8     # CLI turns (tool calls + answer); the prompt itself caps network calls
+                                            # at 6, so 8 leaves room for the final answer. Not a target: most runs
+                                            # take 2-4. The 19-minute run was retries on a dead site, not depth (v9.2)
     company_research_timeout_s: float = 930.0   # must exceed the bridge's own BRIDGE_WEB_TIMEOUT (900): six
                                             # network calls on opus do not fit into 420 s when the site is silent
     company_research_max_per_run: int = 3   # ceiling on how long one letters step may spend reading the web —
@@ -123,7 +123,6 @@ class Settings(BaseSettings):
     weight_tech: float = 0.55   # CODESYS/ST/MasterSCADA/PLC programming match
     weight_role: float = 0.25   # they need a programmer (not designer / maintenance / sales)
     weight_lead: float = 0.20   # direct employer, contract-friendly signals
-    min_salary_net: int = 120_000  # informational only; no longer used by the prefilter
 
     @field_validator("tg_owner_chat_id", mode="before")
     @classmethod
@@ -231,10 +230,15 @@ SEARCH_QUERIES: tuple[str, ...] = (
     '("инженер по автоматизации" OR "инженер-программист" OR "Automation Engineer" OR "Controls Engineer" '
     'OR "Control Systems Engineer") AND (ПЛК OR PLC OR контроллер OR "технологического оборудования" OR SCADA OR HMI)',
     '(КИПиА OR "шкафов управления" OR "систем управления") AND (программирование OR ПЛК OR PLC OR разработка)',
-    # The same work named through the vendor: many ads never say "ПЛК" or "АСУ ТП", only the brand.
-    '(Siemens OR "TIA Portal" OR Step7 OR "Step 7" OR WinCC OR ОВЕН OR Beckhoff OR Wago '
-    'OR "Schneider Electric" OR Omron OR Mitsubishi OR Segnetics OR Delta) '
+    # The same work named through the vendor: many ads never say "ПЛК" or "АСУ ТП", only the brand. The list
+    # follows the evaluation prompt: the core platforms and the "single foreign environment" band (Allen-Bradley,
+    # TwinCAT, EcoStruxure/SoMachine, ТЕКОН, REGUL, Berghof) — a vacancy the prompt can score is a vacancy the
+    # search must be able to find (v9.11).
+    '(Siemens OR "TIA Portal" OR Step7 OR "Step 7" OR WinCC OR ОВЕН OR Beckhoff OR TwinCAT OR Wago '
+    'OR "Schneider Electric" OR EcoStruxure OR SoMachine OR Omron OR Mitsubishi OR Segnetics OR Delta '
+    'OR "Allen-Bradley" OR Rockwell OR "Studio 5000" OR RSLogix OR ТЕКОН OR REGUL OR Berghof) '
     'AND (программирование OR программист OR контроллер OR ПЛК OR АСУ OR наладка)',
+
     # Protocols and the upper level (диспетчеризация / АСКУЭ / телемеханика).
     '(Modbus OR "OPC UA" OR Profinet OR Profibus OR "верхний уровень" OR диспетчеризация '
     'OR АСКУЭ OR телемеханика) AND (АСУ OR ПЛК OR SCADA OR программирование OR инженер)',

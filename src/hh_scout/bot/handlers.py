@@ -10,11 +10,12 @@ import sqlite3
 from datetime import datetime, timedelta
 
 import httpx
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
 from hh_scout.bot.digest import send_digest
+from hh_scout.bot.feedback import awaiting_reason, set_awaiting_reason
 from hh_scout.bot.keyboards import vote_kb
 from hh_scout.bot.lead_actions import cleanup_stale, collapse_lead
 from hh_scout.config import TZ, Settings
@@ -45,7 +46,8 @@ HELP = (
     "/letter &lt;hh_id&gt; [пожелание] — написать или переписать отклик "
     "(«/letter 137256632 больше про SCADA»)\n"
     "/help — эта справка\n\n"
-    "Кнопки под карточкой: 👍/👎 — обратная связь для ИИ (👎 сворачивает карточку), "
+    "Кнопки под карточкой: 👍/👎 — обратная связь для ИИ (👎 сворачивает карточку; «✍️ своими словами» — "
+    "напишите причину ответом на вопрос бота, оценщик её учтёт), "
     "✅ Написал — отклик отправлен (карточка сворачивается, письмо удаляется), ⏸ Позже — отложить."
 )
 
@@ -258,6 +260,33 @@ async def letter_cmd(m: Message, command: CommandObject, settings: Settings, con
     letter = await m.answer(format_letter(row["employer"], text, row_site(row)))
     # a queue lead the owner just received is a sent lead from here on: closable, counted, never re-sent
     record_manual_letter(conn, settings, row, getattr(card, "message_id", None), getattr(letter, "message_id", None))
+
+
+MAX_REASON_CHARS = 300
+
+
+@router.message(F.reply_to_message, F.text)
+async def reason_reply(m: Message, conn: sqlite3.Connection) -> None:
+    """The owner's own words on a 👎 (v9.11): a reply to the bot's question after «✍️ своими словами»."""
+    pending = awaiting_reason(conn)
+    if pending is None or m.reply_to_message.message_id != pending[1]:
+        return
+    vacancy_id, _ = pending
+    text = (m.text or "").strip()[:MAX_REASON_CHARS]
+    if not text:
+        return
+    with conn:
+        repo.update_feedback_reason(conn, vacancy_id, text)
+    set_awaiting_reason(conn, None)
+    row = repo.vacancy_by_id(conn, vacancy_id)
+    card_id, _ = repo.lead_messages(conn, vacancy_id)
+    if row is not None and card_id:
+        from hh_scout.pipeline.ranker import format_collapsed
+        try:
+            await m.bot.edit_message_text(format_collapsed("disliked", row, reason=text), chat_id=m.chat.id, message_id=card_id)
+        except Exception as e:  # noqa: BLE001 — the card may already be gone; the reason is stored anyway
+            log.warning("Не удалось дописать причину в карточку %s: %s", vacancy_id, e)
+    await m.answer("Записал — оценщик учтёт при следующих оценках.")
 
 
 _ID_RE = re.compile(r"^[A-Za-z0-9:_.-]{1,64}$")

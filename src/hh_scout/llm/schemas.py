@@ -30,7 +30,6 @@ class VacancyEvaluation(BaseModel):
     lead_score: int = Field(ge=0, le=100)   # direct employer, contract-friendly signals
     ip_gph_possible: str = Field(pattern="^(yes|maybe|no)$")
     is_agency: bool = False
-    employment_hint: str = Field(default="unknown", pattern="^(staff|project|unknown)$")
     company_kind: str = Field(default="unknown", pattern="^(integrator|manufacturer|end_customer|agency|unknown)$")
     verdict: str
     pitch_hint: str = ""

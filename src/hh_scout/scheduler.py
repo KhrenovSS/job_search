@@ -317,6 +317,7 @@ class Scheduler:
             if now.hour == 0 or kv_get(self.conn, "alerts_cleaned") != now.date().isoformat():
                 self.alerter.forget_old(now.date())
                 kv_set(self.conn, "alerts_cleaned", now.date().isoformat())
+                kv_set(self.conn, "awaiting_reason", None)   # a 👎 reason nobody typed by the next day is dropped
         except sqlite3.OperationalError as e:
             log.warning("Сторож: отметка в kv не записана (%s), повторим через 30 мин", e)
         return alerts
