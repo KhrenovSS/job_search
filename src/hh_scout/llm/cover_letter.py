@@ -23,7 +23,7 @@ from hh_scout.llm.company_research import CompanyResearcher
 from hh_scout.llm.letter_checks import strip_role_address
 from hh_scout.llm.prompts import PrivatePromptMissing, load_prompt_body, read_private, render
 from hh_scout.pipeline import repo
-from hh_scout.pipeline.rows import row_get, row_site
+from hh_scout.pipeline.rows import letter_key, row_get, row_site
 
 log = logging.getLogger(__name__)
 
@@ -38,12 +38,14 @@ ASKS_SALARY_PHRASES = (
     "желаемый уровень", "укажите желаемую", "укажите вилку", "желаемую заработную плату",
     "salary expectation",
 )
-# profi.ru orders get a short bid, not a cover letter
-LETTER_PROMPTS = {"hh": "cover_letter.md", "profi": "profi_bid.md"}
-REVIEW_PROMPT = "letter_review.md"  # v9.1: a second pass over every hh letter
+# Three prompt families (`rows.letter_key`): a response to a vacancy, a short bid for a profi.ru order, and a
+# partnership offer to a company (v9.13) — the last is read by a director, not HR, so it is shorter.
+LETTER_PROMPTS = {"hh": "cover_letter.md", "profi": "profi_bid.md", "company": "company_offer.md"}
+REVIEW_PROMPT = "letter_review.md"  # v9.1: a second pass over every hh letter; company offers go through it too
+REVIEWED_KEYS = frozenset({"hh", "company"})
 # The profi ceiling was 1200 and threw away a perfectly good bid at 1492 (profi:93756285), leaving the order
 # with no text at all. Same reasoning as MAX_CHARS above: a bid a bit over the target beats no bid.
-LENGTH_LIMITS = {"hh": (MIN_CHARS, MAX_CHARS), "profi": (150, 1500)}
+LENGTH_LIMITS = {"hh": (MIN_CHARS, MAX_CHARS), "profi": (150, 1500), "company": (MIN_CHARS, 3000)}
 # What the letter payload takes from the dossier: the facts and the guesses, not the researcher's own notes
 # (`sources`, `note` are meta-commentary the letter model was never told to ignore).
 DOSSIER_FIELDS = ("found", "what_they_do", "industry", "products", "sites", "scale", "automation_hooks")
@@ -74,6 +76,24 @@ def letter_payload(row: sqlite3.Row, company: dict | None = None, owner_hint: st
         skills = skills.get("keySkill")
     desc = strip_html(raw.get("description"))
     asks_salary = any(w in desc.lower() for w in ASKS_SALARY_PHRASES)
+    if letter_key(row) == "company":
+        # a partnership offer: what we know about the company, what to offer it — and no salary anything
+        catalog = {k: raw.get(k) for k in ("industries", "status", "region", "site", "projects_url") if raw.get(k)}
+        return {
+            "kind": "company",
+            "channel": row["search_pass"],
+            "company_name": row["employer"],
+            "company_kind": row["company_kind"],
+            "city": row["area_name"],
+            "company": company,      # dossier from the open web; None = only what the vacancy / catalogue said
+            "catalog": catalog or None,
+            "seen_through": row["title"],   # the vacancy (or catalogue line) the company was found by
+            "description": desc[:MAX_DESCRIPTION_CHARS],
+            "verdict": row["verdict"],
+            "pitch_hint": row["pitch_hint"],
+            "offer_focus": json.loads(row_get(row, "offer_focus") or "[]"),
+            "owner_hint": owner_hint or None,
+        }
     if row_site(row) == "profi":
         return {
             "kind": "order",
@@ -110,9 +130,9 @@ def letter_payload(row: sqlite3.Row, company: dict | None = None, owner_hint: st
     }
 
 
-def render_letter_prompt(settings: Settings, site: str = "hh") -> str:
-    """The site's letter prompt with the resume and the profile substituted — what the model is told."""
-    template = LETTER_PROMPTS.get(site, LETTER_PROMPTS["hh"])
+def render_letter_prompt(settings: Settings, key: str = "hh") -> str:
+    """The family's letter prompt with the resume and the profile substituted — what the model is told."""
+    template = LETTER_PROMPTS.get(key, LETTER_PROMPTS["hh"])
     return render(settings.prompts_dir, template, resume=read_private(settings.prompts_dir, "resume.md"))
 
 
@@ -120,7 +140,7 @@ def render_review_prompt(settings: Settings) -> str:
     return render(settings.prompts_dir, REVIEW_PROMPT, resume=read_private(settings.prompts_dir, "resume.md"))
 
 
-def rules_hash(settings: Settings, site: str = "hh") -> str:
+def rules_hash(settings: Settings, key: str = "hh") -> str:
     """Which version of the letter rules a text was written under (decision #50).
 
     The letter is written the day the lead is found and may leave the queue days later — by then the prompt,
@@ -134,17 +154,17 @@ def rules_hash(settings: Settings, site: str = "hh") -> str:
     without letters instead of crashing on a machine where the private prompts are missing.
     """
     try:
-        parts = [render_letter_prompt(settings, site)]
+        parts = [render_letter_prompt(settings, key)]
     except (PrivatePromptMissing, OSError) as e:
         log.warning("Не читаются промпты письма (%s) — считаю все сохранённые письма устаревшими", e)
         return ""
-    if site == "hh":
+    if key in REVIEWED_KEYS:
         try:
             parts.append(load_prompt_body(settings.prompts_dir / REVIEW_PROMPT))
         except OSError:
             pass      # no checklist, no editor pass — `_review` degrades exactly the same way
         parts.append(letter_checks.CODE_RULES)
-        parts.append(f"length:{LENGTH_LIMITS['hh']}")
+        parts.append(f"length:{LENGTH_LIMITS.get(key, LENGTH_LIMITS['hh'])}")
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
@@ -171,7 +191,7 @@ def check_letter(text: str, row: sqlite3.Row, company: dict | None) -> str:
     problem = letter_checks.money_problem(text) or letter_checks.cliche_problem(text)
     if problem:
         return problem
-    if row_site(row) == "hh":
+    if letter_key(row) in REVIEWED_KEYS:
         problem = letter_checks.signature_problem(text)
         if problem:
             return problem
@@ -219,11 +239,11 @@ class CoverLetterWriter:
         self.stats = LetterStats()
         self._rules_cache: dict[str, str] = {}
 
-    def rules(self, site: str) -> str:
-        """The current rules stamp for `site`, read once per writer (the prompt files are re-read by design)."""
-        if site not in self._rules_cache:
-            self._rules_cache[site] = rules_hash(self.s, site)
-        return self._rules_cache[site]
+    def rules(self, key: str) -> str:
+        """The current rules stamp for a prompt family, read once per writer (the prompt files are re-read by design)."""
+        if key not in self._rules_cache:
+            self._rules_cache[key] = rules_hash(self.s, key)
+        return self._rules_cache[key]
 
     def answered_employer(self, row: sqlite3.Row) -> sqlite3.Row | None:
         """The vacancy of this company the owner has already answered — then no letter is written at all.
@@ -246,17 +266,17 @@ class CoverLetterWriter:
         A rewrite keeps the owner's earlier wish (`cover_letters.owner_hint`) unless a new one is given: the
         instruction typed into `/letter <id> …` must survive a rules change (v9.11).
         """
-        site = row_site(row)
+        key = letter_key(row)
         if self.answered_employer(row) is not None:
             return None
         hint = hint or row_get(row, "letter_hint") or None
-        system_text = system_text or render_letter_prompt(self.s, site)
+        system_text = system_text or render_letter_prompt(self.s, key)
         company = None
-        if site == "hh":
+        if key in REVIEWED_KEYS:
             brief = self.researcher.for_row(row)
             company = brief.model_dump(include=set(DOSSIER_FIELDS)) if brief is not None and brief.found else None
         payload = letter_payload(row, company, hint)
-        lo, hi = LENGTH_LIMITS.get(site, LENGTH_LIMITS["hh"])
+        lo, hi = LENGTH_LIMITS.get(key, LENGTH_LIMITS["hh"])
         text, problem = "", ""
         for attempt in (0, 1):
             user_text = json.dumps(payload, ensure_ascii=False)
@@ -276,11 +296,11 @@ class CoverLetterWriter:
             log.warning("Письмо для %s отклонено: %s", row["hh_id"], problem)
             self.stats.failed += 1
             return None
-        if site == "hh":
+        if key in REVIEWED_KEYS:
             text = self._review(text, payload, row, company) or text
         with self.conn:
             repo.save_cover_letter(self.conn, row["id"], text, model_note=self.s.bridge_model or "bridge-default",
-                                   rules_hash=self.rules(site), owner_hint=hint, with_dossier=company is not None)
+                                   rules_hash=self.rules(key), owner_hint=hint, with_dossier=company is not None)
         self.stats.written += 1
         log.info("Письмо для %s «%s» (%s): %d символов", row["hh_id"], row["title"][:40], row["employer"], len(text))
         return text
@@ -307,7 +327,7 @@ class CoverLetterWriter:
         queue = repo.lead_queue(self.conn, self.s.score_threshold, None,
                                 wait_bonus_max=self.s.queue_wait_bonus_max)
         fresh = [r for r in queue if not r["letter"]]
-        stale = [r for r in queue if r["letter"] and not usable_letter(r, self.rules(row_site(r)))]
+        stale = [r for r in queue if r["letter"] and not usable_letter(r, self.rules(letter_key(r)))]
         if stale:
             log.info("Писем, написанных по прежним правилам: %d — переписываю после новых лидов", len(stale))
         rows = (fresh + stale)[:left]
@@ -316,12 +336,12 @@ class CoverLetterWriter:
             return self.stats
         systems: dict[str, str] = {}
         for row in rows:
-            site = row_site(row)
-            if site not in systems:
-                systems[site] = render_letter_prompt(self.s, site)
+            key = letter_key(row)
+            if key not in systems:
+                systems[key] = render_letter_prompt(self.s, key)
             if self.answered_employer(row) is not None:
                 continue      # the company is closed; `dedup.dedupe_evaluated` will skip the row on its next pass
-            if self.write_for(row, systems[site]) is None and row["letter"]:
+            if self.write_for(row, systems[key]) is None and row["letter"]:
                 log.warning("Письмо для %s осталось по прежним правилам — лид подождёт следующего подхода",
                             row["hh_id"])
         self.stats.bridge_calls = self.bridge.calls + self._research_bridge.calls  # research has its own client
@@ -346,7 +366,7 @@ class CoverLetterWriter:
         fixed = _clean(answer)
         if not fixed or fixed.strip().upper().startswith(("OK", "ОК")):
             return None
-        lo, hi = LENGTH_LIMITS["hh"]
+        lo, hi = LENGTH_LIMITS.get(letter_key(row), LENGTH_LIMITS["hh"])
         problem = self._problem(fixed, row, company, lo, hi)
         if problem:
             log.warning("Редактор вернул текст с ошибкой (%s) — оставляю черновик", problem)

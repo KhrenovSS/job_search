@@ -78,7 +78,7 @@ def _make(monkeypatch, budget=60):
     migrate(conn)
     loads = []
     settings = Settings(_env_file=None, daily_page_loads_min=budget, daily_page_loads_max=budget,
-                        max_pages_per_query=4, search_all_russia=False)
+                        max_pages_per_query=4, search_all_russia=False, company_channels="")
     c = Collector(settings, conn, session_factory=lambda b: FakeSession(b, loads), rng=random.Random(0), page_budget=budget)
     return c, conn, loads
 
@@ -206,3 +206,43 @@ def test_backfill_walk_goes_through_bursts_and_reports_every_page(monkeypatch):
                                     rng=random.Random(0), after_burst=lambda bs: totals.append(bs.page_loads))
     assert stats.page_loads == 1 and totals == [1]     # the fake list has no `paging` -> one page, then done
     assert sync.synced == 2 and all("negotiations" in u for u in loads)
+
+
+# --- v9.13: company channels ------------------------------------------------------------------------
+
+def test_company_channels_add_one_task_each_and_mark_their_cards():
+    from hh_scout.pipeline.collector import COMPANY_PASSES, PASS_DESIGN, PASS_PANEL
+
+    tasks = plan_tasks([113], queries=("a",), rng=random.Random(1), company_channels={"panel", "design", "owen_si"})
+    assert len(tasks) == 6 and {t.search_pass for t in tasks} >= COMPANY_PASSES
+    assert all(t.areas == (113,) and not t.work_formats for t in tasks if t.search_pass in COMPANY_PASSES)
+    only = plan_tasks([113], queries=("a",), rng=random.Random(1), company_channels={"panel"}, only_pass=PASS_PANEL)
+    assert [t.search_pass for t in only] == [PASS_PANEL]
+    assert plan_tasks([113], queries=("a",), rng=random.Random(1), company_channels=set()) and PASS_DESIGN not in {
+        t.search_pass for t in plan_tasks([113], queries=("a",), rng=random.Random(1), company_channels=set())}
+
+
+def test_company_pass_cards_become_company_leads_and_the_seed_uses_its_own_period(monkeypatch):
+    from hh_scout.browser import pacing
+    from hh_scout.pipeline import collector as mod
+
+    monkeypatch.setattr(pacing, "sleep", lambda s: None)
+    monkeypatch.setattr(mod, "SEARCH_QUERIES", ("Q",))
+    conn = connect(":memory:")
+    migrate(conn)
+    loads = []
+
+    class PanelSession(FakeSession):
+        def open(self, url):
+            self.page_loads += 1
+            self.log.append(url)
+            return _search_state([9001, 9002], has_next=False)
+
+    s = Settings(_env_file=None, daily_page_loads_min=10, daily_page_loads_max=10, company_channels="panel")
+    c = Collector(s, conn, session_factory=lambda b: PanelSession(b, loads), rng=random.Random(0), page_budget=10,
+                  only_pass="panel", period_days=30)
+    c.run()
+    from urllib.parse import unquote_plus
+    assert len(loads) == 1 and "search_period=30" in loads[0] and "НКУ" in unquote_plus(loads[0])   # no responses sync on a seed run
+    rows = {r["hh_id"]: r for r in conn.execute("SELECT * FROM vacancies")}
+    assert rows["9001"]["lead_kind"] == "company" and rows["9001"]["search_pass"] == "panel"

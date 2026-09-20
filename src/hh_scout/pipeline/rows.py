@@ -25,3 +25,21 @@ def row_site(row: sqlite3.Row | dict) -> str:
 
 def is_hh(row: sqlite3.Row | dict) -> bool:
     return row_site(row) == "hh"
+
+
+def lead_kind(row: sqlite3.Row | dict) -> str:
+    """`vacancies.lead_kind`: 'vacancy' (default) or 'company' (v9.13, decision #53)."""
+    return row_get(row, "lead_kind") or "vacancy"
+
+
+def letter_key(row: sqlite3.Row | dict) -> str:
+    """Which prompt family a row belongs to: 'profi' (an order), 'company' (a partnership offer) or 'hh' (a response).
+
+    Everything that used to branch on the site — the evaluation prompt, the letter prompt, the rules stamp, the
+    length limits — branches on this instead.
+    """
+    if row_site(row) == "profi":
+        return "profi"
+    if lead_kind(row) == "company":
+        return "company"
+    return "hh"

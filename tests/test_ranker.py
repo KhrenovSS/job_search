@@ -96,3 +96,25 @@ def test_header_plural_forms():
     assert digest_header(0, 50, work=work).endswith("Работа за сутки: подходов 3 · страниц 118")
     assert "Работа за сутки: подходов 3 · страниц 118\nНеобработанных" in digest_header(2, 50, open_before=1, work=work)
     assert "Работа за сутки" not in digest_header(2, 50)
+
+
+def test_company_card_names_the_company_the_channel_the_offer_and_the_contacts():
+    """v9.13: a company lead has no salary, no role score and no vacancy title in the head — the company is the lead."""
+    v = _row(title="Сборщик шкафов автоматики", employer="Ктм Групп", employer_id="77", lead_kind="company",
+             search_pass="panel", site="hh", area_name="Краснодар", url="https://hh.ru/vacancy/5", raw_json=None,
+             salary_raw=None, company_brief=None)
+    e = _row(total=72, tech_score=80, role_score=0, lead_score=60, ip_gph_possible="maybe", is_agency=0,
+             company_kind="panel_builder", verdict="Собирают шкафы управления вентиляцией", pitch_hint="Программа под каждый шкаф",
+             red_flags=None, offer_focus=json.dumps(["plc_hmi_per_panel", "templates"]), floor=0)
+    card = format_card(1, v, e)
+    assert card.startswith("<b>1. Ктм Групп</b> (сборщик шкафов)")
+    assert "🔧 щитовики (hh)" in card and "👀 Найдена по: Сборщик шкафов автоматики" in card
+    assert "⭐ Лид: <b>72/100</b> (соответствие 80 · лид 60)" in card and "роль" not in card and "💰" not in card
+    assert "🤝 Предложить: программа ПЛК и панель под каждый шкаф; типовые программы для серийных шкафов" in card
+
+    owen = _row(title="Системный интегратор ОВЕН (Золотой)", employer="КАЭЛ", employer_id="owen:1426", lead_kind="company",
+                search_pass="owen_si", site="owen", area_name="Белгород", url="https://kael.pro/", salary_raw=None, company_brief=None,
+                raw_json=json.dumps({"status": "Золотой", "site": "https://kael.pro/", "emails": ["vk@kael.pro"], "phones": ["+7 (909) 208-32-55"]}))
+    card = format_card(2, owen, e)
+    assert "🟡 каталог ОВЕН" in card and "партнёр ОВЕН: Золотой" in card and "Найдена по" not in card
+    assert "📞 https://kael.pro/ · vk@kael.pro · +7 (909) 208-32-55" in card

@@ -258,6 +258,17 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
             report.errors.append(f"описания: {e}")
         report.page_loads = loaded_before + loaded(d, ds)
 
+    # 4b. company leads from the ОВЕН catalogue enter evaluation a few per day (v9.13) — DB only
+    if "owen_si" in settings.company_channels_set:
+        try:
+            with conn:
+                admitted = repo.admit_company_leads(conn, settings.company_leads_per_day)
+            if admitted:
+                log.info("Каталог ОВЕН: допущено в оценку %d компаний", admitted)
+        except Exception as e:  # noqa: BLE001
+            log.exception("Допуск компаний из каталога упал")
+            report.errors.append(f"каталог: {e}")
+
     # 5. evaluate + 6. letters (bridge)
     if report.bridge_error is None:
         try:

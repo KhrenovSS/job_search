@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from hh_scout.config import TITLE_KEEP_WORDS, TITLE_REQUIRED_ANY, TITLE_STOP_WORDS, Settings
 from hh_scout.db import transaction
 from hh_scout.pipeline import repo
+from hh_scout.pipeline.rows import lead_kind
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ class CardFacts:
     title: str
     applied: bool
     archived: bool
+    company: bool = False   # a company-channel card (v9.13): the title names the company's trade, not a programmer
 
 
 # Stop words match only at the start of a word: "водитель" must not hit "руководитель".
@@ -48,8 +50,8 @@ def decide(card: CardFacts) -> str | None:
         for w, rx in _STOP_RES:
             if rx.search(title):
                 return f"stopword:{w.strip()}"
-    if not any(k in title for k in TITLE_REQUIRED_ANY):
-        return "no_engineering_title"
+    if not card.company and not any(k in title for k in TITLE_REQUIRED_ANY):
+        return "no_engineering_title"   # a company card («Сборщик шкафов») is judged by the company, not the title
     # Neither salary nor work format is a rule: vacancies are leads for contracting, not jobs to take.
     # Rotation work (fly_in_fly_out) used to be dropped here — 467 vacancies, 12% of everything skipped —
     # although it only says where the object is. Whether the programming part can be done from a desk is
@@ -59,7 +61,7 @@ def decide(card: CardFacts) -> str | None:
 
 def _facts(row: sqlite3.Row) -> CardFacts:
     return CardFacts(hh_id=row["hh_id"], title=row["title"] or "", applied=bool(row["applied"]),
-                     archived=(row["skip_reason"] == "archived"))
+                     archived=(row["skip_reason"] == "archived"), company=(lead_kind(row) == "company"))
 
 
 def run(conn: sqlite3.Connection, settings: Settings, *, dry_run: bool = False) -> Counter:

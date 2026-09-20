@@ -117,6 +117,19 @@ class Settings(BaseSettings):
     # AI triage of search cards before opening vacancy pages
     triage_batch_size: int = 30
 
+    # Company leads (v9.13, decision #53): companies that could hand the programming part to a contractor, found
+    # through vacancies that are not for a programmer (panel builders, design bureaus) or through the ОВЕН integrator
+    # catalogue. Channels: panel, design (hh.ru search passes, COMPANY_QUERIES) and owen_si (the catalogue).
+    company_channels: str = "panel,design,owen_si"
+    # How many catalogue companies may enter evaluation per day — 230 integrators at once would crowd the queue
+    company_leads_per_day: int = 5
+    owen_integrators_url: str = "https://owen.ru/upl_files/modules/system_integrators/client/integrators.php"
+    owen_integrators_referer: str = "https://owen.ru/spisok_sistemnih_integratorov"
+    # Company lead score = fit (is there programming work here that can be contracted out) + lead (direct company,
+    # scale, stack); no "role" dimension — the vacancy that revealed the company is not for a programmer.
+    weight_company_fit: float = 0.6
+    weight_company_lead: float = 0.4
+
     # Lead scoring (the AI returns sub-scores, the code computes the total).
     # Vacancies are leads for the owner's ИП contracting: salary and work format do not score.
     # 60 → 50 on 2026-09-20 (decision #52): the owner would rather write to a "near lead" than to nobody —
@@ -173,6 +186,10 @@ class Settings(BaseSettings):
             raise ValueError("PAGE_DELAY_MAX_S меньше PAGE_DELAY_MIN_S")
         if self.long_read_max_s < self.long_read_min_s:
             raise ValueError("LONG_READ_MAX_S меньше LONG_READ_MIN_S")
+
+    @property
+    def company_channels_set(self) -> frozenset[str]:
+        return frozenset(c.strip() for c in self.company_channels.split(",") if c.strip())
 
     @property
     def digest_time_parsed(self) -> time:
@@ -252,6 +269,17 @@ SEARCH_QUERIES: tuple[str, ...] = (
     '(Modbus OR "OPC UA" OR Profinet OR Profibus OR "верхний уровень" OR диспетчеризация '
     'OR АСКУЭ OR телемеханика) AND (АСУ OR ПЛК OR SCADA OR программирование OR инженер)',
 )
+
+# Company channels on hh.ru (v9.13, decision #53): the vacancy is only the way to see the company. A panel builder
+# hiring an assembler has customers who want a working program in the cabinet; a design bureau hiring a designer has
+# projects that someone must program and commission. One task per channel per sitting, all of Russia.
+COMPANY_QUERIES: dict[str, str] = {
+    "panel": '("сборщик шкафов" OR "сборщик щитов" OR "сборщик электрощитового" OR "электромонтажник шкафов" '
+             'OR "электромонтажник щитов" OR "электромонтажник-сборщик" OR "шкафов автоматики" OR "шкафов управления" '
+             'OR "щитовое оборудование" OR НКУ OR "щитов автоматики")',
+    "design": '("инженер-проектировщик" OR проектировщик) AND ("АСУ ТП" OR "систем автоматизации" '
+              'OR "систем автоматики" OR КИПиА OR автоматизации)',
+}
 
 # Fallback geography for SEARCH_ALL_RUSSIA=false. Region names resolved through GET /areas and cached in the DB.
 # Was the default until 2026-09-13 (owner's decision 2026-09-08: European Russia, roughly 1300 km from Moscow);

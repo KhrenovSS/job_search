@@ -24,7 +24,7 @@ from hh_scout.llm.evaluator import Evaluator
 from hh_scout.pipeline import outcomes, repo
 from hh_scout.pipeline.digest_builder import finalize_digest, plan_digest, promote_floor
 from hh_scout.pipeline.ranker import digest_header, format_card, format_letter, format_queue_tail
-from hh_scout.pipeline.rows import row_site
+from hh_scout.pipeline.rows import letter_key, row_site
 
 log = logging.getLogger(__name__)
 INVITED_DAYS = 14  # how far back the header looks for invitations
@@ -32,18 +32,18 @@ PAUSE_S = 1.0  # v9.7: a digest is now ~20 messages at noon — do not crowd the
 SITES = ("hh", "profi")
 
 
-class RulesBySite:
-    """The current rules stamp per site, computed once per send (the prompt files are re-read each time)."""
+class RulesByKey:
+    """The current rules stamp per prompt family (`rows.letter_key`), computed once per send."""
 
     def __init__(self, settings: Settings) -> None:
         self._s = settings
         self._cache: dict[str, str] = {}
 
     def for_row(self, row: sqlite3.Row) -> str:
-        site = row_site(row)
-        if site not in self._cache:
-            self._cache[site] = rules_hash(self._s, site)
-        return self._cache[site]
+        key = letter_key(row)
+        if key not in self._cache:
+            self._cache[key] = rules_hash(self._s, key)
+        return self._cache[key]
 
     def letter(self, row: sqlite3.Row) -> str | None:
         return usable_letter(row, self.for_row(row))
@@ -65,7 +65,7 @@ def _evaluate_pending(settings: Settings) -> tuple[int, int]:
         conn.close()
 
 
-async def _deliver(bot: Bot, chat_id: int, rows: list[sqlite3.Row], rules: RulesBySite) -> list[tuple[sqlite3.Row, int, int | None]]:
+async def _deliver(bot: Bot, chat_id: int, rows: list[sqlite3.Row], rules: RulesByKey) -> list[tuple[sqlite3.Row, int, int | None]]:
     """Card + letter for every row, in order; returns what `finalize_digest` records."""
     sent: list[tuple[sqlite3.Row, int, int | None]] = []
     for i, row in enumerate(rows, 1):
@@ -75,7 +75,7 @@ async def _deliver(bot: Bot, chat_id: int, rows: list[sqlite3.Row], rules: Rules
         letter = rules.letter(row)   # no usable letter (the bridge was down) — the card goes out on its own
         if letter:
             await asyncio.sleep(PAUSE_S)
-            letter_msg = await bot.send_message(chat_id, format_letter(row["employer"], letter, row_site(row)))
+            letter_msg = await bot.send_message(chat_id, format_letter(row["employer"], letter, letter_key(row)))
             letter_id = letter_msg.message_id
         sent.append((row, msg.message_id, letter_id))
     return sent
@@ -113,7 +113,7 @@ async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, ch
     if not plan.leads:
         finalize_digest(conn, settings, [], plan.checked, note)
         return 0
-    sent = await _deliver(bot, chat_id, plan.leads, RulesBySite(settings))
+    sent = await _deliver(bot, chat_id, plan.leads, RulesByKey(settings))
     if plan.waiting:
         await asyncio.sleep(PAUSE_S)
         await bot.send_message(chat_id, format_queue_tail(plan.waiting, plan.waiting_total),
@@ -144,10 +144,11 @@ async def send_instant_leads(bot: Bot, conn: sqlite3.Connection, settings: Setti
     if not left:
         log.info("Мгновенная отправка (%s): суточная норма %d исчерпана", site, settings.digest_max_items)
         return 0
-    rules = RulesBySite(settings)
+    rules = RulesByKey(settings)
     if site == "hh":
+        # hh vacancies and company leads alike: everything that is not a profi order goes out here
         queue = repo.lead_queue(conn, settings.score_threshold, None, wait_bonus_max=settings.queue_wait_bonus_max)
-        leads = [r for r in queue if row_site(r) == "hh" and rules.letter(r)][:left]
+        leads = [r for r in queue if row_site(r) != "profi" and rules.letter(r)][:left]
     else:
         leads = repo.evaluated_leads(conn, settings.score_threshold, left, site=site)
         missing = [r for r in leads if not rules.letter(r)]

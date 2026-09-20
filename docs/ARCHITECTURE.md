@@ -54,6 +54,25 @@ project: `employment_form=PROJECT,PART`), в случайном порядке; 
 
 Итог прогона — `CrawlReport.as_text()` одним сообщением владельцу; метрики в `runs`.
 
+## Лиды-компании (v9.13, решение №53)
+Единица лида — компания, вакансия лишь повод её увидеть. Три канала (`COMPANY_CHANNELS`, по умолчанию все):
+- `panel` и `design` — задачи сбора по `COMPANY_QUERIES` (одна на канал, вся Россия): карточки получают
+  `lead_kind='company'` (`repo.insert_card`), префильтр не требует инженерного слова, триаж идёт по
+  `prompts/company_triage.md` (пачки по виду не смешиваются), страница вакансии читается как описание компании,
+  оценка — `prompts/company_evaluation.md` → `CompanyEvaluation` (fit, lead, company_kind ∈ panel_builder /
+  design_bureau / integrator / …, offer_focus), балл `ranker.company_total_score` = 0.6·fit + 0.4·lead.
+  Стартовый проход: `python -m hh_scout.pipeline.collector --pass panel --period 30` (без синхронизации откликов).
+- `owen_si` — каталог интеграторов ОВЕН (`sources/owen.py`): JSON `integrators.php` читается `httpx` с хоста
+  (браузер и hh не задействованы), дилеры и скрытые записи отсеиваются, компании входят `new`; перед оценкой каждый
+  прогон допускает `COMPANY_LEADS_PER_DAY` штук (`repo.admit_company_leads`, Золотой → Серебряный → остальные);
+  обновление каталога — `Scheduler.owen_job` по воскресеньям 04:00 и CLI `python -m hh_scout.sources.owen [--admit N]`.
+  Досье (`company_research`) для них читает страницу проектов на owen.ru и сайт компании, hh не открывает.
+Дальше — общая очередь, норма, мгновенная отправка и дайджест. Письмо — `prompts/company_offer.md`
+(`rows.letter_key(row) == 'company'`: свой промпт, отпечаток правил, рамка 400–3000, редактор с оговоркой про
+партнёрство), карточка — `ranker.format_company_card` (канал, «Найдена по», соответствие/лид, «Предложить: …»,
+контакты из каталога), в Telegram — «🤝 Предложение партнёрства». `/stats` — разрезы «Тип лида» и «Канал»; для
+каталога исход `blind`. Недоступные с хоста источники (InSAT, тендеры) — в ROADMAP.
+
 ## Второй источник — profi.ru (`profi/pages.py`, `pipeline/profi_collector.py`, v7)
 Заказы клиентов из кабинета специалиста (`PROFI_ORDERS_URL`, по умолчанию `profi.ru/backoffice/n.php`; нужен вход на
 profi.ru в том же Firefox). Кабинет — JS-приложение без встроенного JSON, парсим DOM: карточка `<a data-testid="<id>_order-snippet">`

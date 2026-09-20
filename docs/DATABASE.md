@@ -8,7 +8,8 @@
 (`vacancies.accept_temporary`, `civil_law_contracts`), `_m009_employers`, `_m010_negotiation_state`
 (`vacancies.negotiation_state`, `negotiation_seen_at`), `_m011_letter_rules` (`cover_letters.rules_hash`),
 `_m012_negotiation_events` (`negotiation_events` + засев из снимка), `_m013_letter_context` (`cover_letters.owner_hint`,
-`with_dossier`), `_m014_floor` (`evaluations.floor` — взята по дневному минимуму ниже порога, решение №52).
+`with_dossier`), `_m014_floor` (`evaluations.floor` — взята по дневному минимуму ниже порога, решение №52),
+`_m015_lead_kind` (`vacancies.lead_kind` vacancy/company, `evaluations.offer_focus` — решение №53).
 Время — TEXT ISO-8601 UTC; границы для сравнения строятся через `repo.iso_utc` (строка с `+03:00` рядом с `+00:00`
 сравнивается как текст и сдвигает окно на три часа).
 Весь SQL — в `src/hh_scout/pipeline/repo.py`; аналитика над строками (исходы, полосы, зрелость) — в `pipeline/outcomes.py`.
@@ -58,7 +59,15 @@
 - `employment`: full / part (в т.ч. SIDE_JOB) / project / fly_in_fly_out / unknown.
 - `salary_raw`: исходный объект `compensation` hh (JSON); `salary_from`, `salary_to`: рубли net (gross×0.87) **только для
   месячных RUR**; валюта/почасовые хранятся как есть (пометка `Salary.note` в БД не хранится, вычисляется из `salary_raw`).
-- `site` (v7, `_m006`): `hh` (по умолчанию) / `profi`. Заказы profi.ru: `hh_id = 'profi:<номер заказа>'` — глобальный `UNIQUE`
+- `lead_kind` (v9.13, `_m015`): `vacancy` (по умолчанию) / `company` — лид-компания: щитовик или проектное бюро,
+  найденные по вакансии не для программиста (`search_pass` panel / design), или интегратор из каталога ОВЕН
+  (`site='owen'`, `hh_id='owen:<tag_id>'` или `owen:n-<slug>` без tag_id, `employer_id` тот же ключ — под досье и дедуп,
+  `url` = сайт компании, `raw_json = {description, industries, status, projects_url, site, emails, phones, address, region}`).
+  Оценка у таких строк — `tech_score` = соответствие, `role_score` = 0, `lead_score`; `total = 0.6·fit + 0.4·lead`;
+  `ip_gph_possible` = maybe; `offer_focus` — JSON-список кодов предложения (`schemas.OFFER_FOCUS`). Строки каталога входят
+  `new` и допускаются в `prefiltered` по `COMPANY_LEADS_PER_DAY` в день (`repo.admit_company_leads`, порядок по статусу
+  партнёра). Дедуп «одна компания — один лид» для `site='owen'` не действует (ключ уникален сам по себе).
+- `site` (v7, `_m006`): `hh` (по умолчанию) / `profi` / `owen` (v9.13). Заказы profi.ru: `hh_id = 'profi:<номер заказа>'` — глобальный `UNIQUE`
   остаётся, коллизий с hh нет; `employer` = имя клиента, `employment = project`, `raw_json = {description, budget, when, client,
   posted, work_format, city, site}`, `salary_raw = {"profi_budget": "до 5000 ₽", from, to, …}`; статус сразу `prefiltered`.
 - `source`: `search:<idx>` / `similar_to_resume` / `negotiations` / `profi`; `search_pass`: regional / remote / project / **gph**

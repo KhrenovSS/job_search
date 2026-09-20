@@ -346,6 +346,18 @@ def _m014_floor(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE evaluations ADD COLUMN floor INTEGER NOT NULL DEFAULT 0")
 
 
+def _m015_lead_kind(conn: sqlite3.Connection) -> None:
+    """v9.13: a lead can be a *company*, not only a vacancy (decision #53).
+
+    `vacancies.lead_kind` — 'vacancy' (an hh.ru vacancy or a profi.ru order the owner answers) or 'company' (a panel
+    builder, a design bureau or an ОВЕН integrator found through a non-programmer vacancy or a catalogue; the letter is
+    a partnership offer, not a response). `evaluations.offer_focus` — what the company evaluation says is worth
+    offering to this company (JSON list), read by the letter prompt.
+    """
+    conn.execute("ALTER TABLE vacancies ADD COLUMN lead_kind TEXT NOT NULL DEFAULT 'vacancy'")
+    conn.execute("ALTER TABLE evaluations ADD COLUMN offer_focus TEXT")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m001_initial,
     _m002_triage_columns,
@@ -361,6 +373,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m012_negotiation_events,
     _m013_letter_context,
     _m014_floor,
+    _m015_lead_kind,
 ]
 
 

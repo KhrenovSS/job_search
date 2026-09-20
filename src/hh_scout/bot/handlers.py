@@ -24,7 +24,7 @@ from hh_scout.llm.cover_letter import CoverLetterWriter
 from hh_scout.pipeline import outcomes, repo
 from hh_scout.pipeline.digest_builder import record_manual_letter
 from hh_scout.pipeline.ranker import format_card, format_inbox, format_letter, format_outcome_dimensions
-from hh_scout.pipeline.rows import row_site
+from hh_scout.pipeline.rows import letter_key, row_site
 
 log = logging.getLogger(__name__)
 router = Router(name="commands")
@@ -107,6 +107,10 @@ async def status_cmd(m: Message, settings: Settings, conn: sqlite3.Connection, s
                      + (f"; {last['error']}" if last['error'] else ""))
     order = ["new", "triage", "to_fetch", "prefiltered", "evaluated", "sent", "rejected", "skipped", "evaluation_failed"]
     lines.append("Вакансии: " + " · ".join(f"{k} {counts[k]}" for k in order if counts.get(k)))
+    if "owen_si" in settings.company_channels_set:
+        t = repo.owen_totals(conn)
+        lines.append(f"Каталог ОВЕН: компаний {t['total']} · ждут допуска {t['waiting']} · отправлено {t['sent']} "
+                     f"(по {settings.company_leads_per_day} в день)")
     lines.append("profi.ru: " + (f"✅ включён · заказов в базе {repo.count_site(conn, 'profi')}" if settings.profi_enabled
                                 else "выключен (PROFI_ENABLED=false)"))
     wd = kv_get(conn, "watchdog_last")
@@ -257,7 +261,7 @@ async def letter_cmd(m: Message, command: CommandObject, settings: Settings, con
         return
     row = repo.lead_by_hh_id(conn, hh_id)
     card = await m.answer(format_card(1, row, row), reply_markup=vote_kb(row["id"]))
-    letter = await m.answer(format_letter(row["employer"], text, row_site(row)))
+    letter = await m.answer(format_letter(row["employer"], text, letter_key(row)))
     # a queue lead the owner just received is a sent lead from here on: closable, counted, never re-sent
     record_manual_letter(conn, settings, row, getattr(card, "message_id", None), getattr(letter, "message_id", None))
 

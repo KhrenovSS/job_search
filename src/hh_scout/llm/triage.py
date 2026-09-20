@@ -22,6 +22,7 @@ from hh_scout.llm.bridge_client import BridgeClient, BridgeError, extract_json
 from hh_scout.llm.prompts import render
 from hh_scout.llm.schemas import TriageBatch, TriageVerdict
 from hh_scout.pipeline import repo
+from hh_scout.pipeline.rows import lead_kind
 
 log = logging.getLogger(__name__)
 
@@ -39,7 +40,14 @@ class TriageStats:
     verdicts: list[tuple[str, TriageVerdict]] = field(default_factory=list)  # (title, verdict) for logs/CLI
 
 
+TRIAGE_PROMPTS = {"vacancy": "card_triage.md", "company": "company_triage.md"}
+
+
 def card_payload(row: sqlite3.Row, searching_days: int = 0) -> dict:
+    if lead_kind(row) == "company":
+        # a company-channel card: the question is what the company does, not what the job is (v9.13)
+        return {"hh_id": row["hh_id"], "channel": row["search_pass"], "title": row["title"], "employer": row["employer"],
+                "area": row["area_name"], "employment": row["employment"]}
     return {
         "hh_id": row["hh_id"],
         "title": row["title"],
@@ -64,9 +72,15 @@ class Triager:
 
     def run(self, limit: int | None = None, *, dry_run: bool = False) -> TriageStats:
         rows = repo.list_vacancies(self.conn, "triage", limit)
-        system_text = render(self.s.prompts_dir, "card_triage.md")
-        for i in range(0, len(rows), self.s.triage_batch_size):
-            batch = rows[i:i + self.s.triage_batch_size]
+        by_kind: dict[str, list[sqlite3.Row]] = {}
+        for r in rows:
+            by_kind.setdefault(lead_kind(r), []).append(r)
+        batches: list[tuple[str, list[sqlite3.Row]]] = []
+        for kind, kind_rows in by_kind.items():   # a panel builder and a programmer vacancy never share a prompt
+            system_text = render(self.s.prompts_dir, TRIAGE_PROMPTS.get(kind, TRIAGE_PROMPTS["vacancy"]))
+            batches += [(system_text, kind_rows[i:i + self.s.triage_batch_size])
+                        for i in range(0, len(kind_rows), self.s.triage_batch_size)]
+        for system_text, batch in batches:
             verdicts = self._triage_batch(system_text, batch)
             if verdicts is None:
                 self.stats.failed_batches += 1

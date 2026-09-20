@@ -40,6 +40,8 @@ Window = tuple[time, time]
 
 # Nightly, between the last sitting and the first one of the next day.
 BACKUP_HOUR, BACKUP_MINUTE = 3, 30
+# The ОВЕН integrator catalogue changes slowly: once a week, Sunday night, is plenty (v9.13).
+OWEN_DAY, OWEN_HOUR, OWEN_MINUTE = "sun", 4, 0
 
 
 def _at(d: date, t: time) -> datetime:
@@ -145,6 +147,9 @@ class Scheduler:
                          replace_existing=True)
         self.aps.add_job(self.backup_job, CronTrigger(hour=BACKUP_HOUR, minute=BACKUP_MINUTE, timezone=TZ), id="backup",
                          replace_existing=True)
+        if "owen_si" in self.s.company_channels_set:
+            self.aps.add_job(self.owen_job, CronTrigger(day_of_week=OWEN_DAY, hour=OWEN_HOUR, minute=OWEN_MINUTE, timezone=TZ),
+                             id="owen", replace_existing=True)
         self.aps.start()
         nxt = self.next_crawl_at()
         log.info("Планировщик запущен: дайджест ежедневно в %s, окна сбора %s, следующий подход %s",
@@ -275,6 +280,17 @@ class Scheduler:
         except Exception as e:
             log.exception("Резервная копия БД не создана")
             await self.alerter.send([health.Alert("backup_failed", f"⚠️ Не удалось сделать резервную копию БД: {e}")])
+
+    async def owen_job(self) -> None:
+        """Weekly: new companies in the ОВЕН integrator catalogue become `new` company leads (no browser, no hh)."""
+        from hh_scout.sources import owen
+
+        try:
+            new, total = await asyncio.to_thread(owen.refresh, self.conn, self.s)
+            kv_set(self.conn, "owen_last", f"{dbmod.utcnow()}|{total}|{new}")
+        except Exception as e:  # noqa: BLE001
+            log.exception("Каталог ОВЕН не обновился")
+            await self.alerter.send([health.Alert("owen_failed", f"⚠️ Каталог интеграторов ОВЕН не прочитался: {e}")])
 
     async def digest_job(self) -> None:
         try:

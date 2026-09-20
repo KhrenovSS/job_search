@@ -22,7 +22,7 @@ from hh_scout.browser import pacing
 from hh_scout.browser.bursts import run_in_bursts
 from hh_scout.browser.hh_pages import SearchPage, VacancyCard, build_search_url, parse_search
 from hh_scout.browser.session import BrowserSession, BrowserUnavailable, HHBlocked, WindowRegistry
-from hh_scout.config import SEARCH_QUERIES, Settings
+from hh_scout.config import COMPANY_QUERIES, SEARCH_QUERIES, Settings
 from hh_scout.db import transaction
 from hh_scout.hh.areas import RUSSIA_ID, resolve_region_ids
 from hh_scout.pipeline import negotiations, repo
@@ -34,6 +34,10 @@ PASS_REMOTE = "remote"
 PASS_PROJECT = "project"
 PASS_GPH = "gph"          # hh filter "Оформление по ГПХ или по совместительству"
 PASS_SIMILAR = negotiations.PASS_SIMILAR
+# Company channels (v9.13, decision #53): the vacancy is not for a programmer, the company behind it is the lead.
+PASS_PANEL = "panel"      # panel builders: сборщик шкафов / электромонтажник щитов / НКУ
+PASS_DESIGN = "design"    # design bureaus: инженер-проектировщик АСУ ТП
+COMPANY_PASSES = frozenset({PASS_PANEL, PASS_DESIGN})
 
 
 @dataclass
@@ -69,7 +73,12 @@ class CollectStats:
                 + (f", остановка: {self.stopped_reason}" if self.stopped_reason else ""))
 
 
-def plan_tasks(region_ids: list[int], queries: tuple[str, ...] | None = None, rng: random.Random | None = None) -> list[SearchTask]:
+def plan_tasks(region_ids: list[int], queries: tuple[str, ...] | None = None, rng: random.Random | None = None,
+               company_channels: frozenset[str] | set[str] = frozenset(), only_pass: str | None = None) -> list[SearchTask]:
+    """The sitting's search tasks: four passes per programmer query, plus one task per enabled company channel.
+
+    `only_pass` keeps just that pass — the one-off 30-day seed of a new channel (`collector --pass panel --period 30`).
+    """
     rng = rng or random.Random()
     queries = SEARCH_QUERIES if queries is None else queries
     tasks: list[SearchTask] = []
@@ -78,6 +87,11 @@ def plan_tasks(region_ids: list[int], queries: tuple[str, ...] | None = None, rn
         tasks.append(SearchTask(PASS_REMOTE, i, q, work_formats=("REMOTE",)))
         tasks.append(SearchTask(PASS_PROJECT, i, q, employment_forms=("PROJECT", "PART")))
         tasks.append(SearchTask(PASS_GPH, i, q, accept_temporary=True))
+    for j, (channel, q) in enumerate(COMPANY_QUERIES.items()):
+        if channel in company_channels:
+            tasks.append(SearchTask(channel, len(queries) + j, q, areas=tuple(region_ids)))
+    if only_pass:
+        tasks = [t for t in tasks if t.search_pass == only_pass]
     rng.shuffle(tasks)
     return tasks
 
@@ -94,12 +108,16 @@ class Collector:
         page_budget: int = 0,
         should_stop: Callable[[], bool] | None = None,
         page_loads_before: int = 0,
+        only_pass: str | None = None,
+        period_days: int | None = None,
     ) -> None:
         self.s = settings
         self.conn = conn
         self.rng = rng or random.Random()
         self.gap_scale = gap_scale
         self.page_budget = page_budget
+        self.only_pass = only_pass                 # seed run of one channel (CLI); None = the full plan
+        self.period_days = period_days or settings.search_period_days
         self.policy = pacing.policy_from_settings(settings)
         registry = WindowRegistry(conn, reap=True)
         self._session_factory = session_factory or (
@@ -113,9 +131,10 @@ class Collector:
 
     def run(self, run_id: int | None = None) -> CollectStats:
         region_ids = [RUSSIA_ID] if self.s.search_all_russia else resolve_region_ids(self.conn, self.s)
-        tasks = plan_tasks(region_ids, rng=self.rng)
+        tasks = plan_tasks(region_ids, rng=self.rng, company_channels=self.s.company_channels_set, only_pass=self.only_pass)
         log.info("План сбора: %d задач, бюджет %d загрузок, регионы %s", len(tasks), self.page_budget, region_ids)
-        sync = negotiations.NegotiationsSync(pages=self.s.negotiations_pages)
+        # A one-pass seed run (CLI --pass) is about one channel only: no responses sync, no extra loads.
+        sync = negotiations.NegotiationsSync(pages=self.s.negotiations_pages, done=bool(self.only_pass))
 
         def step(session: BrowserSession) -> bool:
             # One page per step, exactly like `_one_page`: the burst deadline and `should_stop` are checked
@@ -168,7 +187,7 @@ class Collector:
         url = build_search_url(
             task.query, areas=task.areas, work_formats=task.work_formats, employment_forms=task.employment_forms,
             accept_temporary=task.accept_temporary,
-            period_days=self.s.search_period_days, page=task.next_page, items_on_page=self.s.items_per_page,
+            period_days=self.period_days, page=task.next_page, items_on_page=self.s.items_per_page,
         )
         state = session.open(url)  # may raise PageBudgetExceeded -> handled by run_in_bursts
         page = parse_search(state)
@@ -193,10 +212,11 @@ class Collector:
 
     def _store_cards(self, cards: list[VacancyCard], source: str, search_pass: str) -> int:
         new = 0
+        kind = "company" if search_pass in COMPANY_PASSES else "vacancy"
         with transaction(self.conn):
             for card in cards:
                 self.stats.cards_seen += 1
-                if repo.insert_card(self.conn, card, source, search_pass):
+                if repo.insert_card(self.conn, card, source, search_pass, lead_kind=kind):
                     new += 1
         self.stats.new_vacancies += new
         return new
@@ -215,6 +235,9 @@ def main() -> int:
     ap.add_argument("--gap-scale", type=float, default=1.0, help="multiply pauses between bursts (debug only)")
     ap.add_argument("--no-gaps", action="store_true", help="no pauses between bursts (debug only, NOT for daily use)")
     ap.add_argument("--stale-hours", type=float, default=3.0, help="treat a 'running' run older than this as killed")
+    ap.add_argument("--pass", dest="only_pass", choices=sorted(COMPANY_PASSES | {PASS_REGIONAL, PASS_REMOTE, PASS_PROJECT, PASS_GPH}),
+                    help="run only this pass — e.g. the one-off seed of a company channel")
+    ap.add_argument("--period", type=int, help="search period in days for this run (default SEARCH_PERIOD_DAYS)")
     args = ap.parse_args()
 
     settings = load_settings()
@@ -233,7 +256,8 @@ def main() -> int:
     log.info("Загрузок сегодня уже %d из %d, бюджет на этот прогон %d", used_today, cap, budget)
     run_id = repo.start_run(conn, "manual")
     started = time.monotonic()
-    collector = Collector(settings, conn, gap_scale=0.0 if args.no_gaps else args.gap_scale, page_budget=budget)
+    collector = Collector(settings, conn, gap_scale=0.0 if args.no_gaps else args.gap_scale, page_budget=budget,
+                          only_pass=args.only_pass, period_days=args.period)
     try:
         stats = collector.run(run_id)
     except Exception as e:  # noqa: BLE001 — report and mark the run failed

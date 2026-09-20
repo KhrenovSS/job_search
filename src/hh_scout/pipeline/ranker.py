@@ -13,8 +13,8 @@ from datetime import datetime
 from hh_scout.config import TZ, Settings
 from hh_scout.hh.salary import human_from_raw
 from hh_scout.llm.letter_checks import strip_role_address
-from hh_scout.pipeline.outcomes import COMPANY_RU as _COMPANY_KIND_RU, SEARCHING_LONG_DAYS
-from hh_scout.pipeline.rows import row_get as _row_get, row_site
+from hh_scout.pipeline.outcomes import CHANNEL_RU, COMPANY_RU as _COMPANY_KIND_RU, SEARCHING_LONG_DAYS
+from hh_scout.pipeline.rows import letter_key, row_get as _row_get, row_site
 
 log = logging.getLogger(__name__)
 
@@ -30,8 +30,55 @@ def total_score(settings: Settings, tech: int, role: int, lead: int) -> int:
     return int(round(settings.weight_tech * tech + settings.weight_role * role + settings.weight_lead * lead))
 
 
+def company_total_score(settings: Settings, fit: int, lead: int) -> int:
+    """A company lead (v9.13): fit and lead only — the vacancy that revealed the company is not for a programmer."""
+    return int(round(settings.weight_company_fit * fit + settings.weight_company_lead * lead))
+
+
+OFFER_RU = {"plc_hmi_per_panel": "программа ПЛК и панель под каждый шкаф", "templates": "типовые программы для серийных шкафов",
+            "commissioning_scada": "ПНР у заказчика и SCADA", "plc_selection": "подбор ПЛК и обвязки",
+            "subcontract_programming": "субподряд на программную часть"}
+CHANNEL_ICON = {"panel": "🔧", "design": "📐", "owen_si": "🟡"}
+
+
+def format_company_card(position: int, v: sqlite3.Row, e: sqlite3.Row) -> str:
+    """A company lead (v9.13): the company is the lead, the vacancy or catalogue line is only how it was found."""
+    raw = json.loads(v["raw_json"]) if _row_get(v, "raw_json") else {}
+    kind = COMPANY_RU.get(e["company_kind"] or "unknown")
+    channel = _row_get(v, "search_pass") or ""
+    head = f"<b>{position}. {_esc(v['employer'] or 'компания не указана')}</b>" + (f" ({kind})" if kind else "")
+    facts = [f"{CHANNEL_ICON.get(channel, '🏭')} {CHANNEL_RU.get(channel, channel)}",
+             f"📍 {v['area_name']}" if v["area_name"] else None,
+             f"партнёр ОВЕН: {raw['status']}" if raw.get("status") else None]
+    lines = [head, "   " + " · ".join(x for x in facts if x),
+             f"   👀 Найдена по: {_esc(v['title'])}" if _row_get(v, "site") != "owen" else "",
+             f"   ⭐ Лид: <b>{e['total']}/100</b> (соответствие {e['tech_score']} · лид {e['lead_score']})",
+             f"   Что у них: {_esc(e['verdict'])}"]
+    waited = _row_get(v, "waiting_days") or 0
+    if waited >= 2:
+        lines[1] += f" · ⏳ в очереди {waited} дн."
+    about = _company_line(v)
+    if about:
+        lines.append(f"   🏭 О компании: {_esc(about)}")
+    focus = [OFFER_RU.get(x, x) for x in json.loads(_row_get(e, "offer_focus") or "[]")]
+    if focus:
+        lines.append(f"   🤝 Предложить: {_esc('; '.join(focus))}")
+    if e["pitch_hint"]:
+        lines.append(f"   ✉️ Зацепка: {_esc(e['pitch_hint'])}")
+    flags = json.loads(e["red_flags"]) if e["red_flags"] else []
+    if flags:
+        lines.append(f"   ⚠️ {_esc('; '.join(flags))}")
+    contacts = [x for x in (raw.get("site"), *(raw.get("emails") or [])[:2], *(raw.get("phones") or [])[:1]) if x]
+    if contacts:
+        lines.append(f"   📞 {_esc(' · '.join(contacts))}")
+    lines.append(f"   {v['url']}")
+    return "\n".join(x for x in lines if x)
+
+
 def format_card(position: int, v: sqlite3.Row, e: sqlite3.Row) -> str:
     """One digest message (Telegram HTML)."""
+    if letter_key(v) == "company":
+        return format_company_card(position, v, e)
     salary_raw = json.loads(v["salary_raw"]) if v["salary_raw"] else None
     profi = row_site(v) == "profi"
     kind = COMPANY_RU.get(e["company_kind"] or "unknown")
@@ -110,15 +157,17 @@ def format_outcome_dimensions(blocks: list[tuple[str, list[dict]]], curve: list[
     return "\n".join(lines)
 
 
-def format_letter(employer: str | None, text: str, site: str = "hh") -> str:
+def format_letter(employer: str | None, text: str, key: str = "hh") -> str:
     """Cover letter (or a profi.ru bid) as a separate Telegram message; <pre> gives one-tap copy in Telegram clients.
 
     The last door before Telegram: a letter written days ago is sent from the database verbatim, so the
     role-address label is cut here too (decision #46).
     """
     text = strip_role_address(text)
-    if site == "profi":
+    if key == "profi":
         return f"✉️ Предложение для «{_esc(employer or 'заказчика')}» (profi.ru):\n<pre>{_esc(text)}</pre>"
+    if key == "company":
+        return f"🤝 Предложение партнёрства для «{_esc(employer or 'компании')}»:\n<pre>{_esc(text)}</pre>"
     return f"✉️ Отклик для «{_esc(employer or 'компании')}»:\n<pre>{_esc(text)}</pre>"
 
 

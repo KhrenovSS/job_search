@@ -27,10 +27,10 @@ from hh_scout.config import Settings
 from hh_scout.db import utcnow
 from hh_scout.llm.bridge_client import BridgeClient, BridgeError, extract_json
 from hh_scout.llm.prompts import render
-from hh_scout.llm.schemas import EvaluationBatch, VacancyEvaluation
+from hh_scout.llm.schemas import CompanyEvaluation, CompanyEvaluationBatch, EvaluationBatch, VacancyEvaluation
 from hh_scout.pipeline import outcomes, repo
-from hh_scout.pipeline.ranker import total_score
-from hh_scout.pipeline.rows import row_site
+from hh_scout.pipeline.ranker import company_total_score, total_score
+from hh_scout.pipeline.rows import letter_key, row_site
 
 log = logging.getLogger(__name__)
 
@@ -79,7 +79,26 @@ def feedback_block(conn: sqlite3.Connection, mature_days: int = 5, limit: int = 
     return "\n".join(out)
 
 
+def company_payload(row: sqlite3.Row) -> dict:
+    """What the company evaluation sees: the vacancy text (an hh channel) or the catalogue entry (ОВЕН)."""
+    raw = json.loads(row["raw_json"]) if row["raw_json"] else {}
+    payload = {
+        "hh_id": row["hh_id"],
+        "kind": "company",
+        "channel": row["search_pass"],
+        "company": row["employer"],
+        "area": row["area_name"],
+        "vacancy_title": row["title"],
+        "description": strip_html(raw.get("description"))[:MAX_DESCRIPTION_CHARS],
+    }
+    if row_site(row) == "owen":
+        payload.update({"catalog": {k: raw.get(k) for k in ("industries", "status", "region", "site", "projects_url")}})
+    return payload
+
+
 def vacancy_payload(row: sqlite3.Row, searching_days: int = 0) -> dict:
+    if letter_key(row) == "company":
+        return company_payload(row)
     raw = json.loads(row["raw_json"]) if row["raw_json"] else {}
     skills = raw.get("keySkills")
     if isinstance(skills, dict):
@@ -112,7 +131,7 @@ def vacancy_payload(row: sqlite3.Row, searching_days: int = 0) -> dict:
     return payload
 
 
-EVAL_PROMPTS = {"hh": "vacancy_evaluation.md", "profi": "profi_order_evaluation.md"}
+EVAL_PROMPTS = {"hh": "vacancy_evaluation.md", "profi": "profi_order_evaluation.md", "company": "company_evaluation.md"}
 
 
 class Evaluator:
@@ -128,15 +147,15 @@ class Evaluator:
             log.info("Оценивать нечего (нет prefiltered)")
             return self.stats
         fb = feedback_block(self.conn, self.s.outcome_mature_days)
-        by_site: dict[str, list[sqlite3.Row]] = {}
+        by_key: dict[str, list[sqlite3.Row]] = {}
         for r in rows:
-            by_site.setdefault(row_site(r), []).append(r)
-        batches: list[tuple[str, list[sqlite3.Row]]] = []
-        for site, site_rows in by_site.items():  # never mix vacancies and orders in one prompt
-            system_text = render(self.s.prompts_dir, EVAL_PROMPTS.get(site, EVAL_PROMPTS["hh"]), feedback_block=fb)
-            batches += [(system_text, site_rows[i:i + BATCH]) for i in range(0, len(site_rows), BATCH)]
-        for system_text, batch in batches:
-            results = self._evaluate_batch(system_text, batch)
+            by_key.setdefault(letter_key(r), []).append(r)
+        batches: list[tuple[str, str, list[sqlite3.Row]]] = []
+        for key, key_rows in by_key.items():  # never mix vacancies, orders and companies in one prompt
+            system_text = render(self.s.prompts_dir, EVAL_PROMPTS.get(key, EVAL_PROMPTS["hh"]), feedback_block=fb)
+            batches += [(key, system_text, key_rows[i:i + BATCH]) for i in range(0, len(key_rows), BATCH)]
+        for key, system_text, batch in batches:
+            results = self._evaluate_batch(system_text, batch, company=(key == "company"))
             by_id = {r["hh_id"]: r for r in batch}
             with self.conn:
                 if results is None:
@@ -161,21 +180,28 @@ class Evaluator:
                  self.stats.evaluated, self.stats.failed, self.stats.bridge_calls, self.bridge.cost_usd)
         return self.stats
 
-    def _store(self, row: sqlite3.Row, ev: VacancyEvaluation) -> None:
-        total = total_score(self.s, ev.tech_score, ev.role_score, ev.lead_score)
+    def _store(self, row: sqlite3.Row, ev: VacancyEvaluation | CompanyEvaluation) -> None:
+        if isinstance(ev, CompanyEvaluation):
+            # a company lead: fit stands where tech does, there is no role, the contract form is unknown by nature
+            total = company_total_score(self.s, ev.fit_score, ev.lead_score)
+            values = (row["id"], ev.fit_score, 0, 0, 0, ev.lead_score, total, "maybe", int(ev.company_kind == "agency"),
+                      "unknown", ev.company_kind, ev.verdict, ev.pitch_hint, json.dumps(ev.red_flags, ensure_ascii=False),
+                      None, utcnow(), json.dumps(ev.offer_focus, ensure_ascii=False))
+        else:
+            total = total_score(self.s, ev.tech_score, ev.role_score, ev.lead_score)
+            values = (row["id"], ev.tech_score, 0, 0, ev.role_score, ev.lead_score, total, ev.ip_gph_possible,
+                      int(ev.is_agency), "unknown", ev.company_kind, ev.verdict, ev.pitch_hint,
+                      json.dumps(ev.red_flags, ensure_ascii=False), None, utcnow(), None)
         self.conn.execute("DELETE FROM evaluations WHERE vacancy_id = ?", (row["id"],))
         self.conn.execute(
             """INSERT INTO evaluations(vacancy_id, tech_score, salary_score, format_score, role_score, lead_score, total,
                                        ip_gph_possible, is_agency, employment_hint, company_kind, verdict, pitch_hint,
-                                       red_flags, model_note, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (row["id"], ev.tech_score, 0, 0, ev.role_score, ev.lead_score, total, ev.ip_gph_possible, int(ev.is_agency),
-             "unknown", ev.company_kind, ev.verdict, ev.pitch_hint,
-             json.dumps(ev.red_flags, ensure_ascii=False), None, utcnow()),
-        )
+                                       red_flags, model_note, created_at, offer_focus)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", values)
         repo.set_status(self.conn, row["hh_id"], "evaluated")
 
-    def _evaluate_batch(self, system_text: str, batch: list[sqlite3.Row]) -> list[VacancyEvaluation] | None:
+    def _evaluate_batch(self, system_text: str, batch: list[sqlite3.Row], *, company: bool = False,
+                        ) -> list[VacancyEvaluation] | list[CompanyEvaluation] | None:
         user_text = json.dumps([vacancy_payload(r, repo.employer_searching_days(self.conn, r)) for r in batch],
                                ensure_ascii=False)
         last_error = ""
@@ -187,7 +213,8 @@ class Evaluator:
                 log.error("Оценка: мост недоступен: %s", e)
                 raise
             try:
-                return EvaluationBatch.model_validate(extract_json(answer)).root
+                schema = CompanyEvaluationBatch if company else EvaluationBatch
+                return schema.model_validate(extract_json(answer)).root
             except (ValueError, ValidationError) as e:
                 last_error = str(e)[:300]
                 log.warning("Оценка: невалидный ответ (попытка %d): %s", attempt + 1, last_error)
@@ -205,7 +232,7 @@ def build_digest_preview(conn: sqlite3.Connection, settings: Settings, checked: 
         messages.append(format_card(i, r, r))
         letter = repo.get_cover_letter(conn, r["id"])
         if letter:
-            messages.append(format_letter(r["employer"], letter, row_site(r)))
+            messages.append(format_letter(r["employer"], letter, letter_key(r)))
     if with_tail:
         below = [r for r in rows if r["total"] < settings.score_threshold]
         if below:

@@ -56,3 +56,9 @@ def test_requeue_skipped_returns_only_recent_cards_of_one_reason():
     assert repo.requeue_skipped(conn, "fly_in_fly_out", 14) == 1
     st = {r["hh_id"]: (r["status"], r["skip_reason"]) for r in conn.execute("SELECT * FROM vacancies")}
     assert st == {"1": ("triage", None), "2": ("skipped", "fly_in_fly_out"), "3": ("skipped", "triage")}
+
+
+def test_a_company_card_passes_without_an_engineering_word_but_stop_words_still_hold():
+    assert decide(_c("Сборщик электрощитового оборудования")) == "no_engineering_title"   # a vacancy card
+    assert decide(_c("Сборщик электрощитового оборудования", company=True)) is None       # the company is the lead
+    assert decide(_c("Менеджер по продажам щитового оборудования", company=True)) == "stopword:менеджер по продажам"

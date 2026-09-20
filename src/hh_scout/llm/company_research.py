@@ -27,6 +27,7 @@ from hh_scout.db import utcnow
 from hh_scout.llm.bridge_client import BridgeClient, BridgeError, extract_json
 from hh_scout.llm.prompts import load_prompt_body
 from hh_scout.llm.schemas import CompanyBrief
+from hh_scout.pipeline.rows import row_site
 
 log = logging.getLogger(__name__)
 
@@ -67,6 +68,19 @@ def save(conn: sqlite3.Connection, employer_id: str, name: str | None, brief: Co
 
 def payload(row: sqlite3.Row) -> dict:
     raw = json.loads(row["raw_json"]) if row["raw_json"] else {}
+    if row_site(row) == "owen":
+        # a catalogue company (v9.13): no hh page; the integrator's project page on owen.ru and its own site instead
+        return {
+            "employer": row["employer"],
+            "employer_id": row["employer_id"],
+            "employer_url": raw.get("projects_url") or raw.get("site") or "",
+            "company_site": raw.get("site"),
+            "source": "каталог системных интеграторов ОВЕН",
+            "city": row["area_name"],
+            "industries": raw.get("industries") or [],
+            "vacancy_title": None,
+            "vacancy_summary": strip_html(raw.get("description"))[:MAX_SUMMARY_CHARS],
+        }
     return {
         "employer": row["employer"],
         "employer_id": row["employer_id"],
@@ -90,8 +104,7 @@ class CompanyResearcher:
         """The dossier for this vacancy's employer, from cache or the web. None if it cannot be had."""
         if not self.s.company_research_enabled:
             return None
-        site = row["site"] if "site" in row.keys() and row["site"] else "hh"
-        if site != "hh" or not row["employer_id"]:
+        if row_site(row) not in ("hh", "owen") or not row["employer_id"]:
             return None  # profi.ru clients are private people; cards without an id have no stable key
         if not force:
             hit = cached(self.conn, row["employer_id"], self.s.company_research_ttl_days)

@@ -45,6 +45,42 @@ class EvaluationBatch(RootModel[list[VacancyEvaluation]]):
     pass
 
 
+OFFER_FOCUS = ("plc_hmi_per_panel", "templates", "commissioning_scada", "plc_selection", "subcontract_programming")
+
+
+class CompanyEvaluation(BaseModel):
+    """A *company* scored as a lead for a partnership offer (v9.13, prompts/company_evaluation.md).
+
+    No role score: the vacancy that revealed the company is not for a programmer. `fit_score` — is there work here
+    that needs a PLC/HMI/SCADA program and can be handed to a contractor; `lead_score` — a direct company one can
+    write to (not an agency), its scale and stack.
+    """
+
+    hh_id: str
+    fit_score: int = Field(ge=0, le=100)
+    lead_score: int = Field(ge=0, le=100)
+    company_kind: str = Field(default="unknown",
+                              pattern="^(panel_builder|design_bureau|integrator|manufacturer|end_customer|agency|unknown)$")
+    verdict: str
+    pitch_hint: str = ""
+    offer_focus: list[str] = Field(default_factory=list)
+    red_flags: list[str] = Field(default_factory=list)
+
+    @field_validator("hh_id", mode="before")
+    @classmethod
+    def _to_str(cls, v: object) -> str:
+        return str(v)
+
+    @field_validator("offer_focus")
+    @classmethod
+    def _known_focus(cls, v: list[str]) -> list[str]:
+        return [x for x in v if x in OFFER_FOCUS]
+
+
+class CompanyEvaluationBatch(RootModel[list[CompanyEvaluation]]):
+    pass
+
+
 class CompanyBrief(BaseModel):
     """What the open web says about an employer (see prompts/company_research.md).
 

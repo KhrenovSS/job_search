@@ -24,7 +24,10 @@ MIN_CELL = 8   # below this a percentage is noise dressed as a finding, so the r
 SEARCHING_LONG_DAYS = 14   # an employer advertising the same role this long "cannot fill the seat" (decision #44)
 
 COMPANY_RU = {"integrator": "интегратор", "manufacturer": "производитель оборудования", "end_customer": "конечный заказчик",
-              "agency": "агентство", "unknown": "не определён"}
+              "agency": "агентство", "panel_builder": "сборщик шкафов", "design_bureau": "проектное бюро",
+              "unknown": "не определён"}
+LEAD_KIND_RU = {"vacancy": "вакансия", "company": "компания"}
+CHANNEL_RU = {"panel": "щитовики (hh)", "design": "проектные бюро (hh)", "owen_si": "каталог ОВЕН", "profi": "profi.ru"}
 WORK_FORMAT_RU = {"remote": "удалёнка", "hybrid": "гибрид", "office": "офис", "field": "разъездная"}
 
 
@@ -179,6 +182,15 @@ def _by_floor(r: sqlite3.Row) -> str:
     return "по дневному минимуму" if r["floor"] else "по порогу"
 
 
+def _by_lead_kind(r: sqlite3.Row) -> str:
+    return LEAD_KIND_RU.get(r["lead_kind"] or "vacancy", r["lead_kind"] or "вакансия")
+
+
+def _by_channel(r: sqlite3.Row) -> str:
+    ch = r["channel"] or ""
+    return CHANNEL_RU.get(ch, "поиск вакансий")
+
+
 def _by_letter_len(r: sqlite3.Row) -> str | None:
     n = r["letter_len"]
     if not n:
@@ -193,4 +205,6 @@ DIMENSIONS: tuple[tuple[str, Callable[[sqlite3.Row], str | None]], ...] = (
     ("Ищут давно", _by_searching),
     ("Длина письма", _by_letter_len),
     ("Порог / минимум", _by_floor),
+    ("Тип лида", _by_lead_kind),
+    ("Канал", _by_channel),
 )

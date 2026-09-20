@@ -36,8 +36,13 @@ def vacancy_exists(conn: sqlite3.Connection, hh_id: str) -> bool:
     return conn.execute("SELECT 1 FROM vacancies WHERE hh_id = ?", (hh_id,)).fetchone() is not None
 
 
-def insert_card(conn: sqlite3.Connection, card: VacancyCard, source: str, search_pass: str) -> bool:
-    """Insert a freshly seen vacancy. Returns False if it was already known (nothing changed)."""
+def insert_card(conn: sqlite3.Connection, card: VacancyCard, source: str, search_pass: str,
+                lead_kind: str = "vacancy") -> bool:
+    """Insert a freshly seen vacancy. Returns False if it was already known (nothing changed).
+
+    `lead_kind='company'` (v9.13): the card comes from a company channel — the vacancy is the way to see the
+    company, the lead is the company. A card already known as a vacancy lead keeps its kind.
+    """
     if vacancy_exists(conn, card.hh_id):
         if card.applied:
             mark_applied(conn, card.hh_id, has_chat=False)
@@ -52,15 +57,76 @@ def insert_card(conn: sqlite3.Connection, card: VacancyCard, source: str, search
     conn.execute(
         """INSERT INTO vacancies(hh_id, title, employer, employer_id, url, area_name, work_format, employment,
                                  accept_temporary, civil_law_contracts,
-                                 salary_from, salary_to, salary_raw, published_at, source, search_pass,
+                                 salary_from, salary_to, salary_raw, published_at, source, search_pass, lead_kind,
                                  status, skip_reason, applied, first_seen_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (card.hh_id, card.title, card.employer, card.employer_id, card.url, card.area_name, card.work_format, card.employment,
          int(card.accept_temporary), _contracts_json(card.civil_law_contracts),
          sal.from_net, sal.to_net, json.dumps(card.compensation, ensure_ascii=False) if card.compensation else None,
-         card.published_at, source, search_pass, status, reason, int(card.applied), now, now),
+         card.published_at, source, search_pass, lead_kind, status, reason, int(card.applied), now, now),
     )
     return True
+
+
+# --- company leads from the ОВЕН integrator catalogue (v9.13) ------------------------------------
+
+OWEN_PASS = "owen_si"
+# Partner status decides who gets a letter first: a gold partner runs ОВЕН projects all year round.
+_OWEN_STATUS_RANK = {"Золотой": 0, "Серебряный": 1, "Авторизованный": 2, "Без партнерства": 3}
+
+
+def insert_integrator(conn: sqlite3.Connection, card: "IntegratorCard") -> bool:
+    """A catalogue entry as a `new` company lead: `site='owen'`, `hh_id='owen:<tag_id>'`, `employer_id` the same key
+    (so the dossier cache and the card's «О компании» line work unchanged). False if already known."""
+    if vacancy_exists(conn, card.ext_id):
+        return False
+    now = utcnow()
+    raw = {"description": card.description, "industries": list(card.industries), "status": card.status,
+           "projects_url": card.projects_url, "site": card.site, "emails": list(card.emails), "phones": list(card.phones),
+           "address": card.address, "region": card.region}
+    conn.execute(
+        """INSERT INTO vacancies(hh_id, site, lead_kind, title, employer, employer_id, url, area_name, work_format, employment,
+                                 published_at, source, search_pass, raw_json, status, applied, first_seen_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (card.ext_id, "owen", "company", f"Системный интегратор ОВЕН ({card.status})", card.name, card.ext_id,
+         card.site or card.projects_url or "https://owen.ru/spisok_sistemnih_integratorov", card.city, "unknown", "unknown",
+         now, "owen_catalog", OWEN_PASS, json.dumps(raw, ensure_ascii=False), "new", 0, now, now),
+    )
+    return True
+
+
+def owen_totals(conn: sqlite3.Connection) -> dict[str, int]:
+    """Catalogue companies by stage, for /status: waiting for admission, in the pipeline, sent."""
+    rows = conn.execute("SELECT status, COUNT(*) AS n FROM vacancies WHERE site = 'owen' GROUP BY status").fetchall()
+    by = {r["status"]: int(r["n"]) for r in rows}
+    return {"total": sum(by.values()), "waiting": by.get("new", 0), "sent": by.get("sent", 0)}
+
+
+def admit_company_leads(conn: sqlite3.Connection, per_day: int, search_pass: str = OWEN_PASS) -> int:
+    """Let up to `per_day` catalogue companies into evaluation today (`new` → `prefiltered`), best partners first.
+
+    The catalogue arrives all at once; without a daily gate 230 companies would enter the queue in one evening
+    and push every vacancy lead behind them for days. `updated_at` moves on admission, which is how "today's"
+    admissions are counted.
+    """
+    if per_day <= 0:
+        return 0
+    already = int(conn.execute(
+        "SELECT COUNT(*) FROM vacancies WHERE search_pass = ? AND status != 'new' AND updated_at >= ?",
+        (search_pass, _today_start_utc())).fetchone()[0])
+    room = per_day - already
+    if room <= 0:
+        return 0
+    rank = " ".join(f"WHEN '{k}' THEN {v}" for k, v in _OWEN_STATUS_RANK.items())
+    rows = conn.execute(
+        f"""SELECT id FROM vacancies WHERE search_pass = ? AND status = 'new'
+             ORDER BY CASE json_extract(raw_json, '$.status') {rank} ELSE 9 END,
+                      (json_extract(raw_json, '$.site') IS NULL), id
+             LIMIT ?""", (search_pass, room)).fetchall()
+    now = utcnow()
+    for r in rows:
+        conn.execute("UPDATE vacancies SET status = 'prefiltered', updated_at = ? WHERE id = ?", (now, r["id"]))
+    return len(rows)
 
 
 def insert_order(conn: sqlite3.Connection, order: "OrderCard") -> bool:
@@ -370,7 +436,7 @@ def get_cover_letter(conn: sqlite3.Connection, vacancy_id: int) -> str | None:
 # Everything a lead card, a letter and the queue need in one row. `{extra}` takes further columns (with a leading
 # comma) for callers that need them, instead of surgery on the string.
 LEAD_SELECT = f"""SELECT v.*, e.tech_score, e.role_score, e.lead_score, e.total, e.ip_gph_possible, e.is_agency,
-                        e.employment_hint, e.company_kind, e.verdict, e.pitch_hint, e.red_flags, e.floor,
+                        e.employment_hint, e.company_kind, e.verdict, e.pitch_hint, e.red_flags, e.floor, e.offer_focus,
                         c.text AS letter, c.rules_hash AS letter_rules, c.owner_hint AS letter_hint,
                         c.with_dossier AS letter_dossier,
                         (SELECT brief FROM employers emp WHERE emp.employer_id = v.employer_id AND emp.found = 1)
@@ -575,6 +641,8 @@ _OUTCOMES_SQL = f"""
            v.negotiation_state AS state,
            e.company_kind AS company_kind,
            e.floor AS floor,
+           v.lead_kind AS lead_kind,
+           v.search_pass AS channel,
            v.work_format AS work_format,
            c.created_at AS letter_at,
            LENGTH(c.text) AS letter_len,
@@ -587,7 +655,7 @@ _OUTCOMES_SQL = f"""
     JOIN digest_items di ON di.vacancy_id = v.id
     JOIN digests d ON d.id = di.digest_id
     LEFT JOIN cover_letters c ON c.vacancy_id = v.id
-    WHERE v.site = 'hh' AND d.sent_at >= ?
+    WHERE v.site IN ('hh', 'owen') AND d.sent_at >= ?
       AND EXISTS (SELECT 1 FROM lead_actions a WHERE a.vacancy_id = v.id
                   AND a.action IN ('responded', 'auto_responded'))
     GROUP BY v.id

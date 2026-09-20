@@ -26,6 +26,8 @@
 | `hh_scout.browser.hh_pages --search … [--area N]… [--remote] [--project] [--page N] [--vacancy ID]` | открыть ОДНУ страницу и распечатать разбор | да | — |
 | `scripts/check_browser.py` | проверить подключение к Firefox | да (кратко) | — |
 | `scripts/tg_whoami.py [--timeout 90]` | одноразово определить chat_id владельца | — | — |
+| `hh_scout.pipeline.collector --pass panel\|design --period 30` | стартовый проход одного канала компаний за 30 дней (v9.13; без синхронизации откликов, 5–20 страниц из лимита) | да | — |
+| `hh_scout.sources.owen [--admit N] [--file integrators.json]` | прочитать каталог интеграторов ОВЕН в базу и допустить N компаний в оценку (по умолчанию `COMPANY_LEADS_PER_DAY`) | — | — |
 | `bash go_hh.sh [ЧЧ:ММ \| YYYY-MM-DD]` | разбор последнего подхода одной командой: состояние сервиса, прогоны за день, отправки за сутки, лиды 50–59 с письмами, итог суток, стадии и предупреждения из журнала. Только чтение — можно и во время сбора | — | — |
 
 Команды бота для работы с лентой: `/inbox` (открытые лиды), `/done <hh_id>`, `/cleanup [дней]` — см. ARCHITECTURE «Жизненный цикл лида».
@@ -164,6 +166,7 @@ PRAGMA wal_checkpoint(TRUNCATE);
 | Что открывать по карточке | `prompts/card_triage.md` |
 | Стиль/длину писем, предложение по ИП | `prompts/cover_letter.md`; факты — `prompts/resume.md` (владелец; файл в .gitignore, образец `prompts/resume.example.md`) |
 | Поисковые запросы, регионы, стоп-слова, обязательные слова | `config.py`: `SEARCH_QUERIES`, `REGION_NAMES`, `TITLE_STOP_WORDS`, `TITLE_KEEP_WORDS`, `TITLE_REQUIRED_ANY` |
+| Каналы лидов-компаний, порция каталога в день, веса балла компании | `.env`: `COMPANY_CHANNELS` (panel,design,owen_si; пусто — выключить все), `COMPANY_LEADS_PER_DAY` (5), `WEIGHT_COMPANY_FIT`/`WEIGHT_COMPANY_LEAD` (0.6/0.4); что предлагать — `prompts/company_offer.md`, кого считать компанией-партнёром — `prompts/company_triage.md`, `prompts/company_evaluation.md` |
 | Дневной минимум писем и его границы | `.env`: `DAILY_LETTERS_FLOOR` (5, 0 — выключить), `FLOOR_MIN_TOTAL` (40), `FLOOR_MIN_ROLE` (40), `FLOOR_LOOKBACK_DAYS` (3). После снижения порога вернуть недавние списанные: `python -m hh_scout.llm.evaluator --readmit --min-total 50 --days 3` (без переоценки и без браузера) |
 | Порог (50 с 20.09), веса total, размер дайджеста, лимит загрузок, паузы (в т.ч. `LONG_READ_*`), окно сбора, время дайджеста | `.env` (см. `.env.example`) — все поля `Settings` переопределяемы; паузы меньше 3 с и доля резерва вне 0…1 отвергаются при старте. Таймауты загрузки страницы (`PAGE_LOAD_TIMEOUT_S` 15, `MARKUP_WAIT_S` 20) — константы `browser/session.py` |
 | Модель Claude | `bridge/.env.bridge` `BRIDGE_MODEL` (по умолчанию для моста) или `.env` `BRIDGE_MODEL` (переопределяет на каждый запрос) |
