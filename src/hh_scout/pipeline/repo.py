@@ -102,6 +102,58 @@ def owen_totals(conn: sqlite3.Connection) -> dict[str, int]:
     return {"total": sum(by.values()), "waiting": by.get("new", 0), "sent": by.get("sent", 0)}
 
 
+PLANT_PASS = "plant"          # v9.15: companies that run automation, found through a closed non-programmer card
+PLANT_POOL = "plant_pool"     # skip_reason of a pooled card: inert for every stage until `admit_plant_leads`
+
+
+def move_to_plant_pool(conn: sqlite3.Connection, vacancy_id: int) -> None:
+    """A closed card becomes the company's `plant` lead-in-waiting: same row, other kind and channel."""
+    conn.execute("UPDATE vacancies SET status = 'skipped', skip_reason = ?, lead_kind = 'company', search_pass = ?, "
+                 "updated_at = ? WHERE id = ?", (PLANT_POOL, PLANT_PASS, utcnow(), vacancy_id))
+
+
+def plant_row_exists(conn: sqlite3.Connection, employer_id: str | None, employer: str | None) -> bool:
+    """Whether this employer already has a `plant` row in any status — one company, one plant lead."""
+    if employer_id is None and not employer:
+        return False
+    sql = f"SELECT 1 FROM vacancies v WHERE v.search_pass = ? AND {same_employer_sql('v')} LIMIT 1"
+    return conn.execute(sql, [PLANT_PASS] + same_employer_params(employer_id, employer)).fetchone() is not None
+
+
+def admit_plant_leads(conn: sqlite3.Connection, per_day: int) -> list[sqlite3.Row]:
+    """Let up to `per_day` pooled plant companies queue for a vacancy page today (`skipped/plant_pool` → `to_fetch`,
+    triage priority 3), newest first. Returns the admitted rows so the caller can drop those already covered."""
+    if per_day <= 0:
+        return []
+    already = int(conn.execute(
+        "SELECT COUNT(*) FROM vacancies WHERE search_pass = ? AND skip_reason IS NOT ? AND updated_at >= ?",
+        (PLANT_PASS, PLANT_POOL, _today_start_utc())).fetchone()[0])
+    room = per_day - already
+    if room <= 0:
+        return []
+    rows = conn.execute(
+        "SELECT * FROM vacancies WHERE search_pass = ? AND status = 'skipped' AND skip_reason = ? "
+        "ORDER BY first_seen_at DESC, id DESC LIMIT ?", (PLANT_PASS, PLANT_POOL, room)).fetchall()
+    now = utcnow()
+    for r in rows:
+        conn.execute("UPDATE vacancies SET status = 'to_fetch', skip_reason = NULL, triage_priority = 3, updated_at = ? "
+                     "WHERE id = ?", (now, r["id"]))
+    return rows
+
+
+def plant_totals(conn: sqlite3.Connection) -> dict[str, int]:
+    rows = conn.execute("SELECT status, skip_reason, COUNT(*) AS n FROM vacancies WHERE search_pass = ? GROUP BY 1, 2",
+                        (PLANT_PASS,)).fetchall()
+    out = {"pool": 0, "to_fetch": 0, "sent": 0, "total": 0}
+    for r in rows:
+        out["total"] += int(r["n"])
+        if r["status"] == "skipped" and r["skip_reason"] == PLANT_POOL:
+            out["pool"] += int(r["n"])
+        elif r["status"] in out:
+            out[r["status"]] += int(r["n"])
+    return out
+
+
 def admit_company_leads(conn: sqlite3.Connection, per_day: int, search_pass: str = OWEN_PASS) -> int:
     """Let up to `per_day` catalogue companies into evaluation today (`new` → `prefiltered`), best partners first.
 
@@ -355,14 +407,23 @@ SEARCHING_DAYS_SQL = f"""(SELECT CAST(julianday('now') - julianday(MIN(o.first_s
                           WHERE {_SAME_EMPLOYER_AS_V} AND casefold(o.title) = casefold(v.title))"""
 
 
+def _kind_sql(candidate_kind: str) -> str:
+    """Which rows may cover a candidate. A vacancy lead is covered only by vacancy leads (v9.15): a cold partnership
+    offer to a plant must not close the door on that plant's real programmer vacancy two weeks later — it is another
+    channel (HR, a response) and a far stronger lead. A company candidate is covered by anything."""
+    return " AND v.lead_kind = 'vacancy'" if candidate_kind == "vacancy" else ""
+
+
 def employer_lead(conn: sqlite3.Connection, employer_id: str | None, employer: str | None, *, exclude_id: int | None,
-                  threshold: int, repeat_days: int) -> sqlite3.Row | None:
+                  threshold: int, repeat_days: int, candidate_kind: str = "company") -> sqlite3.Row | None:
     """The vacancy of this employer that already is a lead (sent within `repeat_days`; 0 = ever) or is about to become one
-    (`prefiltered`, or `evaluated` at/above the threshold and waiting for the digest). None if the company is still free."""
+    (`prefiltered`, or `evaluated` at/above the threshold and waiting for the digest). None if the company is still free.
+    `candidate_kind` is the lead kind of the row asking — see `_kind_sql`."""
     if employer_id is None and not employer:
         return None
     cutoff = _ago(repeat_days) if repeat_days > 0 else "1970-01-01T00:00:00+00:00"
     sql = (f"SELECT v.id, v.hh_id, v.status FROM vacancies v WHERE {same_employer_sql('v')} AND v.id IS NOT ? "
+           f"{_kind_sql(candidate_kind)} "
            "AND ((v.status = 'sent' AND v.updated_at >= ?) OR v.status = 'prefiltered' "
            "     OR (v.status = 'evaluated' AND EXISTS (SELECT 1 FROM evaluations e WHERE e.vacancy_id = v.id "
            "                                            AND (e.total >= ? OR e.floor = 1)))) "
@@ -371,7 +432,7 @@ def employer_lead(conn: sqlite3.Connection, employer_id: str | None, employer: s
 
 
 def employer_responded(conn: sqlite3.Connection, employer_id: str | None, employer: str | None, *,
-                       exclude_id: int | None, within_days: int) -> sqlite3.Row | None:
+                       exclude_id: int | None, within_days: int, candidate_kind: str = "company") -> sqlite3.Row | None:
     """The vacancy of this employer the owner has already answered, within `within_days` (0 = ever), newest first.
 
     Two ways an answer is recorded: the owner applied on hh.ru himself and the collector saw it in his negotiations
@@ -394,7 +455,7 @@ def employer_responded(conn: sqlite3.Connection, employer_id: str | None, employ
                                  (SELECT MIN(ne.seen_at) FROM negotiation_events ne WHERE ne.vacancy_id = v.id),
                                  v.updated_at) AS answered_at
                    FROM vacancies v
-                  WHERE {same_employer_sql('v')} AND v.id IS NOT ?
+                  WHERE {same_employer_sql('v')} AND v.id IS NOT ? {_kind_sql(candidate_kind)}
                     AND (v.applied = 1 OR EXISTS (SELECT 1 FROM lead_actions a WHERE a.vacancy_id = v.id
                                                    AND a.action IN ('responded', 'auto_responded')))
                ) WHERE answered_at >= ? ORDER BY answered_at DESC, id DESC LIMIT 1""")

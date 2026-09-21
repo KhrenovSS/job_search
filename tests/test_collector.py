@@ -78,13 +78,25 @@ def _make(monkeypatch, budget=60):
     migrate(conn)
     loads = []
     settings = Settings(_env_file=None, daily_page_loads_min=budget, daily_page_loads_max=budget,
-                        max_pages_per_query=4, search_all_russia=False, company_channels="")
+                        max_pages_per_query=4, search_all_russia=False, company_channels="",
+                        search_passes="regional,remote,project,gph")   # all four: the dedup across passes is under test
     c = Collector(settings, conn, session_factory=lambda b: FakeSession(b, loads), rng=random.Random(0), page_budget=budget)
     return c, conn, loads
 
 
-def test_plan_tasks_covers_four_passes_per_query():
+def test_plan_tasks_runs_only_the_regional_pass_by_default():
+    """v9.15: with the whole country in `regional`, remote/project/gph are its subsets — 6 % of the cards for a
+    quarter of the page cap — so they are off unless SEARCH_PASSES asks for them."""
     tasks = plan_tasks([1, 2019], queries=("a", "b"), rng=random.Random(1))
+    assert [t.search_pass for t in tasks] == ["regional", "regional"]
+    assert all(t.areas == (1, 2019) for t in tasks)
+    assert Settings(_env_file=None).search_passes_set == {"regional"}
+
+
+def test_plan_tasks_covers_four_passes_per_query_when_asked():
+    from hh_scout.pipeline.collector import ALL_PASSES
+
+    tasks = plan_tasks([1, 2019], queries=("a", "b"), rng=random.Random(1), passes=ALL_PASSES)
     assert len(tasks) == 8
     assert {t.search_pass for t in tasks} == {"regional", "remote", "project", "gph"}
     assert all(t.areas == (1, 2019) for t in tasks if t.search_pass == "regional")
@@ -214,7 +226,7 @@ def test_company_channels_add_one_task_each_and_mark_their_cards():
     from hh_scout.pipeline.collector import COMPANY_PASSES, PASS_DESIGN, PASS_PANEL
 
     tasks = plan_tasks([113], queries=("a",), rng=random.Random(1), company_channels={"panel", "design", "owen_si"})
-    assert len(tasks) == 6 and {t.search_pass for t in tasks} >= COMPANY_PASSES
+    assert len(tasks) == 3 and {t.search_pass for t in tasks} >= COMPANY_PASSES   # regional + panel + design (v9.15)
     assert all(t.areas == (113,) and not t.work_formats for t in tasks if t.search_pass in COMPANY_PASSES)
     only = plan_tasks([113], queries=("a",), rng=random.Random(1), company_channels={"panel"}, only_pass=PASS_PANEL)
     assert [t.search_pass for t in only] == [PASS_PANEL]

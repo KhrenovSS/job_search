@@ -73,20 +73,30 @@ class CollectStats:
                 + (f", остановка: {self.stopped_reason}" if self.stopped_reason else ""))
 
 
-def plan_tasks(region_ids: list[int], queries: tuple[str, ...] | None = None, rng: random.Random | None = None,
-               company_channels: frozenset[str] | set[str] = frozenset(), only_pass: str | None = None) -> list[SearchTask]:
-    """The sitting's search tasks: four passes per programmer query, plus one task per enabled company channel.
+ALL_PASSES = frozenset({PASS_REGIONAL, PASS_REMOTE, PASS_PROJECT, PASS_GPH})
 
+
+def plan_tasks(region_ids: list[int], queries: tuple[str, ...] | None = None, rng: random.Random | None = None,
+               company_channels: frozenset[str] | set[str] = frozenset(), only_pass: str | None = None,
+               passes: frozenset[str] | set[str] = frozenset({PASS_REGIONAL})) -> list[SearchTask]:
+    """The sitting's search tasks: the enabled passes per programmer query, plus one task per enabled company channel.
+
+    `passes` is `SEARCH_PASSES` (v9.15): with the whole country in `regional` the other three passes are its
+    subsets — 6 % of the cards for a quarter of the page cap — so only `regional` runs by default.
     `only_pass` keeps just that pass — the one-off 30-day seed of a new channel (`collector --pass panel --period 30`).
     """
     rng = rng or random.Random()
     queries = SEARCH_QUERIES if queries is None else queries
     tasks: list[SearchTask] = []
     for i, q in enumerate(queries):
-        tasks.append(SearchTask(PASS_REGIONAL, i, q, areas=tuple(region_ids)))
-        tasks.append(SearchTask(PASS_REMOTE, i, q, work_formats=("REMOTE",)))
-        tasks.append(SearchTask(PASS_PROJECT, i, q, employment_forms=("PROJECT", "PART")))
-        tasks.append(SearchTask(PASS_GPH, i, q, accept_temporary=True))
+        if PASS_REGIONAL in passes:
+            tasks.append(SearchTask(PASS_REGIONAL, i, q, areas=tuple(region_ids)))
+        if PASS_REMOTE in passes:
+            tasks.append(SearchTask(PASS_REMOTE, i, q, work_formats=("REMOTE",)))
+        if PASS_PROJECT in passes:
+            tasks.append(SearchTask(PASS_PROJECT, i, q, employment_forms=("PROJECT", "PART")))
+        if PASS_GPH in passes:
+            tasks.append(SearchTask(PASS_GPH, i, q, accept_temporary=True))
     for j, (channel, q) in enumerate(COMPANY_QUERIES.items()):
         if channel in company_channels:
             tasks.append(SearchTask(channel, len(queries) + j, q, areas=tuple(region_ids)))
@@ -131,7 +141,8 @@ class Collector:
 
     def run(self, run_id: int | None = None) -> CollectStats:
         region_ids = [RUSSIA_ID] if self.s.search_all_russia else resolve_region_ids(self.conn, self.s)
-        tasks = plan_tasks(region_ids, rng=self.rng, company_channels=self.s.company_channels_set, only_pass=self.only_pass)
+        tasks = plan_tasks(region_ids, rng=self.rng, company_channels=self.s.company_channels_set, only_pass=self.only_pass,
+                           passes=self.s.search_passes_set)
         log.info("План сбора: %d задач, бюджет %d загрузок, регионы %s", len(tasks), self.page_budget, region_ids)
         # A one-pass seed run (CLI --pass) is about one channel only: no responses sync, no extra loads.
         sync = negotiations.NegotiationsSync(pages=self.s.negotiations_pages, done=bool(self.only_pass))

@@ -49,6 +49,9 @@
 `duplicate_employer:<hh_id>` (v8: у компании уже есть лид `<hh_id>` — отправленный за последние `EMPLOYER_REPEAT_DAYS` или ждущий
 дайджест; ставится на любом статусе от `triage` до `evaluated`, см. `pipeline/dedup.py`). **Единственная обратимая причина** (v8.7): если `<hh_id>` так и не стал лидом (отклонён, сорвалась оценка или оценён ниже порога) и у компании лида
 не осталось, `dedup.revive_orphans` в начале каждого прогона возвращает дубль в `to_fetch` (триаж ИИ уже пройден) или `triage`. ·
+`plant_pool` (v9.15: карточка слесаря КИПиА / электромонтёра / энергетика, закрытая триажем с `plant: true` — компания
+ждёт в пуле канала `plant` (`lead_kind='company'`, `search_pass='plant'`), `plant.admit` выпускает по `PLANT_LEADS_PER_DAY`
+в день в `to_fetch`; единственная «причина», из которой строка штатно возвращается в конвейер) ·
 `employer_responded:<hh_id>` (v9.3: в компанию уже откликались — сам владелец на hh.ru (`applied=1`) или кнопкой «✅ Написал»
 (`lead_actions.responded`/`auto_responded`) — не позже `EMPLOYER_REPEAT_DAYS` назад; письмо уходит кадровику всей организации,
 второе на тот же стол не нужно. Причина **необратимая**, в отличие от `duplicate_employer:`: `revive_orphans` такие строки
@@ -71,7 +74,12 @@
   остаётся, коллизий с hh нет; `employer` = имя клиента, `employment = project`, `raw_json = {description, budget, when, client,
   posted, work_format, city, site}`, `salary_raw = {"profi_budget": "до 5000 ₽", from, to, …}`; статус сразу `prefiltered`.
 - `source`: `search:<idx>` / `similar_to_resume` / `negotiations` / `profi`; `search_pass`: regional / remote / project / **gph**
-  (v8.2, поиск с фильтром hh `accept_temporary=true`) / similar / negotiations / profi.
+  (v8.2, поиск с фильтром hh `accept_temporary=true`; с v9.15 по умолчанию идёт только regional — `SEARCH_PASSES`) / similar /
+  negotiations / profi / каналы компаний panel / design / owen_si / **plant** (v9.15: строка вакансии, перекрашенная в
+  лид-компанию `plant.pool`; исходный проход при этом теряется — канал важнее).
+- «Одна компания — один лид» по видам (v9.15, `repo._kind_sql`): кандидат `lead_kind='vacancy'` считается покрытым только
+  строками `lead_kind='vacancy'` (и ответами по ним); кандидат-компания — любыми. Холодное предложение заводу не закрывает
+  его будущую вакансию программиста.
 - `accept_temporary`, `civil_law_contracts` (v8.2, `_m008`) — **что о форме оформления говорит сам hh.ru**, а не ИИ по тексту:
   `accept_temporary` 0/1 — отметка «Оформление по ГПХ или по совместительству» (`acceptTemporary`);
   `civil_law_contracts` — JSON-список форм помимо ТК РФ (`INDIVIDUAL_ENTREPRENEUR` — ИП, `SELF_EMPLOYED` — самозанятый,
@@ -129,7 +137,9 @@
 Досье на работодателя из открытых источников — одно на компанию, переиспользуется всеми её вакансиями.
 `employer_id` (PK) — hh.ru `company.id`, тот же ключ, что у «одна компания — один лид»; `name`;
 `found` (0/1 — искали и не нашли тоже запоминается, чтобы не платить за пустоту дважды); `brief` — JSON
-`CompanyBrief` (`what_they_do`, `industry`, `products`, `sites`, `scale`, `automation_hooks`, `sources`, `note`);
+`CompanyBrief` (`what_they_do`, `industry`, `products`, `sites`, `scale`, `automation_hooks`, `sources`, `note`; с v9.15 —
+`website`, `contact_email`, `contact_phone`: общие контакты компании с её сайта/страницы hh, для карточек компаний без своих
+контактов);
 `sources` — JSON списка прочитанных URL; `researched_at`. Свежесть — `COMPANY_RESEARCH_TTL_DAYS` (180 дней).
 Заполняет `llm/company_research.py`; в карточку лида попадает строка «🏭 О компании» (`LEAD_SELECT` подмешивает
 `brief` как `company_brief`). Поля-факты собраны с прочитанных страниц, `automation_hooks` — явные предположения.

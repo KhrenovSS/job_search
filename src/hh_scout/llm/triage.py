@@ -21,7 +21,7 @@ from hh_scout.config import Settings
 from hh_scout.llm.bridge_client import BridgeClient, BridgeError, extract_json
 from hh_scout.llm.prompts import render
 from hh_scout.llm.schemas import TriageBatch, TriageVerdict
-from hh_scout.pipeline import repo
+from hh_scout.pipeline import plant, repo
 from hh_scout.pipeline.rows import lead_kind
 
 log = logging.getLogger(__name__)
@@ -37,6 +37,7 @@ class TriageStats:
     closed: int = 0
     failed_batches: int = 0
     bridge_calls: int = 0
+    pooled: int = 0   # closed cards whose company went into the plant pool instead (v9.15)
     verdicts: list[tuple[str, TriageVerdict]] = field(default_factory=list)  # (title, verdict) for logs/CLI
 
 
@@ -98,13 +99,19 @@ class Triager:
                     self.stats.verdicts.append((row["title"], v))
                     if not dry_run:
                         repo.save_triage(self.conn, v.hh_id, open_it=v.open, priority=v.priority, note=v.reason)
+                        # v9.15: a closed card of a company that runs automation itself is not lost — the company
+                        # becomes a plant lead-in-waiting (only vacancy cards: company channels have their own triage)
+                        if not v.open and v.plant and lead_kind(row) == "vacancy":
+                            fresh = repo.vacancy_by_id(self.conn, row["id"])
+                            if plant.pool(self.conn, self.s, fresh):
+                                self.stats.pooled += 1
                 missing = set(by_id) - {v.hh_id for v in verdicts}
                 if missing:
                     log.warning("Триаж не вернул вердикты для %d карточек — останутся в triage", len(missing))
         self.stats.bridge_calls = self.bridge.calls
-        log.info("Триаж: карточек %d, открыть %d, закрыть %d, неудачных пачек %d, вызовов моста %d, cost $%.3f",
-                 self.stats.cards, self.stats.opened, self.stats.closed, self.stats.failed_batches,
-                 self.stats.bridge_calls, self.bridge.cost_usd)
+        log.info("Триаж: карточек %d, открыть %d, закрыть %d (в пул эксплуатантов %d), неудачных пачек %d, "
+                 "вызовов моста %d, cost $%.3f", self.stats.cards, self.stats.opened, self.stats.closed,
+                 self.stats.pooled, self.stats.failed_batches, self.stats.bridge_calls, self.bridge.cost_usd)
         return self.stats
 
     def _triage_batch(self, system_text: str, batch: list[sqlite3.Row]) -> list[TriageVerdict] | None:

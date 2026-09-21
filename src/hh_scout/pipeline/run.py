@@ -29,7 +29,7 @@ from hh_scout.llm.bridge_client import BridgeError
 from hh_scout.llm.cover_letter import CoverLetterWriter
 from hh_scout.llm.evaluator import Evaluator
 from hh_scout.llm.triage import Triager
-from hh_scout.pipeline import dedup, prefilter, repo
+from hh_scout.pipeline import dedup, plant, prefilter, repo
 from hh_scout.pipeline.budget import daily_cap
 from hh_scout.pipeline.collector import Collector
 from hh_scout.pipeline.details import DetailsFetcher
@@ -268,6 +268,15 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
         except Exception as e:  # noqa: BLE001
             log.exception("Допуск компаний из каталога упал")
             report.errors.append(f"каталог: {e}")
+
+    # 4c. plant companies leave the pool for the page queue a few per day (v9.15, decision #55) — DB only.
+    # After details on purpose: today's admissions wait for the next sitting's pages, behind the fresh vacancies.
+    if repo.PLANT_PASS in settings.company_channels_set:
+        try:
+            plant.admit(conn, settings)
+        except Exception as e:  # noqa: BLE001
+            log.exception("Допуск эксплуатантов из пула упал")
+            report.errors.append(f"эксплуатанты: {e}")
 
     # 5. evaluate + 6. letters (bridge)
     if report.bridge_error is None:

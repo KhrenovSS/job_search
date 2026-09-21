@@ -37,8 +37,11 @@ class Settings(BaseSettings):
     long_read_max_s: float = 60.0
     # Daily page-load cap (search + vacancy pages, all processes): drawn once per day at random from this range
     # and stored in kv `daily_cap:<date>` so the number differs from day to day.
-    daily_page_loads_min: int = 150   # raised from 100-140 (v9.5): sittings spend their share to the last page
-    daily_page_loads_max: int = 200   # (35 / 34 of a cap of 103), so the cap is what limits how many leads appear
+    # 100-140 (v9.5) → 150-200. The owner's instance runs 250-300 since v9.15 (decision #55, set in .env): the cap was
+    # the one throttle left (375 vacancies and 260 companies waited for a page). The default stays the safer range —
+    # how much to load is a risk decision for whoever runs the account, not for the code.
+    daily_page_loads_min: int = 150
+    daily_page_loads_max: int = 200
     # Rhythm inside a sitting: browse for burst_minutes, stay quiet for gap_minutes, repeat ("MIN-MAX").
     burst_minutes: str = "7-13"
     gap_minutes: str = "4-9"
@@ -80,6 +83,11 @@ class Settings(BaseSettings):
     company_research_max_per_run: int = 3   # ceiling on how long one letters step may spend reading the web —
                                             # lowered with the timeout raised, so the worst case stays ~45 min
 
+    # Which programmer search passes run (comma-separated of regional, remote, project, gph). With the whole
+    # country in one `regional` pass the other three are strict subsets of it: over 10 days they brought 6 % of the
+    # cards and 3 letters while costing a page per task per sitting — a quarter of the daily cap (v9.15).
+    search_passes: str = "regional"
+
     # Telegram
     tg_bot_token: str = ""
     tg_owner_chat_id: int | None = None
@@ -90,8 +98,14 @@ class Settings(BaseSettings):
     # Schedule and limits
     digest_time: str = "12:00"  # Europe/Moscow, HH:MM — digest is sent every day at this time
     # Sittings: one crawl per window, its START picked at random inside the window; the daily cap is shared between
-    # the sittings still ahead. Comma-separated, sorted, non-overlapping.
+    # the sittings still ahead. Comma-separated, sorted, non-overlapping, none across midnight.
+    # The owner's instance runs six three-hour windows round the clock since v9.15 (decision #55, see .env.example):
+    # hour-long gaps between them, the 03:00-04:00 gap is where the nightly backup lands, Firefox stays open all
+    # night. The default keeps the daytime schedule — the same risk decision as the page cap above.
     crawl_windows: str = "07:00-10:00,12:00-15:00,18:00-22:00"
+    # Telegram messages sent in this interval (may cross midnight) arrive silent (`disable_notification`): a lead
+    # found at 03:00 is in the chat by morning without waking anyone. Empty = never silent.
+    quiet_hours: str = "23:00-07:00"
     # The daily quota of leads sent, across instant sends and the noon digest together. v9.1 set it to 5;
     # v9.7 doubled it; v9.8 raised it to 20. 0 = no quota at all, which is the default since v9.14
     # (decision #54): the owner wants every lead found to go out, because a letter not written is a certain
@@ -129,8 +143,14 @@ class Settings(BaseSettings):
 
     # Company leads (v9.13, decision #53): companies that could hand the programming part to a contractor, found
     # through vacancies that are not for a programmer (panel builders, design bureaus) or through the ОВЕН integrator
-    # catalogue. Channels: panel, design (hh.ru search passes, COMPANY_QUERIES) and owen_si (the catalogue).
-    company_channels: str = "panel,design,owen_si"
+    # catalogue. Channels: panel, design (hh.ru search passes, COMPANY_QUERIES), owen_si (the catalogue) and, since
+    # v9.15 (decision #55), plant — companies whose vacancy the card triage closed as "operations / КИПиА /
+    # electrical on a production site": they run automation without a programmer of their own.
+    company_channels: str = "panel,design,owen_si,plant"
+    # How many plant companies leave the pool (`skipped/plant_pool`) for a vacancy page per day. Must stay below the
+    # day's capacity for vacancy pages: they go in at triage priority 3 and are written off unopened after
+    # low_priority_ttl_days.
+    plant_leads_per_day: int = 40
     # How many catalogue companies may enter evaluation per day — 230 integrators at once would crowd the queue.
     # 5 → 25 in v9.14 (decision #54): the catalogue costs no page loads, only bridge time, and that is now
     # capped by letters_budget_min; at 5 a day the 167 waiting integrators would have taken until November.
@@ -212,6 +232,14 @@ class Settings(BaseSettings):
         return parse_windows(self.crawl_windows)
 
     @property
+    def search_passes_set(self) -> frozenset[str]:
+        return frozenset(p.strip() for p in self.search_passes.split(",") if p.strip())
+
+    @property
+    def quiet_hours_parsed(self) -> tuple[time, time] | None:
+        return parse_span(self.quiet_hours)
+
+    @property
     def burst_seconds(self) -> tuple[float, float]:
         return _parse_minutes_range(self.burst_minutes)
 
@@ -244,6 +272,27 @@ def parse_windows(value: str) -> list[tuple[time, time]]:
         if nxt_start < prev_end:
             raise ValueError("окна сбора пересекаются")
     return windows
+
+
+def parse_span(value: str) -> tuple[time, time] | None:
+    """'23:00-07:00' -> (start, end); may cross midnight, unlike a crawl window. Empty -> None."""
+    value = (value or "").strip()
+    if not value:
+        return None
+    start, end = value.split("-")
+    a, b = _parse_hhmm(start), _parse_hhmm(end)
+    if a == b:
+        raise ValueError(f"интервал {value!r}: начало совпадает с концом")
+    return a, b
+
+
+def in_span(now: time, span: tuple[time, time] | None) -> bool:
+    """Whether `now` falls inside `span`; a span whose end is before its start wraps past midnight."""
+    if span is None:
+        return False
+    a, b = (t.replace(tzinfo=None) for t in span)
+    now = now.replace(tzinfo=None)
+    return a <= now < b if a < b else (now >= a or now < b)
 
 
 def _parse_minutes_range(value: str) -> tuple[float, float]:

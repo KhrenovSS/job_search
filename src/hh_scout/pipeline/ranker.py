@@ -37,8 +37,10 @@ def company_total_score(settings: Settings, fit: int, lead: int) -> int:
 
 OFFER_RU = {"plc_hmi_per_panel": "программа ПЛК и панель под каждый шкаф", "templates": "типовые программы для серийных шкафов",
             "commissioning_scada": "ПНР у заказчика и SCADA", "plc_selection": "подбор ПЛК и обвязки",
-            "subcontract_programming": "субподряд на программную часть"}
-CHANNEL_ICON = {"panel": "🔧", "design": "📐", "owen_si": "🟡"}
+            "subcontract_programming": "субподряд на программную часть",
+            "modernization": "модернизация программ ПЛК и панелей на действующем оборудовании",
+            "support": "программист по вызову без штата"}
+CHANNEL_ICON = {"panel": "🔧", "design": "📐", "owen_si": "🟡", "plant": "🏭"}
 
 
 def format_company_card(position: int, v: sqlite3.Row, e: sqlite3.Row) -> str:
@@ -69,6 +71,8 @@ def format_company_card(position: int, v: sqlite3.Row, e: sqlite3.Row) -> str:
     if flags:
         lines.append(f"   ⚠️ {_esc('; '.join(flags))}")
     contacts = [x for x in (raw.get("site"), *(raw.get("emails") or [])[:2], *(raw.get("phones") or [])[:1]) if x]
+    if not contacts:
+        contacts = _dossier_contacts(v)   # a company found through someone else's vacancy: the dossier knows where to write
     if contacts:
         lines.append(f"   📞 {_esc(' · '.join(contacts))}")
     lines.append(f"   {v['url']}")
@@ -118,6 +122,18 @@ def format_card(position: int, v: sqlite3.Row, e: sqlite3.Row) -> str:
         lines.append(f"   ⚠️ {_esc('; '.join(flags))}")
     lines.append(f"   {v['url']}")
     return "\n".join(lines)
+
+
+def _dossier_contacts(v: sqlite3.Row) -> list[str]:
+    """Site, general e-mail and phone from the employer dossier (v9.15) — empty when there is no dossier yet."""
+    raw = _row_get(v, "company_brief")
+    if not raw:
+        return []
+    try:
+        brief = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    return [str(x) for x in (brief.get("website"), brief.get("contact_email"), brief.get("contact_phone")) if x]
 
 
 def _company_line(v: sqlite3.Row) -> str:

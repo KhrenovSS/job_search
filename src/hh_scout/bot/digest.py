@@ -21,7 +21,7 @@ from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter
 from aiogram.types import LinkPreviewOptions
 
 from hh_scout.bot.keyboards import vote_kb
-from hh_scout.config import TZ, Settings
+from hh_scout.config import TZ, Settings, in_span
 from hh_scout.db import open_db
 from hh_scout.llm.bridge_client import BridgeError
 from hh_scout.llm.cover_letter import CoverLetterWriter, rules_hash, usable_letter
@@ -38,11 +38,20 @@ SEND_TRIES = 3
 SITES = ("hh", "profi")
 
 
-async def send_message(bot: Bot, chat_id: int, text: str, **kw):
+def silent_now(settings: Settings, now: datetime | None = None) -> bool:
+    """Inside `QUIET_HOURS` (v9.15) messages go out with `disable_notification`: sittings run at night now, and a
+    lead found at 03:00 should be in the chat by morning without waking anyone."""
+    return in_span((now or datetime.now(TZ)).timetz(), settings.quiet_hours_parsed)
+
+
+async def send_message(bot: Bot, chat_id: int, text: str, *, settings: Settings | None = None, **kw):
     """One message, waiting out flood control. Telegram answers a burst with `retry_after` rather than an
     error worth giving up on, and since v9.14 a send can be a hundred messages long — losing the tail of the
     batch (and re-sending it next time) over one 429 is the one failure this loop must not have.
+    With `settings`, the message is silent inside the quiet hours.
     """
+    if settings is not None and "disable_notification" not in kw and silent_now(settings):
+        kw["disable_notification"] = True
     for attempt in range(1, SEND_TRIES + 1):
         try:
             return await bot.send_message(chat_id, text, **kw)
@@ -99,13 +108,14 @@ async def _deliver(bot: Bot, conn: sqlite3.Connection, settings: Settings, chat_
     delivered = 0
     for i, row in enumerate(rows, 1):
         await asyncio.sleep(pause)
-        msg = await send_message(bot, chat_id, format_card(i, row, row), reply_markup=vote_kb(row["id"]))
+        msg = await send_message(bot, chat_id, format_card(i, row, row), settings=settings, reply_markup=vote_kb(row["id"]))
         letter_id = None
         # hh leads are filtered before they get here; a profi bid whose letter failed still goes out on its own
         letter = rules.letter(row)
         if letter:
             await asyncio.sleep(pause)
-            letter_msg = await send_message(bot, chat_id, format_letter(row["employer"], letter, letter_key(row)))
+            letter_msg = await send_message(bot, chat_id, format_letter(row["employer"], letter, letter_key(row)),
+                                            settings=settings)
             letter_id = letter_msg.message_id
         record_sent_lead(conn, digest_id, i, row, msg.message_id, letter_id)
         delivered = i
@@ -150,14 +160,14 @@ async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, ch
     header = digest_header(len(ready), plan.checked, open_before=open_before, work=work,
                            invited=invited, invited_days=INVITED_DAYS, sent_today=plan.sent_today,
                            floor_added=floor_added)
-    await send_message(bot, chat_id, header)
+    await send_message(bot, chat_id, header, settings=settings)
     digest_id = open_digest(conn, plan.checked, note)
     try:
         if ready:
             await _deliver(bot, conn, settings, chat_id, digest_id, ready, rules)
         if tail:
             await asyncio.sleep(settings.telegram_pause_s)
-            await send_message(bot, chat_id, format_queue_tail(tail, tail_total),
+            await send_message(bot, chat_id, format_queue_tail(tail, tail_total), settings=settings,
                                link_preview_options=LinkPreviewOptions(is_disabled=True))
     finally:
         # Whatever reached the chat is recorded even if the send broke off — the rest keeps its place in the queue
@@ -207,7 +217,7 @@ async def send_instant_leads(bot: Bot, conn: sqlite3.Connection, settings: Setti
             leads = repo.evaluated_leads(conn, settings.score_threshold, left, site=site)
     if not leads:
         return 0
-    await send_message(bot, chat_id, INSTANT_HEADERS[site].format(n=len(leads)))
+    await send_message(bot, chat_id, INSTANT_HEADERS[site].format(n=len(leads)), settings=settings)
     digest_id = open_digest(conn, checked=0, note=f"instant:{site}")
     try:
         await _deliver(bot, conn, settings, chat_id, digest_id, leads, rules)

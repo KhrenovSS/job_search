@@ -10,6 +10,9 @@ class TriageVerdict(BaseModel):
     open: bool
     priority: int = Field(ge=1, le=3, default=3)
     reason: str = ""
+    # v9.15 (decision #55): a closed card whose company runs automation itself (КИПиА, operations, electrical on a
+    # production site) — the company becomes a `plant` lead even though the vacancy is not for a programmer.
+    plant: bool = False
 
     @field_validator("hh_id", mode="before")
     @classmethod
@@ -98,4 +101,9 @@ class CompanyBrief(BaseModel):
     automation_hooks: list[str] = Field(default_factory=list)  # guesses, marked as such in the letter prompt
     sources: list[str] = Field(default_factory=list)
     note: str = ""
+    # v9.15: the company's public contacts as read on its site or hh page — where a partnership offer can be sent
+    # when the company was found through someone else's vacancy. General addresses only, never a person's.
+    website: str = ""
+    contact_email: str = ""
+    contact_phone: str = ""
 

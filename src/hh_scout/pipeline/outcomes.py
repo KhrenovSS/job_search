@@ -27,7 +27,8 @@ COMPANY_RU = {"integrator": "интегратор", "manufacturer": "произ�
               "agency": "агентство", "panel_builder": "сборщик шкафов", "design_bureau": "проектное бюро",
               "unknown": "не определён"}
 LEAD_KIND_RU = {"vacancy": "вакансия", "company": "компания"}
-CHANNEL_RU = {"panel": "щитовики (hh)", "design": "проектные бюро (hh)", "owen_si": "каталог ОВЕН", "profi": "profi.ru"}
+CHANNEL_RU = {"panel": "щитовики (hh)", "design": "проектные бюро (hh)", "owen_si": "каталог ОВЕН",
+              "plant": "эксплуатанты автоматики (hh)", "profi": "profi.ru"}
 WORK_FORMAT_RU = {"remote": "удалёнка", "hybrid": "гибрид", "office": "офис", "field": "разъездная"}
 
 

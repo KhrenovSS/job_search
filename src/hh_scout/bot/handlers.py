@@ -111,6 +111,10 @@ async def status_cmd(m: Message, settings: Settings, conn: sqlite3.Connection, s
         t = repo.owen_totals(conn)
         lines.append(f"Каталог ОВЕН: компаний {t['total']} · ждут допуска {t['waiting']} · отправлено {t['sent']} "
                      f"(по {settings.company_leads_per_day} в день)")
+    if repo.PLANT_PASS in settings.company_channels_set:
+        t = repo.plant_totals(conn)
+        lines.append(f"Эксплуатанты автоматики: в пуле {t['pool']} · ждут страницы {t['to_fetch']} · отправлено {t['sent']} "
+                     f"(по {settings.plant_leads_per_day} в день)")
     lines.append("profi.ru: " + (f"✅ включён · заказов в базе {repo.count_site(conn, 'profi')}" if settings.profi_enabled
                                 else "выключен (PROFI_ENABLED=false)"))
     wd = kv_get(conn, "watchdog_last")

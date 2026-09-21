@@ -12,6 +12,8 @@ Applied three times, each as early as the data allows (cheapest first):
 * `dedupe_evaluated(conn, settings)` — after evaluation, before letters, and again when the digest is planned: among the
   evaluated hh.ru leads at/above the threshold only the best-scored vacancy of each employer stays.
 Identity: hh.ru `company.id` (`vacancies.employer_id`) or, for cards without an id, the employer name; profi.ru is exempt.
+Kinds (v9.15): a *vacancy* candidate is covered only by vacancy rows — a cold `plant` offer must not block the same
+company's real programmer vacancy later; a *company* candidate is covered by any row (`repo._kind_sql`).
 
 A twin is often skipped against a vacancy that has not been evaluated yet (`prefiltered`). If that one then turns out
 not to be a lead, the whole company would silently vanish — so `revive_orphans(conn, settings)` puts such twins back
@@ -26,7 +28,7 @@ import sqlite3
 from hh_scout.config import Settings
 from hh_scout.db import transaction
 from hh_scout.pipeline import repo
-from hh_scout.pipeline.rows import is_hh as _is_hh
+from hh_scout.pipeline.rows import is_hh as _is_hh, lead_kind as _lead_kind
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +38,8 @@ def covering_lead(conn: sqlite3.Connection, settings: Settings, row: sqlite3.Row
     if not _is_hh(row):
         return None
     return repo.employer_lead(conn, row["employer_id"], row["employer"], exclude_id=row["id"],
-                              threshold=settings.score_threshold, repeat_days=settings.employer_repeat_days)
+                              threshold=settings.score_threshold, repeat_days=settings.employer_repeat_days,
+                              candidate_kind=_lead_kind(row))
 
 
 def answered_employer(conn: sqlite3.Connection, settings: Settings, row: sqlite3.Row,
@@ -46,7 +49,7 @@ def answered_employer(conn: sqlite3.Connection, settings: Settings, row: sqlite3
         return None
     return repo.employer_responded(conn, row["employer_id"], row["employer"],
                                    exclude_id=row["id"] if exclude_self else None,
-                                   within_days=settings.employer_repeat_days)
+                                   within_days=settings.employer_repeat_days, candidate_kind=_lead_kind(row))
 
 
 def skip_if_covered(conn: sqlite3.Connection, settings: Settings, row: sqlite3.Row) -> sqlite3.Row | None:
@@ -115,6 +118,8 @@ def revive_orphans(conn: sqlite3.Connection, settings: Settings) -> int:
 
 
 def same_company(a: sqlite3.Row, b: sqlite3.Row) -> bool:
+    if _lead_kind(a) == "vacancy" and _lead_kind(b) != "vacancy":
+        return False   # a vacancy lead and a company offer to the same employer are two channels, not twins (v9.15)
     if a["employer_id"] and b["employer_id"]:
         return a["employer_id"] == b["employer_id"]
     return bool(a["employer"]) and (a["employer"] or "").casefold() == (b["employer"] or "").casefold()
@@ -145,7 +150,8 @@ def dedupe_evaluated(conn: sqlite3.Connection, settings: Settings) -> int:
                 n += 1
                 continue
             sent = repo.employer_lead(conn, row["employer_id"], row["employer"], exclude_id=row["id"],
-                                      threshold=settings.score_threshold, repeat_days=settings.employer_repeat_days)
+                                      threshold=settings.score_threshold, repeat_days=settings.employer_repeat_days,
+                                      candidate_kind=_lead_kind(row))
             if sent is not None and sent["status"] == "sent":
                 repo.skip_as_duplicate(conn, row["id"], sent["hh_id"])
                 log.info("Дубль компании: %s «%s» — %s уже получал лид %s", row["hh_id"], (row["title"] or "")[:50],

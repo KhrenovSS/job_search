@@ -39,7 +39,7 @@ Window = tuple[time, time]
 
 
 # Nightly, between the last sitting and the first one of the next day.
-BACKUP_HOUR, BACKUP_MINUTE = 3, 30
+BACKUP_HOUR, BACKUP_MINUTE = 3, 40   # v9.15: the 00-03 window may run until 03:30 (grace), the next opens at 04:00
 # The ОВЕН integrator catalogue changes slowly: once a week, Sunday night, is plenty (v9.13).
 OWEN_DAY, OWEN_HOUR, OWEN_MINUTE = "sun", 4, 0
 
