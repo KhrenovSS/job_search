@@ -31,7 +31,10 @@ def connect(path: Path | str) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     if str(p) != ":memory:":
         conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA busy_timeout = 5000")
+    # 5 s → 30 s (21.09): a one-off 460-row backfill held the write lock for 18 s during a sitting and the details
+    # stage died with "database is locked", losing the rest of its page budget. Waiting beats failing: there is
+    # one real writer at a time here, and half a minute of patience costs nothing a lost stage would not.
+    conn.execute("PRAGMA busy_timeout = 30000")
     if str(p) != ":memory:":
         # WAL + NORMAL: durable against crashes of the process, fsync only on checkpoint, not on every commit.
         # On the owner's HDD a FULL-sync commit costs ~90 ms; hundreds of them in a row starve the bot's connection.
