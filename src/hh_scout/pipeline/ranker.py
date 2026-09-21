@@ -200,10 +200,18 @@ def format_collapsed(kind: str, row: sqlite3.Row, when: datetime | None = None, 
             f"<a href=\"{row['url']}\">{_esc(row['title'])}</a>")
 
 
-def format_inbox(rows: list[sqlite3.Row]) -> str:
+MESSAGE_CHARS = 3500   # Telegram allows 4096; the gap covers HTML entities the escaping adds
+
+
+def format_inbox(rows: list[sqlite3.Row]) -> list[str]:
+    """Open leads, one line each, split into messages Telegram will accept.
+
+    Without a daily quota the list can run to hundreds of lines (v9.14), and a single message over 4096
+    characters is rejected outright — /inbox would simply stop answering just when it is needed most.
+    """
     if not rows:
-        return "Все лиды обработаны — открытых нет."
-    lines = ["<b>Открытые лиды</b> (сначала старые; ⏸ — отложенные внизу):"]
+        return ["Все лиды обработаны — открытых нет."]
+    lines = []
     for r in rows:
         try:
             d = datetime.fromisoformat(r["sent_at"]).astimezone(TZ).strftime("%d.%m")
@@ -211,20 +219,38 @@ def format_inbox(rows: list[sqlite3.Row]) -> str:
             d = "—"
         mark = "⏸ " if r["deferred"] else ""
         lines.append(f"{mark}{d} · {r['total']} · {_esc(r['employer'] or '—')} · <a href=\"{r['url']}\">{_esc(r['title'][:60])}</a>")
-    lines.append(f"\nИтого: {len(rows)}. Закрыть: кнопки под карточкой, /done <hh_id>, /cleanup [дней].")
-    return "\n".join(lines)
+    head = "<b>Открытые лиды</b> (сначала старые; ⏸ — отложенные внизу):"
+    tail = f"\nИтого: {len(rows)}. Закрыть: кнопки под карточкой, /done <hh_id>, /cleanup [дней]."
+    return _chunked([head] + lines + [tail])
+
+
+def _chunked(lines: list[str], limit: int = MESSAGE_CHARS) -> list[str]:
+    """Glue lines into as few messages as fit under `limit`; a single over-long line goes out on its own."""
+    parts: list[str] = []
+    cur: list[str] = []
+    size = 0
+    for line in lines:
+        if cur and size + len(line) + 1 > limit:
+            parts.append("\n".join(cur))
+            cur, size = [], 0
+        cur.append(line)
+        size += len(line) + 1
+    if cur:
+        parts.append("\n".join(cur))
+    return parts
 
 
 def format_queue_tail(waiting: list[sqlite3.Row], total: int) -> str:
-    """The leads that did not make today's quota — one line each, letter on request.
+    """The leads still waiting their turn — one line each, letter on request.
 
-    They are not rejected: the queue outlives the day, and tomorrow they compete with whatever arrives.
+    Since v9.14 these are mostly leads whose letter is not written yet: the send itself has no quota, but the
+    letter pass has a time budget. They are not rejected — the queue outlives the day.
     """
     if not waiting:
         return ""
     head = (f"<b>Ждут очереди: {total}</b>" if total <= len(waiting)
             else f"<b>Ждут очереди: {total}</b> (ближайшие {len(waiting)})")
-    lines = [head + " — не попали в сегодняшнюю норму, но не отброшены."]
+    lines = [head + " — письма к ним ещё не готовы, но лиды не отброшены."]
     for r in waiting:
         waited = r["waiting_days"] if "waiting_days" in r.keys() else 0
         age = f" · ждёт {waited} дн." if (waited or 0) >= 2 else ""

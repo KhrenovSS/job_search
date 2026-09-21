@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+import time
 from dataclasses import dataclass
 
 from hh_scout.browser.hh_pages import strip_html
@@ -57,6 +58,7 @@ class LetterStats:
     failed: int = 0
     reviewed: int = 0   # letters the editor actually changed
     bridge_calls: int = 0
+    left_for_later: int = 0   # leads the time budget did not reach; they keep their place in the queue
 
 
 def salary_stated(row: sqlite3.Row) -> bool:
@@ -312,30 +314,35 @@ class CoverLetterWriter:
         return check_letter(text, row, company)
 
     def run(self, limit: int | None = None) -> LetterStats:
-        """Letters for the top of the queue, within the day's quota (v9.1).
+        """Letters for the whole queue, for as long as the time budget allows (v9.14, decision #54).
 
-        The quota is daily, not per run: the crawl runs three times a day and would otherwise write three
-        times as many. Rewrites of stale letters count against it too, after the leads that have no letter at
-        all (decision #50). What is left over keeps its place in the queue and gets its letter on a later day.
+        Until v9.14 this pass was capped by the daily lead quota. With the quota gone the cap is time:
+        a letter costs ~80 s of bridge, and this stage runs inside a sitting that must not spill into the
+        next window. Leads with no letter go first, rewrites of stale ones after (decision #50); whatever
+        the budget does not reach keeps its place in the queue — a day of waiting is worth a point there,
+        so it comes back at the head next sitting.
         """
-        left = max(0, self.s.digest_max_items - repo.letters_written_today(self.conn))
-        if limit is not None:
-            left = min(left, limit)
-        if left == 0:
-            log.info("Суточная норма писем исчерпана (%d) — остальные ждут очереди", self.s.digest_max_items)
-            return self.stats
         queue = repo.lead_queue(self.conn, self.s.score_threshold, None,
                                 wait_bonus_max=self.s.queue_wait_bonus_max)
         fresh = [r for r in queue if not r["letter"]]
         stale = [r for r in queue if r["letter"] and not usable_letter(r, self.rules(letter_key(r)))]
         if stale:
             log.info("Писем, написанных по прежним правилам: %d — переписываю после новых лидов", len(stale))
-        rows = (fresh + stale)[:left]
+        rows = fresh + stale
+        if limit is not None:
+            rows = rows[:limit]
         if not rows:
-            log.info("Все лиды в норме уже с письмами")
+            log.info("Все лиды в очереди уже с письмами")
             return self.stats
+        deadline = time.monotonic() + self.s.letters_budget_min * 60 if self.s.letters_budget_min > 0 else None
         systems: dict[str, str] = {}
-        for row in rows:
+        for i, row in enumerate(rows):
+            # Checked between letters, never inside one: an unfinished letter is worse than a late one
+            if deadline is not None and i and time.monotonic() >= deadline:
+                self.stats.left_for_later = len(rows) - i
+                log.info("Бюджет времени на письма исчерпан (%d мин): написано %d, ждут очереди %d",
+                         self.s.letters_budget_min, self.stats.written, self.stats.left_for_later)
+                break
             key = letter_key(row)
             if key not in systems:
                 systems[key] = render_letter_prompt(self.s, key)

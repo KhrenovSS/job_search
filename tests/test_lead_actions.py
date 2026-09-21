@@ -54,7 +54,26 @@ def test_formatting():
     assert line.startswith("✅ Написал ") and "ООО 1" in line and 'href="https://hh.ru/vacancy/1"' in line
     assert format_collapsed("disliked", row, reason="stack").startswith("👎 Мимо ") and "не мой стек" in format_collapsed("disliked", row, reason="stack")
     inbox = format_inbox(repo.open_leads(conn))
-    assert "Открытые лиды" in inbox and "Итого: 3" in inbox
-    assert format_inbox([]).startswith("Все лиды обработаны")
+    assert len(inbox) == 1 and "Открытые лиды" in inbox[0] and "Итого: 3" in inbox[0]
+    assert format_inbox([])[0].startswith("Все лиды обработаны")
     assert "Необработанных с прошлых дней: 3 (/inbox)" in digest_header(2, 10, open_before=3)
     assert "Необработанных" not in digest_header(2, 10, open_before=0)
+
+
+def test_inbox_survives_a_pile_of_open_leads():
+    """v9.14: with no daily quota /inbox can list hundreds of leads — one message over 4096 chars is refused."""
+    conn = _db()
+    for i in range(4, 120):
+        conn.execute("INSERT INTO vacancies(id,hh_id,title,employer,url,source,search_pass,status,first_seen_at,"
+                     "updated_at) VALUES (?,?,?,?,?,?,?,'sent','t','t')",
+                     (i, str(i), f"Инженер по автоматизации участка номер {i}", f"ООО «Предприятие {i}»",
+                      f"https://hh.ru/vacancy/{i}", "s", "regional"))
+        conn.execute("INSERT INTO evaluations(vacancy_id,tech_score,salary_score,format_score,role_score,lead_score,"
+                     "total,ip_gph_possible,is_agency,employment_hint,company_kind,verdict,pitch_hint,red_flags,"
+                     "created_at) VALUES (?,80,0,0,80,60,70,'maybe',0,'staff','integrator','v','p','[]',"
+                     "'2026-09-08T10:00:00+00:00')", (i,))
+        conn.execute("INSERT INTO digest_items(digest_id,vacancy_id,position,tg_message_id) VALUES (1,?,?,?)",
+                     (i, i, i))
+    parts = format_inbox(repo.open_leads(conn))
+    assert len(parts) > 1 and all(len(p) <= 4096 for p in parts)
+    assert "Открытые лиды" in parts[0] and "Итого: 119" in parts[-1]

@@ -6,6 +6,7 @@ import respx
 from hh_scout.config import Settings
 from hh_scout.db import connect, migrate
 from hh_scout.llm.bridge_client import BridgeClient
+from hh_scout.llm import cover_letter as cover_letter_mod
 from hh_scout.llm.cover_letter import CoverLetterWriter, letter_payload, rules_hash, usable_letter
 from hh_scout.pipeline import repo
 
@@ -210,18 +211,25 @@ def test_code_checks_catch_money_and_cliches():
 
 
 @respx.mock
-def test_daily_quota_limits_letters_across_runs(tmp_path):
-    """Three sittings a day must not turn a quota of two into six."""
-    s = _settings(tmp_path)
-    s = s.model_copy(update={"digest_max_items": 2})
+def test_letters_are_capped_by_time_not_by_a_daily_count(tmp_path, monkeypatch):
+    """v9.14 (decision #54): the quota is gone, so what bounds a pass is its time budget — a letter costs
+    ~80 s of bridge and the stage runs inside a sitting that must not spill into the next window."""
+    s = _settings(tmp_path).model_copy(update={"letters_budget_min": 30})
     conn = _db()
     respx.post("http://bridge.test/complete").mock(
         return_value=httpx.Response(200, json={"text": GOOD, "cost_usd": 0.01}))
 
-    first = CoverLetterWriter(s, conn, BridgeClient(s, retries=0)).run()
-    assert first.written == 2
-    second = CoverLetterWriter(s, conn, BridgeClient(s, retries=0)).run()
-    assert second.written == 0            # the quota is spent for today
+    ticks = iter([0.0])                   # the first reading opens the budget; every later one is past it
+    monkeypatch.setattr(cover_letter_mod.time, "monotonic", lambda: next(ticks, 31 * 60))
+    stats = CoverLetterWriter(s, conn, BridgeClient(s, retries=0)).run()
+    assert stats.written == 1             # the letter already begun is never cut off mid-way
+    assert stats.left_for_later == 1
+    assert repo.lead_by_hh_id(conn, "2")["status"] == "evaluated"   # it keeps its place in the queue
+
+    # the next sitting picks it up: no budget, no count, nothing held back
+    monkeypatch.setattr(cover_letter_mod.time, "monotonic", lambda: 0.0)
+    again = CoverLetterWriter(s, conn, BridgeClient(s, retries=0)).run()
+    assert again.written == 1 and again.left_for_later == 0
     assert repo.letters_written_today(conn) == 2
 
 

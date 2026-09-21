@@ -221,12 +221,15 @@ class Evaluator:
         return None
 
 
+PREVIEW_MAX_ITEMS = 20   # a CLI preview shows the head of the queue, not the whole of it — sends have no quota
+
+
 def build_digest_preview(conn: sqlite3.Connection, settings: Settings, checked: int, *, with_tail: bool = False) -> list[str]:
     """Messages the bot would send right now from evaluated vacancies (not marked sent)."""
     from hh_scout.pipeline.ranker import digest_header, format_card, format_letter
 
     rows = repo.evaluated_all(conn)
-    passing = [r for r in rows if r["total"] >= settings.score_threshold][: settings.digest_max_items]
+    passing = [r for r in rows if r["total"] >= settings.score_threshold][:PREVIEW_MAX_ITEMS]
     messages = [digest_header(len(passing), checked)]
     for i, r in enumerate(passing, 1):
         messages.append(format_card(i, r, r))

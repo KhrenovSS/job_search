@@ -1,4 +1,5 @@
-"""v9.8: a ready lead goes out right after the sitting, and the day's quota is shared with the noon digest."""
+"""v9.8: a ready lead goes out right after the sitting. v9.14 removed the daily quota — DIGEST_MAX_ITEMS
+survives only as a fuse, so the tests below run both with it set and with it off (the default)."""
 
 import asyncio
 
@@ -16,10 +17,9 @@ from hh_scout.pipeline.ranker import digest_header
 RULES = "rules-of-today"   # the stamp a letter written under the current rules carries (decision #46)
 
 
-@pytest.fixture(autouse=True)
-def _no_telegram_pauses(monkeypatch):
-    """The real 1 s pause between messages is politeness to Telegram, not behaviour under test."""
-    monkeypatch.setattr(digest_mod, "PAUSE_S", 0)
+def _settings(**kw):
+    """The real pause between messages is politeness to Telegram, not behaviour under test."""
+    return Settings(_env_file=None, telegram_pause_s=0, **kw)
 
 
 @pytest.fixture(autouse=True)
@@ -56,7 +56,7 @@ def _db(letters=(1, 2, 3)):
 
 
 def test_instant_send_delivers_ready_leads_in_queue_order():
-    s = Settings(_env_file=None, digest_max_items=20)
+    s = _settings(digest_max_items=20)
     conn = _db()
     bot = _FakeBot()
     n = asyncio.run(send_instant_leads(bot, conn, s, chat_id=1, site="hh"))
@@ -68,7 +68,7 @@ def test_instant_send_delivers_ready_leads_in_queue_order():
 
 def test_a_lead_without_a_letter_waits_instead_of_holding_up_the_chat():
     """Its letter failed this run; it keeps its place in the queue for the next sitting or for noon."""
-    s = Settings(_env_file=None, digest_max_items=20)
+    s = _settings(digest_max_items=20)
     conn = _db(letters=(1, 3))
     n = asyncio.run(send_instant_leads(_FakeBot(), conn, s, chat_id=1, site="hh"))
     assert n == 2
@@ -77,7 +77,7 @@ def test_a_lead_without_a_letter_waits_instead_of_holding_up_the_chat():
 
 def test_a_letter_written_under_older_rules_waits_for_the_noon_digest():
     """v9.9: the rules changed while the lead sat in the queue — the stored text must not go out as it is."""
-    s = Settings(_env_file=None, digest_max_items=20)
+    s = _settings(digest_max_items=20)
     conn = _db()
     repo.save_cover_letter(conn, 2, "письмо 2", rules_hash="rules-of-last-week")
     conn.execute("UPDATE cover_letters SET rules_hash = NULL WHERE vacancy_id = 3")  # written before the stamp existed
@@ -88,8 +88,9 @@ def test_a_letter_written_under_older_rules_waits_for_the_noon_digest():
     assert not any("письмо 2" in m or "письмо 3" in m for m in bot.messages)
 
 
-def test_the_quota_is_a_property_of_the_day_not_of_one_message():
-    s = Settings(_env_file=None, digest_max_items=2)
+def test_the_fuse_when_set_is_a_property_of_the_day_not_of_one_message():
+    """DIGEST_MAX_ITEMS is 0 by default since v9.14; set above zero it caps the day as it always did."""
+    s = _settings(digest_max_items=2)
     conn = _db()
     assert asyncio.run(send_instant_leads(_FakeBot(), conn, s, chat_id=1, site="hh")) == 2
     # the morning sitting spent the whole quota: the evening one sends nothing...
@@ -101,7 +102,7 @@ def test_the_quota_is_a_property_of_the_day_not_of_one_message():
 
 
 def test_noon_digest_says_what_already_went_out_instead_of_lead_not_found():
-    s = Settings(_env_file=None, digest_max_items=2)
+    s = _settings(digest_max_items=2)
     conn = _db()
     asyncio.run(send_instant_leads(_FakeBot(), conn, s, chat_id=1, site="hh"))
     plan = plan_digest(conn, s)
@@ -110,7 +111,7 @@ def test_noon_digest_says_what_already_went_out_instead_of_lead_not_found():
 
 
 def test_below_threshold_is_cleaned_up_by_the_noon_digest_not_by_instant_sends():
-    s = Settings(_env_file=None, digest_max_items=20)
+    s = _settings(digest_max_items=20)
     conn = _db()
     asyncio.run(send_instant_leads(_FakeBot(), conn, s, chat_id=1, site="hh"))
     assert repo.lead_by_hh_id(conn, "4")["status"] == "evaluated"
@@ -135,7 +136,7 @@ def test_noon_digest_judges_a_profi_bid_by_the_profi_rules(monkeypatch):
     from hh_scout.bot.digest import send_digest
 
     monkeypatch.setattr(digest_mod, "rules_hash", lambda settings, site="hh": f"rules-{site}")
-    s = Settings(_env_file=None, digest_max_items=20, daily_letters_floor=0)   # the floor is tested on its own below
+    s = _settings(digest_max_items=20, daily_letters_floor=0)   # the floor is tested on its own below
     conn = _db(letters=())
     for i in (1, 2, 3):
         repo.save_cover_letter(conn, i, f"письмо {i}", rules_hash="rules-hh")
@@ -152,7 +153,7 @@ def test_digest_skips_the_scoring_pass_while_a_sitting_runs(monkeypatch):
 
     calls = []
     monkeypatch.setattr(digest_mod, "_evaluate_pending", lambda settings: calls.append("eval") or (0, 0))
-    s = Settings(_env_file=None, digest_max_items=20)
+    s = _settings(digest_max_items=20)
     conn = _db()
     asyncio.run(send_digest(_FakeBot(), conn, s, chat_id=1, evaluate=False))
     assert calls == []
@@ -163,7 +164,7 @@ def test_digest_skips_the_scoring_pass_while_a_sitting_runs(monkeypatch):
 
 def test_instant_send_takes_ready_leads_from_the_whole_queue_not_just_its_head():
     """Quota 2, the two strongest leads have no letter yet: the ready one further down still goes out."""
-    s = Settings(_env_file=None, digest_max_items=2)
+    s = _settings(digest_max_items=2)
     conn = _db(letters=(3,))
     bot = _FakeBot()
     assert asyncio.run(send_instant_leads(bot, conn, s, chat_id=1, site="hh")) == 1
@@ -282,3 +283,78 @@ def test_readmit_puts_recently_rejected_leads_back_after_a_threshold_change():
     _near_lead(conn, 23, 55, status="rejected", skip_reason="queue_expired")
     assert repo.readmit_rejected(conn, min_total=50, days=3) == 1
     assert [r["hh_id"] for r in repo.lead_queue(conn, 50)] == ["20"]
+
+
+# --- v9.14: no daily quota, decision #54 ------------------------------------------------
+
+def test_without_a_quota_the_whole_ready_queue_goes_out():
+    """The default since v9.14: a lead found is a letter sent — holding one back is a guaranteed no."""
+    s = _settings()                       # digest_max_items = 0
+    conn = _db()
+    for i in (5, 6, 7, 8, 9):             # a flood the old quota of 20 would have capped
+        conn.execute("INSERT INTO vacancies(id,hh_id,title,employer,url,source,search_pass,status,site,"
+                     "first_seen_at,updated_at) VALUES (?,?,?,?,?,?,?,'evaluated','hh',?,?)",
+                     (i, str(i), f"Инженер {i}", f"ООО {i}", "u", "s", "regional", "t", "t"))
+        conn.execute("INSERT INTO evaluations(vacancy_id,tech_score,salary_score,format_score,role_score,lead_score,"
+                     "total,ip_gph_possible,is_agency,employment_hint,company_kind,verdict,pitch_hint,red_flags,"
+                     "created_at) VALUES (?,80,0,0,80,60,55,'maybe',0,'staff','integrator','v','p','[]',"
+                     "'2026-09-08T10:00:00+00:00')", (i,))
+        repo.save_cover_letter(conn, i, f"письмо {i}", rules_hash=RULES)
+    assert asyncio.run(send_instant_leads(_FakeBot(), conn, s, chat_id=1, site="hh")) == 8
+    assert repo.leads_sent_today(conn) == 8
+    # ...and the noon digest does not stop either: only the 40 is left, below the threshold
+    assert plan_digest(conn, s).leads == []
+
+
+def test_a_send_cut_short_keeps_what_reached_the_chat():
+    """v9.14: dozens of leads per send — a Telegram failure halfway must not re-send the ones already delivered."""
+    s = _settings()
+    conn = _db()
+
+    class _BreakingBot(_FakeBot):
+        async def send_message(self, chat_id, text, **kw):
+            if len(self.messages) >= 3:            # header + card + letter, then it dies
+                raise RuntimeError("Telegram упал")
+            return await super().send_message(chat_id, text, **kw)
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(send_instant_leads(_BreakingBot(), conn, s, chat_id=1, site="hh"))
+    assert repo.lead_by_hh_id(conn, "1")["status"] == "sent"        # it is in the chat, so it is recorded
+    assert repo.lead_by_hh_id(conn, "2")["status"] == "evaluated"   # never made it — stays in the queue
+    assert repo.last_digest(conn)["items_count"] == 1
+    # the next send picks up exactly where it stopped, with no duplicate
+    assert asyncio.run(send_instant_leads(_FakeBot(), conn, s, chat_id=1, site="hh")) == 2
+
+
+def test_flood_control_is_waited_out_not_given_up_on():
+    from aiogram.exceptions import TelegramRetryAfter
+
+    s = _settings()
+    conn = _db(letters=(1,))
+
+    class _FloodingBot(_FakeBot):
+        def __init__(self):
+            super().__init__()
+            self.refused = 0
+
+        async def send_message(self, chat_id, text, **kw):
+            if self.refused < 1:
+                self.refused += 1
+                raise TelegramRetryAfter(method=None, message="flood", retry_after=0)
+            return await super().send_message(chat_id, text, **kw)
+
+    bot = _FloodingBot()
+    assert asyncio.run(send_instant_leads(bot, conn, s, chat_id=1, site="hh")) == 1
+    assert bot.refused == 1 and any("письмо 1" in m for m in bot.messages)
+
+
+def test_the_noon_digest_holds_back_a_lead_whose_letter_is_not_written():
+    """Without a quota the digest takes the whole queue — a card without its letter would close the lead for good."""
+    from hh_scout.bot.digest import send_digest
+
+    s = _settings(daily_letters_floor=0)
+    conn = _db(letters=(1, 3))
+    bot = _FakeBot()
+    assert asyncio.run(send_digest(bot, conn, s, chat_id=1, evaluate=False)) == 2
+    assert repo.lead_by_hh_id(conn, "2")["status"] == "evaluated"
+    assert any("Ждут очереди" in m and "/letter 2" in m for m in bot.messages)

@@ -488,7 +488,9 @@ def queue_size(conn: sqlite3.Connection, threshold: int) -> int:
 
 
 def letters_written_today(conn: sqlite3.Connection) -> int:
-    """Letters written (or rewritten) since local midnight — the daily quota holds across all three sittings."""
+    """Letters written (or rewritten) since local midnight. Until v9.14 this was the daily letter quota;
+    now nothing is capped by it and it is read for reporting only (/status, go_hh.sh).
+    """
     return int(conn.execute("SELECT COUNT(*) FROM cover_letters WHERE created_at >= ?", (_today_start_utc(),)).fetchone()[0])
 
 
@@ -632,6 +634,16 @@ def create_digest(conn: sqlite3.Connection, items_count: int, collected_count: i
     cur = conn.execute("INSERT INTO digests(sent_at, items_count, collected_count, note) VALUES (?, ?, ?, ?)",
                        (utcnow(), items_count, collected_count, note))
     return int(cur.lastrowid)
+
+
+def digest_item_count(conn: sqlite3.Connection, digest_id: int) -> int:
+    """How many leads the digest actually carries — the truth when a send was cut short (v9.14)."""
+    return int(conn.execute("SELECT COUNT(*) FROM digest_items WHERE digest_id = ?", (digest_id,)).fetchone()[0])
+
+
+def update_digest_count(conn: sqlite3.Connection, digest_id: int, items_count: int) -> None:
+    """Set how many leads the digest carried — it is opened with 0 and closed once delivery is over (v9.14)."""
+    conn.execute("UPDATE digests SET items_count = ? WHERE id = ?", (items_count, digest_id))
 
 
 def add_digest_item(conn: sqlite3.Connection, digest_id: int, vacancy_id: int, position: int, tg_message_id: int | None,

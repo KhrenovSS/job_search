@@ -83,16 +83,26 @@ class Settings(BaseSettings):
     # Telegram
     tg_bot_token: str = ""
     tg_owner_chat_id: int | None = None
+    # Pause before every message of a batch. Telegram allows about one message per second into a chat, and
+    # since v9.14 a send can be dozens of leads (two messages each), so the old 1.0 s sat exactly on the limit.
+    telegram_pause_s: float = 1.2
 
     # Schedule and limits
     digest_time: str = "12:00"  # Europe/Moscow, HH:MM — digest is sent every day at this time
     # Sittings: one crawl per window, its START picked at random inside the window; the daily cap is shared between
     # the sittings still ahead. Comma-separated, sorted, non-overlapping.
     crawl_windows: str = "07:00-10:00,12:00-15:00,18:00-22:00"
-    # The daily quota: how many leads may be sent and letters written in a day, across instant sends and the
-    # noon digest together. v9.1 set it to 5; v9.7 doubled it; v9.8 raised it to 20, which at the current supply
-    # of 8-12 leads a day holds nothing back — it stays as a fuse against a sudden flood (decision #46).
-    digest_max_items: int = 20
+    # The daily quota of leads sent, across instant sends and the noon digest together. v9.1 set it to 5;
+    # v9.7 doubled it; v9.8 raised it to 20. 0 = no quota at all, which is the default since v9.14
+    # (decision #54): the owner wants every lead found to go out, because a letter not written is a certain
+    # no. What holds the day's volume now is letters_budget_min below — the bridge's pace, not a number.
+    # A positive value turns the fuse back on.
+    digest_max_items: int = 0
+    # How long one letter-writing pass may take (minutes). The real cost of a lead is not its slot in a quota
+    # but ~80 s of bridge time, and the letter stage knows nothing about the sitting's window — without this
+    # a hundred leads would push the crawl into the next window and hold crawl_lock for hours. Whatever is left
+    # unwritten keeps its place in the queue (it gains a waiting bonus) and gets its letter next sitting.
+    letters_budget_min: int = 60
     queue_ttl_days: int = 30        # a lead nobody got to in a month leaves the queue (the vacancy is gone)
     queue_wait_bonus_max: int = 7   # a day of waiting is worth a point, capped: the tail must not starve
     digest_tail_items: int = 8      # how many of the waiting ones the digest lists by name
@@ -121,8 +131,10 @@ class Settings(BaseSettings):
     # through vacancies that are not for a programmer (panel builders, design bureaus) or through the ОВЕН integrator
     # catalogue. Channels: panel, design (hh.ru search passes, COMPANY_QUERIES) and owen_si (the catalogue).
     company_channels: str = "panel,design,owen_si"
-    # How many catalogue companies may enter evaluation per day — 230 integrators at once would crowd the queue
-    company_leads_per_day: int = 5
+    # How many catalogue companies may enter evaluation per day — 230 integrators at once would crowd the queue.
+    # 5 → 25 in v9.14 (decision #54): the catalogue costs no page loads, only bridge time, and that is now
+    # capped by letters_budget_min; at 5 a day the 167 waiting integrators would have taken until November.
+    company_leads_per_day: int = 25
     owen_integrators_url: str = "https://owen.ru/upl_files/modules/system_integrators/client/integrators.php"
     owen_integrators_referer: str = "https://owen.ru/spisok_sistemnih_integratorov"
     # Company lead score = fit (is there programming work here that can be contracted out) + lead (direct company,

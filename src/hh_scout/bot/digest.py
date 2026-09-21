@@ -1,8 +1,12 @@
 """Send the daily digest and the instant leads: header, then card + cover letter for each lead, and record it.
 
 Both senders share one delivery loop (`_deliver`) and are serialised by the caller (`main.py` holds one
-`asyncio.Lock` around them): the quota and the queue head are read before the messages go out and committed
-after, so two senders interleaving on the event loop could send the same lead twice (v9.11).
+`asyncio.Lock` around them): the queue head is read before the messages go out, so two senders interleaving
+on the event loop could send the same lead twice (v9.11).
+
+Since v9.14 there is no daily quota, so a send can be dozens of leads — two messages each. Every lead is
+recorded the moment it lands (`record_sent_lead`), and every message goes through `send_message`, which waits
+out Telegram's flood control instead of dropping the rest of the batch.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter
 from aiogram.types import LinkPreviewOptions
 
 from hh_scout.bot.keyboards import vote_kb
@@ -22,14 +27,32 @@ from hh_scout.llm.bridge_client import BridgeError
 from hh_scout.llm.cover_letter import CoverLetterWriter, rules_hash, usable_letter
 from hh_scout.llm.evaluator import Evaluator
 from hh_scout.pipeline import outcomes, repo
-from hh_scout.pipeline.digest_builder import finalize_digest, plan_digest, promote_floor
+from hh_scout.pipeline.digest_builder import (close_digest, daily_quota_left, open_digest, plan_digest,
+                                              promote_floor, record_sent_lead)
 from hh_scout.pipeline.ranker import digest_header, format_card, format_letter, format_queue_tail
 from hh_scout.pipeline.rows import letter_key, row_site
 
 log = logging.getLogger(__name__)
 INVITED_DAYS = 14  # how far back the header looks for invitations
-PAUSE_S = 1.0  # v9.7: a digest is now ~20 messages at noon — do not crowd the Telegram API
+SEND_TRIES = 3
 SITES = ("hh", "profi")
+
+
+async def send_message(bot: Bot, chat_id: int, text: str, **kw):
+    """One message, waiting out flood control. Telegram answers a burst with `retry_after` rather than an
+    error worth giving up on, and since v9.14 a send can be a hundred messages long — losing the tail of the
+    batch (and re-sending it next time) over one 429 is the one failure this loop must not have.
+    """
+    for attempt in range(1, SEND_TRIES + 1):
+        try:
+            return await bot.send_message(chat_id, text, **kw)
+        except (TelegramRetryAfter, TelegramNetworkError) as e:
+            if attempt == SEND_TRIES:
+                raise
+            wait = e.retry_after + 1 if isinstance(e, TelegramRetryAfter) else 2 * attempt
+            log.warning("Telegram не принял сообщение (%s) — повтор через %d с (попытка %d из %d)",
+                        e, wait, attempt, SEND_TRIES)
+            await asyncio.sleep(wait)
 
 
 class RulesByKey:
@@ -65,26 +88,34 @@ def _evaluate_pending(settings: Settings) -> tuple[int, int]:
         conn.close()
 
 
-async def _deliver(bot: Bot, chat_id: int, rows: list[sqlite3.Row], rules: RulesByKey) -> list[tuple[sqlite3.Row, int, int | None]]:
-    """Card + letter for every row, in order; returns what `finalize_digest` records."""
-    sent: list[tuple[sqlite3.Row, int, int | None]] = []
+async def _deliver(bot: Bot, conn: sqlite3.Connection, settings: Settings, chat_id: int, digest_id: int,
+                   rows: list[sqlite3.Row], rules: RulesByKey) -> int:
+    """Card + letter for every row, in order; each lead is recorded as soon as it lands. Returns how many went out.
+
+    Recording per lead rather than after the loop is what makes a long send safe: if Telegram or the network
+    gives up on lead 40 of 60, the 39 already in the chat are `sent` and the rest simply stay in the queue.
+    """
+    pause = settings.telegram_pause_s
+    delivered = 0
     for i, row in enumerate(rows, 1):
-        await asyncio.sleep(PAUSE_S)
-        msg = await bot.send_message(chat_id, format_card(i, row, row), reply_markup=vote_kb(row["id"]))
+        await asyncio.sleep(pause)
+        msg = await send_message(bot, chat_id, format_card(i, row, row), reply_markup=vote_kb(row["id"]))
         letter_id = None
-        letter = rules.letter(row)   # no usable letter (the bridge was down) — the card goes out on its own
+        # hh leads are filtered before they get here; a profi bid whose letter failed still goes out on its own
+        letter = rules.letter(row)
         if letter:
-            await asyncio.sleep(PAUSE_S)
-            letter_msg = await bot.send_message(chat_id, format_letter(row["employer"], letter, letter_key(row)))
+            await asyncio.sleep(pause)
+            letter_msg = await send_message(bot, chat_id, format_letter(row["employer"], letter, letter_key(row)))
             letter_id = letter_msg.message_id
-        sent.append((row, msg.message_id, letter_id))
-    return sent
+        record_sent_lead(conn, digest_id, i, row, msg.message_id, letter_id)
+        delivered = i
+    return delivered
 
 
 async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, chat_id: int, note: str | None = None,
                       *, evaluate: bool = True) -> int:
     """The noon digest. `evaluate=False` skips the pre-digest scoring pass — while a sitting is running it would
-    race the sitting's own evaluation and letter quota; the sitting sends its leads itself when it ends."""
+    race the sitting's own evaluation and letter pass; the sitting sends its leads itself when it ends."""
     # The daily floor first (DB only): the scoring pass below then writes letters for what it took (decision #52).
     floor_added = 0
     try:
@@ -103,23 +134,35 @@ async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, ch
     else:
         log.info("Идёт подход — дооценку перед дайджестом пропускаю, он пришлёт лиды сам")
     plan = plan_digest(conn, settings)
+    rules = RulesByKey(settings)
+    # A card without its letter is half a lead, and sending it would close the lead for good. Leads whose letter
+    # is not written yet (the bridge was down, the time budget ran out) wait in the tail instead — v9.14 made
+    # this real: without a quota the digest takes the whole queue, letters or not.
+    ready = [r for r in plan.leads if rules.letter(r)]
+    held = [r for r in plan.leads if not rules.letter(r)]
+    if held:
+        log.info("Лидов без готового письма: %d — ждут следующего подхода", len(held))
+    tail = (held + plan.waiting)[:settings.digest_tail_items]
+    tail_total = plan.waiting_total + len(held)
     open_before = len(repo.open_leads(conn))
     work = repo.work_totals(conn, datetime.now(TZ) - timedelta(hours=24))
     invited = outcomes.invited_count(repo.outcome_rows(conn, repo.iso_utc(datetime.now(TZ) - timedelta(days=INVITED_DAYS))))
-    header = digest_header(len(plan.leads), plan.checked, open_before=open_before, work=work,
+    header = digest_header(len(ready), plan.checked, open_before=open_before, work=work,
                            invited=invited, invited_days=INVITED_DAYS, sent_today=plan.sent_today,
                            floor_added=floor_added)
-    await bot.send_message(chat_id, header)
-    if not plan.leads:
-        finalize_digest(conn, settings, [], plan.checked, note)
-        return 0
-    sent = await _deliver(bot, chat_id, plan.leads, RulesByKey(settings))
-    if plan.waiting:
-        await asyncio.sleep(PAUSE_S)
-        await bot.send_message(chat_id, format_queue_tail(plan.waiting, plan.waiting_total),
+    await send_message(bot, chat_id, header)
+    digest_id = open_digest(conn, plan.checked, note)
+    try:
+        if ready:
+            await _deliver(bot, conn, settings, chat_id, digest_id, ready, rules)
+        if tail:
+            await asyncio.sleep(settings.telegram_pause_s)
+            await send_message(bot, chat_id, format_queue_tail(tail, tail_total),
                                link_preview_options=LinkPreviewOptions(is_disabled=True))
-    finalize_digest(conn, settings, sent, plan.checked, note)
-    return len(sent)
+    finally:
+        # Whatever reached the chat is recorded even if the send broke off — the rest keeps its place in the queue
+        sent = close_digest(conn, settings, digest_id, plan.checked)
+    return sent
 
 
 INSTANT_HEADERS = {
@@ -140,15 +183,17 @@ async def send_instant_leads(bot: Bot, conn: sqlite3.Connection, settings: Setti
     or for the noon digest rather than holding up the chat for minutes of bridge calls. A letter written before
     the rules changed is held back the same way: the next writing pass rewrites it (decision #46).
     """
-    left = max(0, settings.digest_max_items - repo.leads_sent_today(conn))
-    if not left:
+    left = daily_quota_left(settings, repo.leads_sent_today(conn))
+    if left == 0:
         log.info("Мгновенная отправка (%s): суточная норма %d исчерпана", site, settings.digest_max_items)
         return 0
     rules = RulesByKey(settings)
     if site == "hh":
         # hh vacancies and company leads alike: everything that is not a profi order goes out here
         queue = repo.lead_queue(conn, settings.score_threshold, None, wait_bonus_max=settings.queue_wait_bonus_max)
-        leads = [r for r in queue if row_site(r) != "profi" and rules.letter(r)][:left]
+        leads = [r for r in queue if row_site(r) != "profi" and rules.letter(r)]
+        if left is not None:
+            leads = leads[:left]
     else:
         leads = repo.evaluated_leads(conn, settings.score_threshold, left, site=site)
         missing = [r for r in leads if not rules.letter(r)]
@@ -162,7 +207,10 @@ async def send_instant_leads(bot: Bot, conn: sqlite3.Connection, settings: Setti
             leads = repo.evaluated_leads(conn, settings.score_threshold, left, site=site)
     if not leads:
         return 0
-    await bot.send_message(chat_id, INSTANT_HEADERS[site].format(n=len(leads)))
-    sent = await _deliver(bot, chat_id, leads, rules)
-    finalize_digest(conn, settings, sent, checked=0, note=f"instant:{site}", reject=False)
-    return len(sent)
+    await send_message(bot, chat_id, INSTANT_HEADERS[site].format(n=len(leads)))
+    digest_id = open_digest(conn, checked=0, note=f"instant:{site}")
+    try:
+        await _deliver(bot, conn, settings, chat_id, digest_id, leads, rules)
+    finally:
+        sent = close_digest(conn, settings, digest_id, checked=0, reject=False)
+    return sent

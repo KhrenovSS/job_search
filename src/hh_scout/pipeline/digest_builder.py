@@ -48,6 +48,16 @@ def promote_floor(conn: sqlite3.Connection, settings: Settings) -> int:
     return len(chosen)
 
 
+def daily_quota_left(settings: Settings, sent_today: int) -> int | None:
+    """How many more leads may go out today. `None` means no limit — the default since v9.14 (decision #54).
+
+    `DIGEST_MAX_ITEMS` survives as a fuse: set it above zero and the old ceiling is back.
+    """
+    if settings.digest_max_items <= 0:
+        return None
+    return max(0, settings.digest_max_items - sent_today)
+
+
 @dataclass
 class DigestPlan:
     leads: list[sqlite3.Row]        # what is left of today's quota, best first by queue priority
@@ -72,8 +82,9 @@ def plan_digest(conn: sqlite3.Connection, settings: Settings) -> DigestPlan:
     # What is left here is the catch-up: leads whose letter was not ready in time, or that arrived while
     # the quota was momentarily full.
     sent_today = repo.leads_sent_today(conn)
-    quota = max(0, settings.digest_max_items - sent_today)
-    leads = repo.lead_queue(conn, settings.score_threshold, quota, wait_bonus_max=settings.queue_wait_bonus_max) if quota else []
+    quota = daily_quota_left(settings, sent_today)
+    leads = ([] if quota == 0 else
+             repo.lead_queue(conn, settings.score_threshold, quota, wait_bonus_max=settings.queue_wait_bonus_max))
     waiting = repo.lead_queue(conn, settings.score_threshold, settings.digest_tail_items,
                               wait_bonus_max=settings.queue_wait_bonus_max, offset=len(leads))
     total = repo.queue_size(conn, settings.score_threshold)
@@ -81,21 +92,52 @@ def plan_digest(conn: sqlite3.Connection, settings: Settings) -> DigestPlan:
                       waiting=waiting, waiting_total=max(0, total - len(leads)), sent_today=sent_today)
 
 
-def finalize_digest(conn: sqlite3.Connection, settings: Settings, sent: list[tuple],
-                    checked: int, note: str | None = None, reject: bool = True) -> int:
-    """Record the digest, mark sent leads `sent` and (unless `reject=False`) everything below threshold `rejected`.
+def open_digest(conn: sqlite3.Connection, checked: int, note: str | None = None) -> int:
+    """Start a digest before the first message goes out, so every delivered lead can be recorded as it lands.
 
-    `sent` items are (row, card_message_id) or (row, card_message_id, letter_message_id).
-    `reject=False` is for instant sends between digests: the noon digest still owns the below-threshold cleanup.
+    v9.14: without a daily quota a send can be dozens of leads, and recording them all at the end meant that
+    a Telegram error halfway through left the delivered ones in the queue — to be sent a second time.
     """
     with conn:
-        digest_id = repo.create_digest(conn, len(sent), checked, note)
-        for pos, item in enumerate(sent, 1):
-            row, msg_id = item[0], item[1]
-            letter_id = item[2] if len(item) > 2 else None
-            repo.add_digest_item(conn, digest_id, row["id"], pos, msg_id, letter_id)
+        return repo.create_digest(conn, 0, checked, note)
+
+
+def record_sent_lead(conn: sqlite3.Connection, digest_id: int, position: int, row: sqlite3.Row,
+                     card_message_id: int | None, letter_message_id: int | None = None) -> None:
+    """Mark one lead delivered (`repo.add_digest_item` also moves the vacancy to `sent`)."""
+    with conn:
+        repo.add_digest_item(conn, digest_id, row["id"], position, card_message_id, letter_message_id)
+
+
+def close_digest(conn: sqlite3.Connection, settings: Settings, digest_id: int, checked: int,
+                 reject: bool = True) -> int:
+    """Finish a digest: store how many leads it carried and (unless `reject=False`) write off what is below
+    the threshold. `reject=False` is for instant sends between digests — the noon digest owns that cleanup.
+
+    The count is read back from `digest_items`, not passed in, so a send cut short is recorded for what it
+    really delivered. Returns that number.
+    """
+    with conn:
+        count = repo.digest_item_count(conn, digest_id)
+        repo.update_digest_count(conn, digest_id, count)
         rejected = repo.reject_below(conn, settings.score_threshold) if reject else 0
-    log.info("Дайджест #%d: отправлено %d, отклонено ниже порога %d, проверено %d", digest_id, len(sent), rejected, checked)
+    log.info("Дайджест #%d: отправлено %d, отклонено ниже порога %d, проверено %d", digest_id, count, rejected, checked)
+    return count
+
+
+def finalize_digest(conn: sqlite3.Connection, settings: Settings, sent: list[tuple],
+                    checked: int, note: str | None = None, reject: bool = True) -> int:
+    """Record a whole digest at once — for sends short enough that nothing can break in the middle
+    (`/letter`, the first-start preview). Long sends use open_digest/record_sent_lead/close_digest.
+
+    `sent` items are (row, card_message_id) or (row, card_message_id, letter_message_id).
+    """
+    digest_id = open_digest(conn, checked, note)
+    for pos, item in enumerate(sent, 1):
+        row, msg_id = item[0], item[1]
+        letter_id = item[2] if len(item) > 2 else None
+        record_sent_lead(conn, digest_id, pos, row, msg_id, letter_id)
+    close_digest(conn, settings, digest_id, checked, reject)
     return digest_id
 
 

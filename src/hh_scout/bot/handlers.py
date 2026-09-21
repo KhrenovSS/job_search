@@ -204,7 +204,8 @@ async def skipped_cmd(m: Message, command: CommandObject, conn: sqlite3.Connecti
 
 @router.message(Command("inbox"))
 async def inbox_cmd(m: Message, conn: sqlite3.Connection) -> None:
-    await m.answer(format_inbox(repo.open_leads(conn)))
+    for part in format_inbox(repo.open_leads(conn)):
+        await m.answer(part)
 
 
 @router.message(Command("done"))
