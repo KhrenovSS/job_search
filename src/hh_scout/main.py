@@ -10,7 +10,7 @@ from hh_scout.bot.app import Notifier, create_bot, create_dispatcher
 from hh_scout.bot.digest import send_digest, send_instant_leads
 from hh_scout.bot.lead_actions import collapse_auto_responded
 from hh_scout.config import load_settings
-from hh_scout.db import kv_get, kv_set, open_db
+from hh_scout.db import kv_get, kv_set, open_db, utcnow
 from hh_scout.logging_setup import setup_logging
 from hh_scout.pipeline.digest_builder import mark_previewed_as_sent
 from hh_scout.scheduler import Scheduler
@@ -43,20 +43,30 @@ async def run() -> int:
     async def after_crawl() -> None:
         if settings.tg_owner_chat_id is None:
             return
-        n = await collapse_auto_responded(bot, conn, settings.tg_owner_chat_id)
-        if n:
-            await notify(f"✅ Свернул {n} лид(ов): вы уже откликнулись на них на hh.ru")
-        # v9.8: a ready lead is not held until noon — the sooner the letter goes, the more it is worth.
-        sites = ["hh"] + (["profi"] if settings.profi_enabled else [])
-        for site in sites:
+        # The run is closed by now, yet the chat work below takes minutes for dozens of leads: `svc.sh` and /status
+        # read this flag so nobody restarts the service in the middle of a send (21.09: a card went out, its letter
+        # did not). Cleared in `finally` and at every start, so a kill cannot leave it stuck.
+        kv_set(conn, "sending_since", utcnow())
+        try:
+            n = await collapse_auto_responded(bot, conn, settings.tg_owner_chat_id)
+            if n:
+                await notify(f"✅ Свернул {n} лид(ов): вы уже откликнулись на них на hh.ru")
+            # v9.8: a ready lead is not held until noon — the sooner the letter goes, the more it is worth.
+            sites = ["hh"] + (["profi"] if settings.profi_enabled else [])
+            for site in sites:
+                try:
+                    async with send_lock:
+                        k = await send_instant_leads(bot, conn, settings, settings.tg_owner_chat_id, site=site)
+                    if k:
+                        log.info("%s: отправлено сразу %d лид(ов)", site, k)
+                except Exception as e:  # noqa: BLE001
+                    log.exception("Мгновенная отправка (%s) упала", site)
+                    await notify(f"⚠️ Лиды ({site}) не отправлены: {e}")
+        finally:
             try:
-                async with send_lock:
-                    k = await send_instant_leads(bot, conn, settings, settings.tg_owner_chat_id, site=site)
-                if k:
-                    log.info("%s: отправлено сразу %d лид(ов)", site, k)
-            except Exception as e:  # noqa: BLE001
-                log.exception("Мгновенная отправка (%s) упала", site)
-                await notify(f"⚠️ Лиды ({site}) не отправлены: {e}")
+                kv_set(conn, "sending_since", None)
+            except Exception:  # noqa: BLE001 — the connection may be gone if we are being stopped
+                pass
 
     scheduler = Scheduler(settings, conn, notify, digest, after_crawl)
     dp = create_dispatcher(settings, conn, scheduler)

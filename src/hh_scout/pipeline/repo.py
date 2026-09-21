@@ -702,6 +702,22 @@ def digest_item_count(conn: sqlite3.Connection, digest_id: int) -> int:
     return int(conn.execute("SELECT COUNT(*) FROM digest_items WHERE digest_id = ?", (digest_id,)).fetchone()[0])
 
 
+def digest_item_count_safe(conn: sqlite3.Connection, digest_id: int) -> int:
+    """`digest_item_count` for a connection that may already be closed (service stopping) — 0 then."""
+    try:
+        return digest_item_count(conn, digest_id)
+    except sqlite3.ProgrammingError:
+        return 0
+
+
+def repair_open_digests(conn: sqlite3.Connection) -> int:
+    """Digests whose send was cut off before `close_digest` (service stopped mid-send, 21.09) carry `items_count = 0`
+    while their `digest_items` say otherwise — settle the count. Returns how many were fixed."""
+    cur = conn.execute("""UPDATE digests SET items_count = (SELECT COUNT(*) FROM digest_items di WHERE di.digest_id = digests.id)
+                           WHERE items_count = 0 AND EXISTS (SELECT 1 FROM digest_items di WHERE di.digest_id = digests.id)""")
+    return int(cur.rowcount or 0)
+
+
 def update_digest_count(conn: sqlite3.Connection, digest_id: int, items_count: int) -> None:
     """Set how many leads the digest carried — it is opened with 0 and closed once delivery is over (v9.14)."""
     conn.execute("UPDATE digests SET items_count = ? WHERE id = ?", (items_count, digest_id))

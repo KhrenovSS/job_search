@@ -140,8 +140,12 @@ class Scheduler:
             # A scheduled run lives only inside this process: whatever is still 'running' was killed with it,
             # and waiting STALE_RUN_HOURS for that row would block the next sittings (v9.11).
             stale = repo.fail_stale_runs(self.conn, 0.0, trigger="schedule")
+            repaired = repo.repair_open_digests(self.conn)
+            kv_set(self.conn, "sending_since", None)   # a send cut off with the process is over now
         if stale:
             log.warning("Плановых прогонов, прерванных вместе с сервисом: %d", stale)
+        if repaired:
+            log.warning("Дайджестов, прерванных вместе с сервисом (счётчик досчитан): %d", repaired)
         self._restore_crawl()
         self.aps.add_job(self.watchdog_job, IntervalTrigger(minutes=health.WATCHDOG_INTERVAL_MIN, timezone=TZ), id="watchdog",
                          replace_existing=True)

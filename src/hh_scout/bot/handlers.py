@@ -118,6 +118,8 @@ async def status_cmd(m: Message, settings: Settings, conn: sqlite3.Connection, s
     lines.append("profi.ru: " + (f"✅ включён · заказов в базе {repo.count_site(conn, 'profi')}" if settings.profi_enabled
                                 else "выключен (PROFI_ENABLED=false)"))
     wd = kv_get(conn, "watchdog_last")
+    sending = kv_get(conn, "sending_since")
+    lines.append("Отправка лидов идёт: " + (f"да, с {_fmt_dt(sending)} — не перезапускать" if sending else "нет"))
     lines.append(f"Сторож: последняя проверка {_fmt_dt(wd)} · тревог сегодня {scheduler.alerter.count_today(datetime.now(TZ).date())}")
     bk = kv_get(conn, "last_backup")
     bk_when, _, bk_name = (bk or "").partition("|")

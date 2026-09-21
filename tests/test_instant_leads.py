@@ -31,12 +31,16 @@ def _fixed_rules(monkeypatch):
 class _FakeBot:
     def __init__(self):
         self.messages = []
+        self.deleted = []
         self._id = 0
 
     async def send_message(self, chat_id, text, **kw):
         self._id += 1
         self.messages.append(text)
         return type("M", (), {"message_id": self._id})()
+
+    async def delete_message(self, chat_id, message_id):
+        self.deleted.append(message_id)
 
 
 def _db(letters=(1, 2, 3)):
@@ -358,3 +362,40 @@ def test_the_noon_digest_holds_back_a_lead_whose_letter_is_not_written():
     assert asyncio.run(send_digest(bot, conn, s, chat_id=1, evaluate=False)) == 2
     assert repo.lead_by_hh_id(conn, "2")["status"] == "evaluated"
     assert any("Ждут очереди" in m and "/letter 2" in m for m in bot.messages)
+
+
+def test_a_card_whose_letter_never_followed_is_taken_back():
+    """21.09: a restart between the card and the letter left a card without a letter in the chat, and the lead — still
+    queued — went out a second time. The pair is atomic now: no letter, no card, the lead goes out whole next time."""
+    s = _settings()
+    conn = _db()
+
+    class _DiesOnLetterTwo(_FakeBot):
+        async def send_message(self, chat_id, text, **kw):
+            if "письмо 2" in text:
+                raise asyncio.CancelledError()          # the service is being stopped
+            return await super().send_message(chat_id, text, **kw)
+
+    bot = _DiesOnLetterTwo()
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(send_instant_leads(bot, conn, s, chat_id=1, site="hh"))
+    assert repo.lead_by_hh_id(conn, "1")["status"] == "sent"
+    assert repo.lead_by_hh_id(conn, "2")["status"] == "evaluated"
+    card_2 = [i for i, m in enumerate(bot.messages, 1) if "ООО 2" in m][0]
+    assert bot.deleted == [card_2]                      # the orphan card is gone
+    # the next send delivers lead 2 whole — one card, one letter
+    bot2 = _FakeBot()
+    assert asyncio.run(send_instant_leads(bot2, conn, s, chat_id=1, site="hh")) == 2
+    assert len(bot2.messages) == 5                      # header + two leads × (card + letter): no orphan, no twin
+    assert any("письмо 2" in m for m in bot2.messages) and repo.lead_by_hh_id(conn, "2")["status"] == "sent"
+
+
+def test_a_digest_cut_off_with_the_process_is_settled_on_the_next_start():
+    s = _settings()
+    conn = _db()
+    asyncio.run(send_instant_leads(_FakeBot(), conn, s, chat_id=1, site="hh"))
+    d = repo.last_digest(conn)
+    conn.execute("UPDATE digests SET items_count = 0 WHERE id = ?", (d["id"],))   # as a killed close_digest leaves it
+    assert repo.repair_open_digests(conn) == 1
+    assert repo.last_digest(conn)["items_count"] == 3
+    assert repo.repair_open_digests(conn) == 0

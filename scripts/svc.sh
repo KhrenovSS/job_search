@@ -53,12 +53,30 @@ crawl_running() {
   return 1
 }
 
+sending_leads() {
+  # The instant send runs AFTER the run row is closed and takes minutes for dozens of leads (kv `sending_since`,
+  # set by main.after_crawl). A flag older than 10 min is a leftover of a killed process, not a live send.
+  [ -f "$DB" ] && command -v sqlite3 >/dev/null || return 1
+  local n
+  n="$(sqlite3 "$DB" "select count(*) from kv where key='sending_since' and value is not null and value != '' \
+        and julianday('now') - julianday(replace(substr(value,1,19),'T',' ')) < 10.0/1440;" 2>/dev/null || echo 0)"
+  [ "${n:-0}" -gt 0 ]
+}
+
 guard() {
   if crawl_running; then
     if [ "$FORCE" = 1 ]; then
       echo "ВНИМАНИЕ: идёт сбор, продолжаю из-за --force"
     else
       echo "ОТКАЗ: идёт сбор (прогон running или процесс с браузером). Дождитесь конца подхода (/status → «сбор идёт: нет») или добавьте --force." >&2
+      exit 3
+    fi
+  fi
+  if sending_leads; then
+    if [ "$FORCE" = 1 ]; then
+      echo "ВНИМАНИЕ: идёт отправка лидов в Telegram, продолжаю из-за --force"
+    else
+      echo "ОТКАЗ: идёт отправка лидов в Telegram после подхода (1–3 мин). Дождитесь «отправлено сразу N лид(ов)» в журнале или /status → «Отправка лидов идёт: нет»." >&2
       exit 3
     fi
   fi
@@ -76,6 +94,7 @@ show_status() {
   systemctl status hh-scout hh-scout-bridge --no-pager --lines=0 2>&1 | grep -E '^● |Active:' || true
   printf 'мост /health: %s\n' "$(curl -s --max-time 3 http://127.0.0.1:8766/health || echo 'не отвечает')"
   if crawl_running; then echo "сбор идёт: да"; else echo "сбор идёт: нет"; fi
+  if sending_leads; then echo "отправка лидов идёт: да (не перезапускать)"; else echo "отправка лидов идёт: нет"; fi
 }
 
 show_incidents() {

@@ -109,17 +109,43 @@ async def _deliver(bot: Bot, conn: sqlite3.Connection, settings: Settings, chat_
     for i, row in enumerate(rows, 1):
         await asyncio.sleep(pause)
         msg = await send_message(bot, chat_id, format_card(i, row, row), settings=settings, reply_markup=vote_kb(row["id"]))
-        letter_id = None
-        # hh leads are filtered before they get here; a profi bid whose letter failed still goes out on its own
-        letter = rules.letter(row)
-        if letter:
-            await asyncio.sleep(pause)
-            letter_msg = await send_message(bot, chat_id, format_letter(row["employer"], letter, letter_key(row)),
-                                            settings=settings)
-            letter_id = letter_msg.message_id
-        record_sent_lead(conn, digest_id, i, row, msg.message_id, letter_id)
+        try:
+            letter_id = None
+            # hh leads are filtered before they get here; a profi bid whose letter failed still goes out on its own
+            letter = rules.letter(row)
+            if letter:
+                await asyncio.sleep(pause)
+                letter_msg = await send_message(bot, chat_id, format_letter(row["employer"], letter, letter_key(row)),
+                                                settings=settings)
+                letter_id = letter_msg.message_id
+            record_sent_lead(conn, digest_id, i, row, msg.message_id, letter_id)
+        except BaseException:
+            # The card is out but the lead is not recorded: it will go out again, whole. A card left behind now
+            # would be its twin without a letter (21.09: a restart between card and letter did exactly that).
+            await _unsend(bot, chat_id, msg.message_id, row["hh_id"])
+            raise
         delivered = i
     return delivered
+
+
+async def _unsend(bot: Bot, chat_id: int, message_id: int, hh_id: str) -> None:
+    """Best effort: take back a card whose lead did not make it. Never raises — the caller is already failing."""
+    try:
+        await asyncio.shield(bot.delete_message(chat_id, message_id))
+        log.warning("Карточка %s отозвана: доставка прервана до письма, лид остался в очереди", hh_id)
+    except BaseException as e:  # noqa: BLE001 — including CancelledError: shutdown must not be blocked by this
+        log.warning("Карточка %s осталась в чате без письма (%s) — лид уйдёт ещё раз целиком", hh_id, e)
+
+
+def _close(conn: sqlite3.Connection, settings: Settings, digest_id: int, checked: int, reject: bool = True) -> int:
+    """`close_digest` that survives the service stopping mid-send: the connection is closed under us then, and a
+    second traceback would only hide the first. `repo.repair_open_digests` settles the count on the next start."""
+    try:
+        return close_digest(conn, settings, digest_id, checked, reject)
+    except sqlite3.ProgrammingError as e:
+        log.warning("Дайджест #%d не закрыт — сервис остановлен во время отправки (%s); счётчик досчитается при старте",
+                    digest_id, e)
+        return repo.digest_item_count_safe(conn, digest_id)
 
 
 async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, chat_id: int, note: str | None = None,
@@ -171,7 +197,7 @@ async def send_digest(bot: Bot, conn: sqlite3.Connection, settings: Settings, ch
                                link_preview_options=LinkPreviewOptions(is_disabled=True))
     finally:
         # Whatever reached the chat is recorded even if the send broke off — the rest keeps its place in the queue
-        sent = close_digest(conn, settings, digest_id, plan.checked)
+        sent = _close(conn, settings, digest_id, plan.checked)
     return sent
 
 
@@ -222,5 +248,5 @@ async def send_instant_leads(bot: Bot, conn: sqlite3.Connection, settings: Setti
     try:
         await _deliver(bot, conn, settings, chat_id, digest_id, leads, rules)
     finally:
-        sent = close_digest(conn, settings, digest_id, checked=0, reject=False)
+        sent = _close(conn, settings, digest_id, checked=0, reject=False)
     return sent
