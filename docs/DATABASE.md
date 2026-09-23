@@ -55,7 +55,7 @@
 `employer_responded:<hh_id>` (v9.3: в компанию уже откликались — сам владелец на hh.ru (`applied=1`) или кнопкой «✅ Написал»
 (`lead_actions.responded`/`auto_responded`) — не позже `EMPLOYER_REPEAT_DAYS` назад; письмо уходит кадровику всей организации,
 второе на тот же стол не нужно. Причина **необратимая**, в отличие от `duplicate_employer:`: `revive_orphans` такие строки
-не воскрешает). `set_status` в не-skip переходах обнуляет `skip_reason`.
+не воскрешает) · `no_email` (v9.16, решение №56: компания из каталога ОВЕН без e-mail ни в `raw_json.emails`, ни в `employers.brief.contact_email` — писать некуда; ставится стадией писем после разведки и `digest_builder.skip_unreachable` перед отправкой). `set_status` в не-skip переходах обнуляет `skip_reason`.
 
 ## Прочие поля `vacancies`
 - `work_format`: remote / hybrid / office / field / unknown (приоритет remote > hybrid > office > field).

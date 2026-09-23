@@ -2,6 +2,7 @@
 survives only as a fuse, so the tests below run both with it set and with it off (the default)."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -194,7 +195,8 @@ def test_a_letter_written_without_a_dossier_goes_stale_once_the_dossier_exists()
 # --- v9.12: the daily floor (decision #52) -----------------------------------------------------------
 
 def _near_lead(conn, vid, total, *, employer=None, employer_id=None, status="evaluated", role=55, agency=0,
-               created="2026-09-19T10:00:00+00:00", skip_reason=None):
+               created=None, skip_reason=None):
+    created = created or repo.iso_utc(datetime.now(timezone.utc) - timedelta(days=1))   # written off yesterday: within the 3-day window
     conn.execute("INSERT INTO vacancies(id,hh_id,title,employer,employer_id,url,source,search_pass,status,skip_reason,site,"
                  "first_seen_at,updated_at) VALUES (?,?,?,?,?,'u','s','regional',?,?,'hh','t','t')",
                  (vid, str(vid), f"Инженер {vid}", employer or f"ООО {vid}", employer_id, status, skip_reason))

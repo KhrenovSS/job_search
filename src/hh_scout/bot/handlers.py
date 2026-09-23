@@ -264,7 +264,12 @@ async def letter_cmd(m: Message, command: CommandObject, settings: Settings, con
         await m.answer(f"Не удалось: {e}")
         return
     if not text:
-        await m.answer("ИИ вернул текст неподходящей длины, попробуйте ещё раз.")
+        skipped = conn.execute("SELECT skip_reason FROM vacancies WHERE hh_id = ?", (hh_id,)).fetchone()
+        if skipped and skipped[0] == "no_email":
+            await m.answer(f"У «{row['employer'] or '—'}» нет e-mail ни в каталоге ОВЕН, ни в досье — писать некуда, "
+                           "лид пропущен (skipped/no_email).")
+        else:
+            await m.answer("ИИ вернул текст неподходящей длины, попробуйте ещё раз.")
         return
     row = repo.lead_by_hh_id(conn, hh_id)
     card = await m.answer(format_card(1, row, row), reply_markup=vote_kb(row["id"]))

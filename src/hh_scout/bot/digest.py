@@ -27,7 +27,7 @@ from hh_scout.llm.bridge_client import BridgeError
 from hh_scout.llm.cover_letter import CoverLetterWriter, rules_hash, usable_letter
 from hh_scout.llm.evaluator import Evaluator
 from hh_scout.pipeline import outcomes, repo
-from hh_scout.pipeline.digest_builder import (close_digest, daily_quota_left, open_digest, plan_digest,
+from hh_scout.pipeline.digest_builder import (close_digest, daily_quota_left, open_digest, plan_digest, skip_unreachable,
                                               promote_floor, record_sent_lead)
 from hh_scout.pipeline.ranker import digest_header, format_card, format_letter, format_queue_tail
 from hh_scout.pipeline.rows import letter_key, row_site
@@ -226,6 +226,7 @@ async def send_instant_leads(bot: Bot, conn: sqlite3.Connection, settings: Setti
     rules = RulesByKey(settings)
     if site == "hh":
         # hh vacancies and company leads alike: everything that is not a profi order goes out here
+        skip_unreachable(conn, settings)   # a catalogue company without an e-mail is no lead (decision #56)
         queue = repo.lead_queue(conn, settings.score_threshold, None, wait_bonus_max=settings.queue_wait_bonus_max)
         leads = [r for r in queue if row_site(r) != "profi" and rules.letter(r)]
         if left is not None:

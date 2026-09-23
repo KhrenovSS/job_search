@@ -24,7 +24,7 @@ from hh_scout.llm.company_research import CompanyResearcher
 from hh_scout.llm.letter_checks import strip_role_address
 from hh_scout.llm.prompts import PrivatePromptMissing, load_prompt_body, read_private, render
 from hh_scout.pipeline import repo
-from hh_scout.pipeline.rows import letter_key, row_get, row_site
+from hh_scout.pipeline.rows import contact_email, letter_key, needs_email, row_get, row_site
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +59,7 @@ class LetterStats:
     reviewed: int = 0   # letters the editor actually changed
     bridge_calls: int = 0
     left_for_later: int = 0   # leads the time budget did not reach; they keep their place in the queue
+    no_email: int = 0         # catalogue companies with no address to write to — skipped, no letter (decision #56)
 
 
 def salary_stated(row: sqlite3.Row) -> bool:
@@ -277,6 +278,8 @@ class CoverLetterWriter:
         if key in REVIEWED_KEYS:
             brief = self.researcher.for_row(row)
             company = brief.model_dump(include=set(DOSSIER_FIELDS)) if brief is not None and brief.found else None
+            if self.unreachable(row, brief.model_dump() if brief is not None else None):
+                return None
         payload = letter_payload(row, company, hint)
         lo, hi = LENGTH_LIMITS.get(key, LENGTH_LIMITS["hh"])
         text, problem = "", ""
@@ -306,6 +309,20 @@ class CoverLetterWriter:
         self.stats.written += 1
         log.info("Письмо для %s «%s» (%s): %d символов", row["hh_id"], row["title"][:40], row["employer"], len(text))
         return text
+
+    def unreachable(self, row: sqlite3.Row, brief: dict | None = None) -> bool:
+        """A catalogue company with no e-mail — in the catalogue or in the dossier just researched — is skipped
+        (`skipped/no_email`, decision #56): there is no hh.ru vacancy to answer and nowhere to send the offer, so a
+        letter would only cost bridge time and clutter the chat. Runs after research, so the dossier gets its chance.
+        """
+        if not needs_email(row) or contact_email(row, brief):
+            return False
+        with self.conn:
+            repo.set_status(self.conn, row["hh_id"], "skipped", "no_email")
+        self.stats.no_email += 1
+        log.info("Письмо для %s («%s») не пишу: у компании нет e-mail ни в каталоге, ни в досье — лид пропущен",
+                 row["hh_id"], row["employer"] or "—")
+        return True
 
     @staticmethod
     def _problem(text: str, row: sqlite3.Row, company: dict | None, lo: int, hi: int) -> str:
@@ -352,8 +369,8 @@ class CoverLetterWriter:
                 log.warning("Письмо для %s осталось по прежним правилам — лид подождёт следующего подхода",
                             row["hh_id"])
         self.stats.bridge_calls = self.bridge.calls + self._research_bridge.calls  # research has its own client
-        log.info("Письма: написано %d (правил редактор %d), отклонено %d, вызовов моста %d, cost $%.3f",
-                 self.stats.written, self.stats.reviewed, self.stats.failed, self.stats.bridge_calls,
+        log.info("Письма: написано %d (правил редактор %d), отклонено %d, без e-mail %d, вызовов моста %d, cost $%.3f",
+                 self.stats.written, self.stats.reviewed, self.stats.failed, self.stats.no_email, self.stats.bridge_calls,
                  self.bridge.cost_usd + self._research_bridge.cost_usd)
         return self.stats
 

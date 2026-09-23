@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from hh_scout.config import Settings
 from hh_scout.db import transaction
 from hh_scout.pipeline import dedup, repo
+from hh_scout.pipeline.rows import contact_email, needs_email
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +49,23 @@ def promote_floor(conn: sqlite3.Connection, settings: Settings) -> int:
     return len(chosen)
 
 
+def skip_unreachable(conn: sqlite3.Connection, settings: Settings) -> int:
+    """Catalogue companies with no e-mail leave the queue as `skipped/no_email` (decision #56).
+
+    The letter writer applies the rule as it goes; this pass catches what it could not — a letter written before
+    the rule existed, or a lead whose address the owner has since removed — right before a send. Returns how many.
+    """
+    rows = [r for r in repo.lead_queue(conn, settings.score_threshold, None, wait_bonus_max=settings.queue_wait_bonus_max)
+            if needs_email(r) and not contact_email(r)]
+    if rows:
+        with transaction(conn):
+            for r in rows:
+                repo.set_status(conn, r["hh_id"], "skipped", "no_email")
+        log.info("Без e-mail из очереди убрано компаний каталога: %d (%s)", len(rows),
+                 ", ".join(r["hh_id"] for r in rows[:10]))
+    return len(rows)
+
+
 def daily_quota_left(settings: Settings, sent_today: int) -> int | None:
     """How many more leads may go out today. `None` means no limit — the default since v9.14 (decision #54).
 
@@ -74,6 +92,7 @@ def plan_digest(conn: sqlite3.Connection, settings: Settings) -> DigestPlan:
     waited, and the weak one is not written off — it waits its turn or expires after `QUEUE_TTL_DAYS`.
     """
     dedup.dedupe_evaluated(conn, settings)  # one lead per company (writes skipped/duplicate_employer; idempotent)
+    skip_unreachable(conn, settings)        # a catalogue company without an e-mail is no lead (decision #56)
     with conn:
         gone = repo.expire_queue(conn, settings.queue_ttl_days)
     if gone:

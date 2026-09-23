@@ -14,7 +14,7 @@ from hh_scout.config import TZ, Settings
 from hh_scout.hh.salary import human_from_raw
 from hh_scout.llm.letter_checks import strip_role_address
 from hh_scout.pipeline.outcomes import CHANNEL_RU, COMPANY_RU as _COMPANY_KIND_RU, SEARCHING_LONG_DAYS
-from hh_scout.pipeline.rows import letter_key, row_get as _row_get, row_site
+from hh_scout.pipeline.rows import contact_email, letter_key, row_get as _row_get, row_site
 
 log = logging.getLogger(__name__)
 
@@ -70,9 +70,14 @@ def format_company_card(position: int, v: sqlite3.Row, e: sqlite3.Row) -> str:
     flags = json.loads(e["red_flags"]) if e["red_flags"] else []
     if flags:
         lines.append(f"   ⚠️ {_esc('; '.join(flags))}")
-    contacts = [x for x in (raw.get("site"), *(raw.get("emails") or [])[:2], *(raw.get("phones") or [])[:1]) if x]
-    if not contacts:
-        contacts = _dossier_contacts(v)   # a company found through someone else's vacancy: the dossier knows where to write
+    email = contact_email(v)
+    if email:
+        # a company lead has no «Откликнуться» button: this address is where the offer goes (decision #56)
+        lines.append(f"   📧 Писать на: <b>{_esc(email)}</b>")
+    others = [x for x in (raw.get("site"), *(raw.get("emails") or [])[:2], *(raw.get("phones") or [])[:1]) if x]
+    if not others:
+        others = _dossier_contacts(v)   # a company found through someone else's vacancy: the dossier knows where to write
+    contacts = [x for x in others if x.lower() != email]
     if contacts:
         lines.append(f"   📞 {_esc(' · '.join(contacts))}")
     lines.append(f"   {v['url']}")

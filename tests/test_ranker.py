@@ -117,4 +117,24 @@ def test_company_card_names_the_company_the_channel_the_offer_and_the_contacts()
                 raw_json=json.dumps({"status": "Золотой", "site": "https://kael.pro/", "emails": ["vk@kael.pro"], "phones": ["+7 (909) 208-32-55"]}))
     card = format_card(2, owen, e)
     assert "🟡 каталог ОВЕН" in card and "партнёр ОВЕН: Золотой" in card and "Найдена по" not in card
-    assert "📞 https://kael.pro/ · vk@kael.pro · +7 (909) 208-32-55" in card
+    # decision #56: the address to write to is its own bold line; the rest of the contacts stay below it
+    assert "📧 Писать на: <b>vk@kael.pro</b>" in card
+    assert "📞 https://kael.pro/ · +7 (909) 208-32-55" in card and card.count("vk@kael.pro") == 1
+
+
+def test_company_card_takes_the_email_from_the_dossier_when_the_catalogue_has_none():
+    e = _row(total=70, tech_score=80, role_score=0, lead_score=55, ip_gph_possible="maybe", is_agency=0,
+             company_kind="integrator", verdict="Интегратор", pitch_hint=None, red_flags=None, offer_focus="[]", floor=0)
+    v = _row(title="Системный интегратор ОВЕН (Без партнерства)", employer="СЭТР", employer_id="owen:n-сэтр", lead_kind="company",
+             search_pass="owen_si", site="owen", area_name="Тула", url="https://setr.ru/", salary_raw=None,
+             raw_json=json.dumps({"status": "Без партнерства", "site": "https://setr.ru/", "emails": [], "phones": []}),
+             company_brief=json.dumps({"found": True, "what_they_do": "щиты", "website": "https://setr.ru/",
+                                       "contact_email": "Info@SETR.ru", "contact_phone": ""}))
+    card = format_card(1, v, e)
+    assert "📧 Писать на: <b>info@setr.ru</b>" in card
+    v = _row(title="Системный интегратор ОВЕН (Без партнерства)", employer="СЭТР", employer_id="owen:n-сэтр", lead_kind="company",
+             search_pass="owen_si", site="owen", area_name="Тула", url="https://setr.ru/", salary_raw=None,
+             raw_json=json.dumps({"status": "Без партнерства", "site": "https://setr.ru/", "emails": ["не указан"], "phones": []}),
+             company_brief=None)
+    card = format_card(1, v, e)
+    assert "Писать на" not in card and "📞 https://setr.ru/" in card
