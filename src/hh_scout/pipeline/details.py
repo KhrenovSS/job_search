@@ -1,6 +1,8 @@
 """Open vacancy pages for `to_fetch` vacancies (approved by triage) and store full descriptions.
 
-Order: triage priority 1→3, then newest first. Runs in bursts like the collector; whatever does
+Order: triage priority 1-2 first; the priority-3 rest is shared between channels by `DETAILS_CHANNEL_SHARES`
+(v9.17): each page goes to the channel furthest behind its share, newest card first inside a channel, and a
+share with nothing to open flows to the others. Runs in bursts like the collector; whatever does
 not fit into today's page budget stays `to_fetch` for the next sitting. Priority-3 cards that wait longer than
 `LOW_PRIORITY_TTL_DAYS` are dropped (`repo.expire_low_priority`, called by the orchestrator and the CLI).
 
@@ -33,10 +35,11 @@ class DetailsStats:
     page_loads: int = 0
     bursts: int = 0
     outcomes: Counter = field(default_factory=Counter)  # prefiltered / skipped / format_error
+    channels: Counter = field(default_factory=Counter)  # pages opened per channel (DETAILS_CHANNEL_SHARES keys)
     stopped_reason: str | None = None
 
     def as_text(self) -> str:
-        return f"страниц {self.page_loads}, серий {self.bursts}, итоги {dict(self.outcomes)}" + (
+        return f"страниц {self.page_loads}, серий {self.bursts}, итоги {dict(self.outcomes)}, по каналам {dict(self.channels)}" + (
             f", остановка: {self.stopped_reason}" if self.stopped_reason else "")
 
 
@@ -57,13 +60,32 @@ class DetailsFetcher:
         self.page_loads_before = page_loads_before   # the run's earlier stages; `runs.page_loads` is a total
         self.stats = DetailsStats()
         self._done: set[str] = set()
+        self._shares = settings.details_channel_shares_map
+        if self._shares and "vacancy" not in self._shares:
+            self._shares["vacancy"] = max(0.0, 1.0 - sum(self._shares.values()))
+
+    def _channel(self, row: sqlite3.Row) -> str:
+        return row["search_pass"] if row["search_pass"] in self._shares else "vacancy"
+
+    def _pick(self, rows: list[sqlite3.Row]) -> sqlite3.Row:
+        """The next row to open from `rows` (already in priority, newest-first order)."""
+        if not self._shares or (rows[0]["triage_priority"] or 3) < 3:
+            return rows[0]   # a hot card from triage goes first whatever its channel
+        heads: dict[str, sqlite3.Row] = {}
+        for row in rows:
+            heads.setdefault(self._channel(row), row)
+        total = sum(self.stats.channels.values()) + 1
+        # smooth weighted round-robin: the channel furthest behind its share of the pages opened so far
+        best = max(heads, key=lambda ch: (self._shares[ch] * total - self.stats.channels[ch], self._shares[ch]))
+        return heads[best]
 
     def _next(self) -> sqlite3.Row | None:
         # `site='hh'`: only an hh.ru row has a vacancy page; a catalogue company here would burn a page load
         # on a URL that cannot exist (v9.14).
-        for row in repo.list_vacancies(self.conn, "to_fetch", site="hh"):
-            if row["hh_id"] in self._done:
-                continue
+        rows = [r for r in repo.list_vacancies(self.conn, "to_fetch", site="hh") if r["hh_id"] not in self._done]
+        while rows:
+            row = self._pick(rows)
+            rows.remove(row)
             with self.conn:  # one lead per company: a twin of an existing lead is not worth a page load
                 if dedup.skip_if_covered(self.conn, self.s, row) is not None:
                     self.stats.outcomes["duplicate_employer"] += 1
@@ -78,6 +100,7 @@ class DetailsFetcher:
         hh_id = row["hh_id"]
         state = session.open(vacancy_url(hh_id))
         self._done.add(hh_id)
+        self.stats.channels[self._channel(row)] += 1
         try:
             detail = parse_vacancy(state)
         except PageFormatError as e:

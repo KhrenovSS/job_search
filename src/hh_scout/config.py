@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     # A floor, not a ceiling: details also get whatever collection did not spend.
     details_budget_share: float = 0.55  # v9.5: 243 cards collected per sitting against 14 pages opened — cards
                                         # were never the scarce side, and a lead is born only from an opened page
+    # How the vacancy pages of a sitting are shared between channels (v9.17, decision #57): "channel:share,...", keys
+    # are search passes, `vacancy` covers every pass not listed (regional, remote, similar...). Without shares the
+    # newest card always won and a company admitted a day earlier waited until the TTL wrote it off (23.09: 120 plant
+    # companies admitted, 0 opened). A share nobody uses flows to the others; triage priority 1-2 cards go first
+    # regardless. Empty = the old order (priority, then newest).
+    details_channel_shares: str = "vacancy:0.45,panel:0.20,design:0.10,plant:0.25"
     # A letter younger than this has not had time to be answered and is left out of every rate
     # (measured 19.09: 0-1 days old -> 0 % answered, 9-10 days -> 78-82 %). Reported separately instead.
     outcome_mature_days: int = 5
@@ -213,11 +219,21 @@ class Settings(BaseSettings):
             raise ValueError("DETAILS_BUDGET_SHARE должен быть долей от 0 до 1")
         return v
 
+    @field_validator("details_channel_shares")
+    @classmethod
+    def _channel_shares(cls, v: str) -> str:
+        _parse_shares(v)
+        return v
+
     def model_post_init(self, __context: object) -> None:
         if self.page_delay_max_s < self.page_delay_min_s:
             raise ValueError("PAGE_DELAY_MAX_S меньше PAGE_DELAY_MIN_S")
         if self.long_read_max_s < self.long_read_min_s:
             raise ValueError("LONG_READ_MAX_S меньше LONG_READ_MIN_S")
+
+    @property
+    def details_channel_shares_map(self) -> dict[str, float]:
+        return _parse_shares(self.details_channel_shares)
 
     @property
     def company_channels_set(self) -> frozenset[str]:
@@ -251,6 +267,26 @@ class Settings(BaseSettings):
 def _parse_hhmm(value: str) -> time:
     hh, mm = value.strip().split(":")
     return time(int(hh), int(mm), tzinfo=TZ)
+
+
+def _parse_shares(value: str) -> dict[str, float]:
+    """'vacancy:0.45,plant:0.25' -> {'vacancy': 0.45, 'plant': 0.25}; shares 0..1 summing to at most 1."""
+    shares: dict[str, float] = {}
+    for chunk in value.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        name, _, num = chunk.partition(":")
+        try:
+            share = float(num)
+        except ValueError:
+            raise ValueError(f"DETAILS_CHANNEL_SHARES: {chunk!r} — нужно «канал:доля»") from None
+        if not name.strip() or not 0.0 <= share <= 1.0:
+            raise ValueError(f"DETAILS_CHANNEL_SHARES: {chunk!r} — нужно «канал:доля», доля от 0 до 1")
+        shares[name.strip()] = share
+    if sum(shares.values()) > 1.0 + 1e-9:
+        raise ValueError("DETAILS_CHANNEL_SHARES: сумма долей больше 1")
+    return shares
 
 
 def parse_windows(value: str) -> list[tuple[time, time]]:

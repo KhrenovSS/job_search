@@ -109,3 +109,63 @@ def test_expire_low_priority_drops_only_old_priority_3():
     got = {r["hh_id"]: (r["status"], r["skip_reason"]) for r in conn.execute("SELECT hh_id, status, skip_reason FROM vacancies")}
     assert got["a"] == ("skipped", "low_priority_expired") and got["d"] == ("skipped", "low_priority_expired")
     assert got["b"][0] == "to_fetch" and got["c"][0] == "to_fetch" and got["e"][0] == "sent"
+
+
+def _db_channels(rows):
+    conn = connect(":memory:")
+    migrate(conn)
+    for hh_id, search_pass, prio, published in rows:
+        conn.execute("INSERT INTO vacancies(hh_id,title,url,source,search_pass,status,triage_priority,published_at,first_seen_at,updated_at) "
+                     "VALUES (?,?,?,?,?,?,?,?,?,?)", (hh_id, "t", "u", "s", search_pass, "to_fetch", prio, published, "t", "t"))
+    return conn
+
+
+def _states_for(ids, vacancy_state):
+    states = {}
+    for i in ids:
+        s2 = json.loads(json.dumps(vacancy_state))
+        s2["vacancyView"]["vacancyId"] = int(i)
+        s2["vacancyView"]["company"]["id"] = int(i)   # distinct employers: no duplicate_employer collapse
+        states[i] = s2
+    return states
+
+
+def test_details_share_pages_between_channels(monkeypatch, vacancy_state):
+    """23.09: fresh vacancy cards always won and admitted plant companies were never opened. With shares an older
+    plant row gets its turn; a hot (priority 1-2) card still goes first."""
+    from hh_scout.browser import pacing
+    monkeypatch.setattr(pacing, "sleep", lambda s: None)
+    rows = [(str(100 + i), "regional", 3, f"2026-09-23T10:{i:02d}") for i in range(6)]
+    rows += [(str(200 + i), "plant", 3, f"2026-09-20T10:{i:02d}") for i in range(6)]
+    rows += [("300", "regional", 1, "2026-09-01")]
+    conn = _db_channels(rows)
+    states = _states_for([r[0] for r in rows], vacancy_state)
+    loads = []
+    settings = Settings(_env_file=None, details_channel_shares="vacancy:0.5,plant:0.5")
+    f = DetailsFetcher(settings, conn, session_factory=lambda b: FakeSession(b, states, loads), rng=random.Random(0), page_budget=5)
+    stats = f.run()
+    opened = [u.rsplit("/", 1)[1] for u in loads]
+    assert opened[0] == "300"                                   # priority 1 first
+    assert sum(1 for i in opened if i.startswith("2")) == 2     # plant gets its half of the rest
+    assert stats.channels == {"vacancy": 3, "plant": 2}
+
+
+def test_details_unused_share_flows_to_others(monkeypatch, vacancy_state):
+    from hh_scout.browser import pacing
+    monkeypatch.setattr(pacing, "sleep", lambda s: None)
+    rows = [(str(100 + i), "regional", 3, f"2026-09-23T10:{i:02d}") for i in range(4)]
+    conn = _db_channels(rows)
+    states = _states_for([r[0] for r in rows], vacancy_state)
+    loads = []
+    settings = Settings(_env_file=None, details_channel_shares="vacancy:0.2,plant:0.8")
+    f = DetailsFetcher(settings, conn, session_factory=lambda b: FakeSession(b, states, loads), rng=random.Random(0), page_budget=4)
+    assert f.run().page_loads == 4                              # no plant rows: vacancies take the whole budget
+
+
+def test_channel_shares_validation():
+    import pytest
+    assert Settings(_env_file=None, details_channel_shares="").details_channel_shares_map == {}
+    assert Settings(_env_file=None).details_channel_shares_map["plant"] == 0.25
+    for bad in ("plant:1.5", "plant", "vacancy:0.7,plant:0.5"):
+        with pytest.raises(ValueError):
+            Settings(_env_file=None, details_channel_shares=bad)
