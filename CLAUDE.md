@@ -53,8 +53,8 @@ Firefox должен быть открыт ночью; в `config.py` по ум�
 
 ## Быстрый старт для агента
 **Сначала** убедитесь, что браузером никто не пользуется: Marionette держит одну сессию, поэтому `check_browser.py`,
-`pipeline.run`, `collector`, `details`, `hh_pages`, `sync_negotiations.py`, `profi_snapshot.py` нельзя запускать, пока сервис `hh-scout` в сборе или идёт другой такой
-процесс (`pgrep -f 'hh_scout.(pipeline|browser)'` должен быть пуст; в боте `/status` → «сбор идёт: нет»).
+`pipeline.run`, `collector`, `details`, `hh_pages`, `sync_negotiations.py`, `profi_snapshot.py`, `avito_snapshot.py` нельзя запускать, пока сервис `hh-scout` в сборе или идёт другой такой
+процесс. Проверка — `bash scripts/svc.sh status` («сбор идёт: нет», «отправка лидов идёт: нет») или `/status` в боте; она видит и плановый подход внутри сервиса, и браузерные CLI (`BROWSER_CMD_RE`). Самодельный `pgrep -f 'hh_scout…'` не годится: ловит собственную командную строку и не видит скрипты.
 ```bash
 cd "$(git rev-parse --show-toplevel)"                 # корень репо
 .venv/bin/python -m pytest -q                        # тесты (без сети, без браузера)
@@ -78,7 +78,7 @@ prompts/  company_research.md   что открыть про компанию и
           candidate_profile.md  профиль кандидата — правит ВЛАДЕЛЕЦ, читается целиком при каждом прогоне; в .gitignore
           resume.md             резюме (из PDF) — правит владелец; источник фактов для писем; в .gitignore
           *.example.md          публичные образцы этих двух файлов (скопировать и заполнить на новой машине)
-          card_triage.md · vacancy_evaluation.md · cover_letter.md  системные промпты (часть после `---`)
+          card_triage.md · vacancy_evaluation.md · cover_letter.md · letter_review.md (чеклист редактора)  системные промпты (часть после `---`)
           company_triage.md · company_evaluation.md · company_offer.md  то же для лидов-компаний (v9.13)
           profi_order_evaluation.md · profi_bid.md  то же для заказов profi.ru (оценка заказа, короткое предложение клиенту)
 bridge/   hh_scout_bridge.py  мост Claude: FastAPI → `claude -p` под подпиской; cmdline.py (сборка команды CLI:
@@ -86,7 +86,8 @@ bridge/   hh_scout_bridge.py  мост Claude: FastAPI → `claude -p` под п
 scripts/  install_service.sh (sudo) · install_geckodriver.sh · setup_firefox.sh · check_browser.py · tg_whoami.py
           · tg_alert.sh (Telegram через curl для systemd OnFailure)
           · sync_negotiations.py (разовый добор списка откликов, считается в лимите) · audit_title_filter.py
-          · svc.sh (status/logs/start/stop/restart/reinstall/bridge-restart; не рестартует во время сбора) · grant_agent_control.sh
+          · profi_snapshot.py · avito_snapshot.py (снимки разметки profi.ru / Avito из Firefox для написания парсеров; Avito — этап 0, парсера нет)
+          · svc.sh (status/logs/incidents/start/stop/restart/reinstall/bridge-restart; не рестартует во время сбора и отправки) · grant_agent_control.sh
           (владелец, один раз: sudoers-правило из sudoers-hh-scout.template → рестарты без пароля, в т.ч. агентом)
 go_hh.sh (быстрый разбор суток: сводка, прогоны и отправки за 24 ч, лиды по каналам, «ушло без письма», очередь и
          пул эксплуатантов, стадии и предупреждения из журнала — уровень берётся из текста строки, а не из приоритета
@@ -96,12 +97,13 @@ README.md · .gitignore · hh-scout.service.template + hh-scout-alert.service.te
 src/hh_scout/
   config.py        Settings из .env (порог, веса, лимиты, окна, ритм, токены) + константы: SEARCH_QUERIES (5),
                    REGION_NAMES (49 — запасной путь при SEARCH_ALL_RUSSIA=false; по умолчанию ищем по всей России),
-                   TITLE_STOP/KEEP/REQUIRED_ANY;  logging_setup.py — логи в stdout/journald
-  db.py            SQLite (автокоммит, WAL), миграции _m001…_m013 (PRAGMA user_version), kv_get/kv_set, transaction(),
+                   TITLE_STOP/KEEP/REQUIRED_ANY, COMPANY_QUERIES (каналы panel/design), AVITO_QUERIES (снимки);  logging_setup.py — логи в stdout/journald
+  db.py            SQLite (автокоммит, WAL), миграции _m001…_m015 (PRAGMA user_version), kv_get/kv_set, transaction(),
                    backup() — ночная копия в data/backups/ (7 штук)
   main.py          сервис: aiogram polling + планировщик; первый старт помечает превью как sent
   scheduler.py     дайджест по cron, подход на каждое окно `CRAWL_WINDOWS` (случайный старт, доля лимита), восстановление из kv,
-                   сторож каждые 30 мин и предпроверка перед подходом;  health.py — тревоги (чистые проверки + Alerter)
+                   сторож каждые 30 мин и предпроверка перед подходом, резервная копия БД 03:40, каталог ОВЕН по воскресеньям 04:00;
+                   health.py — тревоги (чистые проверки + Alerter)
   browser/         session.py (geckodriver --connect-existing, своё окно, бюджет) · hh_pages.py (URL, парсеры
                    HH-Lux-InitialState) · pacing.py (паузы, длительность серий, прокрутка) · bursts.py (серии по времени)
   hh/              areas.py (регионы из открытого api.hh.ru/areas, кэш) · salary.py (gross→net, только RUR/месяц; human_from_raw)
@@ -116,12 +118,13 @@ src/hh_scout/
                    collector.py (проходы `SEARCH_PASSES`: по умолчанию только regional — при поиске по всей России
                    remote/project/gph его подмножества; v9.15) · plant.py (канал `plant`: пул эксплуатантов автоматики,
                    допуск по `PLANT_LEADS_PER_DAY`, задел `--backfill`; v9.15) ·
-                   prefilter.py · details.py · ranker.py (total, карточка)
+                   prefilter.py · details.py · ranker.py (total, карточка) · profi_collector.py (лента заказов profi.ru, v7)
                    digest_builder.py · dedup.py (одна компания — один лид) · run.py (оркестратор одного прогона)
   bot/             app.py (только владелец) · handlers.py (команды: /start=/help /status /digest /crawl [N] /next /pause /resume
                    /skipped /letter /inbox /done /cleanup /stats) · digest.py · feedback.py (кнопки 👍/👎/✅/⏸) · lead_actions.py
                    (сворачивание карточек, автозакрытие по откликам) · keyboards.py
-tests/             unit-тесты (`pytest -q`, без сети и браузера); фикстуры — реальные страницы hh.ru и справочник регионов
+tests/             unit-тесты (`pytest -q`, без сети и браузера); фикстуры — реальные страницы hh.ru, справочник регионов,
+                   лента profi.ru и каталог ОВЕН
 data/              hh_scout.db (WAL), logs/ — в .gitignore
 ```
 

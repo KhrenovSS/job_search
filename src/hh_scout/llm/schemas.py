@@ -48,7 +48,10 @@ class EvaluationBatch(RootModel[list[VacancyEvaluation]]):
     pass
 
 
-OFFER_FOCUS = ("plc_hmi_per_panel", "templates", "commissioning_scada", "plc_selection", "subcontract_programming")
+# Every code prompts/company_evaluation.md may return; `modernization` and `support` are the plant channel's (v9.15) —
+# they were missing here until 24.09 and the validator silently dropped them, leaving 21 of 28 plant leads with no focus.
+OFFER_FOCUS = ("plc_hmi_per_panel", "templates", "commissioning_scada", "plc_selection", "subcontract_programming",
+               "modernization", "support")
 
 
 class CompanyEvaluation(BaseModel):

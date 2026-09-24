@@ -86,14 +86,14 @@ def test_company_evaluation_is_stored_with_fit_and_lead_and_no_role(tmp_path):
     assert payload["kind"] == "company" and payload["channel"] == "panel" and "salary" not in json.dumps(payload)
     respx.post("http://bridge.test/complete").mock(return_value=httpx.Response(200, json={"text": json.dumps([
         {"hh_id": "5", "fit_score": 80, "lead_score": 60, "company_kind": "panel_builder", "verdict": "Собирают шкафы",
-         "pitch_hint": "Программа под каждый шкаф", "offer_focus": ["plc_hmi_per_panel", "templates", "nonsense"],
+         "pitch_hint": "Программа под каждый шкаф", "offer_focus": ["plc_hmi_per_panel", "templates", "modernization", "support", "nonsense"],
          "red_flags": []}])}))
     stats = Evaluator(s, conn, BridgeClient(s, sleep=lambda x: None)).run()
     assert stats.evaluated == 1
     row = repo.lead_by_hh_id(conn, "5")
     assert row["total"] == round(0.6 * 80 + 0.4 * 60) and row["tech_score"] == 80 and row["role_score"] == 0
     assert row["company_kind"] == "panel_builder" and row["ip_gph_possible"] == "maybe"
-    assert json.loads(row["offer_focus"]) == ["plc_hmi_per_panel", "templates"]     # unknown codes dropped
+    assert json.loads(row["offer_focus"]) == ["plc_hmi_per_panel", "templates", "modernization", "support"]  # unknown dropped, plant codes kept
     assert row["status"] == "evaluated" and lead_kind(row) == "company"
 
 

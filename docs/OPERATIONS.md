@@ -120,7 +120,7 @@ root без пароля для этого пользователя (юнит з
 
 Работать через обёртку `bash scripts/svc.sh …`: `status` (юниты, `/health`, «сбор идёт»), `logs [N]`, `start`, `stop`,
 `restart`, `reinstall` (= `install_service.sh` + рестарт: новые юниты, зависимости), `bridge-restart`. `stop|restart|reinstall`
-**отказывают (код 3), пока идёт сбор** — есть `runs.status='running'` или процесс `hh_scout.(pipeline|browser)`;
+**отказывают (код 3), пока идёт сбор или отправка лидов** — есть `runs.status='running'`, kv `sending_since` или браузерный CLI по `BROWSER_CMD_RE`;
 обход `--force` только если прогон точно мёртв. Без правила sudoers — код 4 с подсказкой.
 
 ## Плейбук сбоев
