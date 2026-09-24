@@ -12,18 +12,18 @@
 `_m015_lead_kind` (`vacancies.lead_kind` vacancy/company, `evaluations.offer_focus` — решение №53).
 Время — TEXT ISO-8601 UTC; границы для сравнения строятся через `repo.iso_utc` (строка с `+03:00` рядом с `+00:00`
 сравнивается как текст и сдвигает окно на три часа).
-Весь SQL — в `src/hh_scout/pipeline/repo.py`; аналитика над строками (исходы, полосы, зрелость) — в `pipeline/outcomes.py`.
+Почти весь SQL — в `src/hh_scout/pipeline/repo.py` (свои запросы держат ещё миграции `db.py`, `llm/evaluator.py`, `llm/company_research.py`, `pipeline/budget.py`, `pipeline/plant.py`, `hh/areas.py`, `health.py`); аналитика над строками (исходы, полосы, зрелость) — в `pipeline/outcomes.py`.
 
 | Таблица | Назначение |
 |---|---|
 | `areas_cache` | регионы России из открытого `api.hh.ru/areas` (обновляется раз в 30 дней) |
 | `vacancies` | все увиденные вакансии; `hh_id` UNIQUE = «уже видели» |
 | `evaluations` | одна оценка на вакансию (UNIQUE `vacancy_id`); при переоценке строка пересоздаётся |
-| `cover_letters` | текст отклика (UNIQUE `vacancy_id`), `model_note`, `created_at` (время **последней** записи — по нему считается суточная норма писем), `rules_hash` — отпечаток правил, по которым письмо написано (промпт письма + профиль + резюме + чеклист редактора + правила кода `llm/letter_checks.CODE_RULES` + рамка длины, `llm.cover_letter.rules_hash`). NULL или чужой отпечаток = письмо устарело и переписывается перед отправкой (решение №50). `owner_hint` — пожелание из `/letter <id> …`, переживает переписку; `with_dossier` 0/1 — было ли досье компании при написании: письмо без досье устаревает, когда досье появилось (v9.11) |
-| `negotiation_events` | история переписки: `vacancy_id`, `state`, `has_messages`, `seen_at`. Строка добавляется **при смене состояния или флага `has_messages`** (`repo.record_negotiation`); `state` может быть NULL — засев из снимка в `_m012` (`seen_at` = `COALESCE(negotiation_seen_at, updated_at)`), поэтому три синхронизации в сутки ничего не раздувают. Отсюда берутся время до ответа и переходы `RESPONSE → INTERVIEW/DISCARD` (решение №48) |
-| `digests`, `digest_items` | отправленные подборки; `tg_message_id` карточки, `letter_message_id` письма (для сворачивания) |
+| `cover_letters` | текст отклика (UNIQUE `vacancy_id`), `model_note`, `created_at` (время **последней** записи; `repo.letters_written_today` по нему — только для отчёта, объём писем держит `LETTERS_BUDGET_MIN`, v9.14), `rules_hash` — отпечаток правил, по которым письмо написано (промпт письма + профиль + резюме + для hh и компаний (`REVIEWED_KEYS`) ещё чеклист редактора + правила кода `llm/letter_checks.CODE_RULES` + рамка длины; для profi — только промпт; `llm.cover_letter.rules_hash`). NULL или чужой отпечаток = письмо устарело и переписывается перед отправкой (решение №50). `owner_hint` — пожелание из `/letter <id> …`, переживает переписку; `with_dossier` 0/1 — было ли досье компании при написании: письмо без досье устаревает, когда досье появилось (v9.11) |
+| `negotiation_events` | история переписки: `vacancy_id`, `state`, `has_messages`, `seen_at`. Строка добавляется **при смене состояния или флага `has_messages`** (`repo.record_negotiation`); `state` NULL — карточка из списка откликов без состояния (`mark_applied` без `state`, из сбора); засев из снимка в `_m012` берёт только строки с состоянием (`seen_at` = `COALESCE(negotiation_seen_at, updated_at)`). Три синхронизации в сутки ничего не раздувают. Отсюда берутся время до ответа и переходы `RESPONSE → INTERVIEW/DISCARD` (решение №48) |
+| `digests`, `digest_items` | отправленные подборки: `sent_at`, `items_count` (лидов ушло), `collected_count` («проверено N»), `note` (NULL — плановый дайджест 12:00; остальные значения — ниже); в `digest_items` — `position`, `tg_message_id` карточки, `letter_message_id` письма (для сворачивания) |
 | `lead_actions` | действия владельца по отправленному лиду: `action` liked / disliked / responded / auto_responded / deferred / closed_stale, `reason`, `created_at`. Лид открыт, пока нет responded/auto_responded/disliked/closed_stale |
-| `feedback` | 👍/👎: `value` ±1, `reason` — код salary/format/stack/agency, NULL или **текст владельца** («✍️ своими словами», до 300 знаков, v9.11); текст попадает в калибровочный блок оценщика дословно |
+| `feedback` | 👍/👎: `value` ±1, `reason` — код salary/format/stack/agency, NULL или **текст владельца** («✍️ своими словами», до 300 знаков, v9.11); текст попадает в калибровочный блок оценщика дословно. 👍 пишет и сюда, и `lead_actions.liked`; «✅ Написал» тоже пишет +1 |
 | `runs` | прогоны: `trigger` schedule/manual, `status` running/ok/failed, метрики collected/prefiltered/evaluated/bridge_calls/page_loads, `error`; колонка `sent` не используется |
 | `employers` | досье на компанию из открытых источников (веб-разведка, v9.0) — свой раздел ниже |
 | `kv` | флаги, см. ниже |
@@ -31,12 +31,12 @@
 ## `vacancies.status` — 9 значений
 | Статус | Кто ставит | Смысл |
 |---|---|---|
-| `new` | collector | карточка собрана, правила не применялись |
-| `triage` | prefilter | прошла правила, ждёт триаж ИИ |
+| `new` | collector · каталог ОВЕН (`repo.insert_integrator`) | карточка собрана, правила не применялись |
+| `triage` | prefilter · `dedup.revive_orphans` (дубль без пройденного триажа) · `prefilter --requeue-reason` | прошла правила, ждёт триаж ИИ |
 | `to_fetch` | triage · `plant.admit` (из пула, приоритет 3) · `dedup.revive_orphans` (дубль, чей «победитель» лидом не стал) | ИИ велел открыть страницу; `triage_priority` 1–3 |
-| `prefiltered` | details · `repo.admit_company_leads` (каталог ОВЕН: `new` → сразу сюда, страницы нет) · profi (заказ вставляется сразу в этом статусе) | страница загружена (или описание есть из другого источника), `raw_json` заполнен, ждёт оценку |
+| `prefiltered` | details · `repo.admit_company_leads` (каталог ОВЕН: `new` → сразу сюда, страницы нет) · profi (заказ вставляется сразу в этом статусе) · `evaluator --requeue-rejected` / `--requeue-id` (оценка удаляется, строка возвращается сюда) | страница загружена (или описание есть из другого источника), `raw_json` заполнен, ждёт оценку |
 | `evaluated` | evaluator | оценена, строка в `evaluations`, кандидат в дайджест |
-| `sent` | digest | отправлена в дайджесте (или помечена при первом старте сервиса — `kv.preview_marked`); открыт/закрыт лид — по `lead_actions` |
+| `sent` | `repo.add_digest_item`: дайджест 12:00, мгновенная отправка после подхода, `/letter` из очереди (или помечена при первом старте сервиса — `kv.preview_marked`); открыт/закрыт лид — по `lead_actions` |
 | `rejected` | digest | была `evaluated`, `total < score_threshold` на момент дайджеста (строки с `evaluations.floor = 1` не списываются); либо простояла в очереди дольше `QUEUE_TTL_DAYS` — тогда с `skip_reason = queue_expired`. Обратимо (v9.12): дневной минимум (`digest_builder.promote_floor`) и `evaluator --readmit` возвращают `rejected` без `skip_reason` в `evaluated` |
 | `skipped` | prefilter/collector/triage/details/dedup/digest · синхронизация откликов (`mark_applied` → `applied`, в т.ч. заглушки для незнакомых вакансий) · `plant.pool` (`plant_pool`) · письма (`no_email`) | отсеяна; всегда с `skip_reason` |
 | `evaluation_failed` | evaluator (ИИ дважды вернул невалидный ответ / пропустил hh_id) или details (страница без `vacancyView`) | терминальная ошибка, автоматически не повторяется (вернуть вручную; `repo.reset_catalogue_rows` для строк ОВЕН вызывается только из тестов) |
@@ -48,15 +48,15 @@
 (нет инженерного слова в названии — самый частый) · `triage` (ИИ: не открывать) · `invalid_ai_answer` /
 `missing_in_ai_answer` (оценка) · `no_vacancy_view` (страница без данных) · `low_priority_expired` (приоритет 3 триажа не открыт за `LOW_PRIORITY_TTL_DAYS`) · `queue_expired` (v9.1: лид простоял в очереди дольше `QUEUE_TTL_DAYS` — до него так и не дошла суточная норма) ·
 `duplicate_employer:<hh_id>` (v8: у компании уже есть лид `<hh_id>` — отправленный за последние `EMPLOYER_REPEAT_DAYS` или ждущий
-дайджест; ставится на любом статусе от `triage` до `evaluated`, см. `pipeline/dedup.py`). **Обратимая причина** (v8.7; штатно возвращается ещё `plant_pool`, а любую причину вернёт `prefilter --requeue-reason`): если `<hh_id>` так и не стал лидом (отклонён, сорвалась оценка или оценён ниже порога) и у компании лида
-не осталось, `dedup.revive_orphans` в начале каждого прогона возвращает дубль в `to_fetch` (триаж ИИ уже пройден) или `triage`. ·
+дайджест; ставится на `triage` (шаг 2b), `to_fetch` (перед загрузкой страницы) и `evaluated` (после оценки), см. `pipeline/dedup.py`). **Обратимая причина** (v8.7; штатно возвращается ещё `plant_pool`, а любую причину вернёт `prefilter --requeue-reason`): если `<hh_id>` так и не стал лидом (отклонён, сорвалась оценка или оценён ниже порога) и у компании лида
+не осталось, `dedup.revive_orphans` на шаге 2b каждого прогона (после сбора и правил) возвращает дубль в `to_fetch` (триаж ИИ уже пройден) или `triage`. ·
 `plant_pool` (v9.15: карточка слесаря КИПиА / электромонтёра / энергетика, закрытая триажем с `plant: true` — компания
 ждёт в пуле канала `plant` (`lead_kind='company'`, `search_pass='plant'`), `plant.admit` выпускает по `PLANT_LEADS_PER_DAY`
 в день в `to_fetch`; вторая «причина» после `duplicate_employer`, из которой строка штатно возвращается в конвейер) ·
 `employer_responded:<hh_id>` (v9.3: в компанию уже откликались — сам владелец на hh.ru (`applied=1`) или кнопкой «✅ Написал»
 (`lead_actions.responded`/`auto_responded`) — не позже `EMPLOYER_REPEAT_DAYS` назад; письмо уходит кадровику всей организации,
 второе на тот же стол не нужно. Причина **необратимая**, в отличие от `duplicate_employer:`: `revive_orphans` такие строки
-не воскрешает) · `no_email` (v9.16, решение №56: компания из каталога ОВЕН без e-mail ни в `raw_json.emails`, ни в `employers.brief.contact_email` — писать некуда; ставится стадией писем после разведки и `digest_builder.skip_unreachable` перед отправкой). `set_status` в не-skip переходах обнуляет `skip_reason`.
+не воскрешает) · `no_email` (v9.16, решение №56: компания из каталога ОВЕН без e-mail ни в `raw_json.emails`, ни в `employers.brief.contact_email` — писать некуда; ставится стадией писем после разведки и `digest_builder.skip_unreachable` перед отправкой). `set_status` пишет ту причину, которую ему передали: у `evaluation_failed` это `invalid_ai_answer` / `missing_in_ai_answer` / `no_vacancy_view`, у `rejected` по сроку очереди — `queue_expired`.
 
 ## Прочие поля `vacancies`
 - `work_format`: remote / hybrid / office / field / unknown (приоритет remote > hybrid > office > field).
@@ -64,7 +64,8 @@
 - `salary_raw`: исходный объект `compensation` hh (JSON); `salary_from`, `salary_to`: рубли net (gross×0.87) **только для
   месячных RUR**; валюта/почасовые хранятся как есть (пометка `Salary.note` в БД не хранится, вычисляется из `salary_raw`).
 - `lead_kind` (v9.13, `_m015`): `vacancy` (по умолчанию) / `company` — лид-компания: щитовик или проектное бюро,
-  найденные по вакансии не для программиста (`search_pass` panel / design), или интегратор из каталога ОВЕН
+  найденные по вакансии не для программиста (`search_pass` panel / design), эксплуатант автоматики из пула (`plant`,
+  `repo.move_to_plant_pool`), или интегратор из каталога ОВЕН
   (`site='owen'`, `hh_id='owen:<tag_id>'` или `owen:n-<slug>` без tag_id, `employer_id` тот же ключ — под досье и дедуп,
   `url` = сайт компании, `raw_json = {description, industries, status, projects_url, site, emails, phones, address, region}`).
   Оценка у таких строк — `tech_score` = соответствие, `role_score` = 0, `lead_score`; `total = 0.6·fit + 0.4·lead`;
@@ -93,7 +94,7 @@
 - `applied`, `has_chat`: из страницы откликов; `triage_priority`, `triage_note`: от триажа.
 - `employer_id` (v8, `_m007`): hh.ru `company.id` строкой — ключ «одна компания — один лид»; пишется из карточки поиска и со
   страницы вакансии, для старых строк заполнен из `raw_json.company.id`; у карточек до v8 и у profi.ru — NULL (тогда сравнение
-  по `employer` через SQL-функцию `casefold`, зарегистрированную в `db.connect`). Индексы `idx_vacancies_employer_id`, `idx_vacancies_employer`.
+  по `employer` через SQL-функцию `casefold`, зарегистрированную в `db.connect`). Индексы: `idx_vacancies_employer_id`, `idx_vacancies_employer`, `idx_vacancies_status`, `idx_vacancies_site_status` (`_m006`), `idx_areas_name`, UNIQUE `idx_eval_vacancy`, `idx_lead_actions_vacancy`, `ix_negotiation_events(vacancy_id, seen_at)` (`_m012`).
 
 ## `evaluations`
 `id`, `vacancy_id` (UNIQUE), `created_at` (по нему — «проверено N» в шапке и приоритет очереди); `tech_score`, `role_score`,
@@ -112,7 +113,7 @@
 | `next_crawl_at` | ISO с зоной | старт следующего подхода; пуст во время планового сбора (после него назначается следующий) |
 | `crawl_window_idx` | 0…N−1 | индекс окна `CRAWL_WINDOWS` назначенного/идущего подхода |
 | `crawl_window_date` | YYYY-MM-DD | день этого окна |
-| `sitting_done` | `YYYY-MM-DD:idx` | последнее окно, в котором подход сегодня уже стартовал или был пропущен по паузе; по нему планировщик не назначает то же окно дважды |
+| `sitting_done` | `YYYY-MM-DD:idx` | последнее окно, в котором подход сегодня уже стартовал или был пропущен (пауза, идущий ручной сбор, окно уже закрылось); по нему планировщик не назначает то же окно дважды |
 | `daily_cap:<YYYY-MM-DD>` | число | лимит загрузок на день (случайный из `DAILY_PAGE_LOADS_MIN..MAX`); старые ключи удаляются |
 | `alert:<key>:<YYYY-MM-DD>` | ISO | тревога уже отправлена сегодня (`health.Alerter`); старые дни чистятся |
 | `alerts_cleaned`, `watchdog_last` | служебные | дата очистки тревог / время последней проверки сторожа |
@@ -120,20 +121,21 @@
 | `bot_window_handle` | хендл окна | окно бота в Firefox, пока идёт сессия браузера (`browser/session.WindowRegistry`); прогон закрывает оставшееся от прерванного окно по этому хендлу и только его — страница про метку не знает (v9.11) |
 | `awaiting_reason` | `<vacancy_id>:<message_id>` | бот ждёт причину 👎 своими словами ответом на своё сообщение; сторож забывает на следующий день |
 | `preview_marked` | `"1"` | одноразовый флаг первого старта сервиса (`main.py`) |
-| `sending_since` | ISO | идёт отправка лидов (мгновенная или дайджест); `svc.sh restart` и `/status` смотрят сюда; снимается в `finally` и при старте сервиса (v9.15) |
+| `sending_since` | ISO | идёт отправка лидов после подхода (`after_crawl`: автозакрытие и мгновенная отправка; дайджест 12:00 и `/digest` его не ставят); `svc.sh restart` и `/status` смотрят сюда; снимается в `finally` и при старте сервиса (v9.15) |
 | `owen_last` | `ISO\|всего\|новых` | последнее чтение каталога интеграторов ОВЕН (`Scheduler.owen_job`, воскресенье 04:00) |
 | `alerts_today` | — | остаток старых версий, кодом не читается и не пишется; можно удалить |
 
 ## Инварианты
 1. Вакансия попадает в дайджест не более одного раза (UNIQUE `hh_id` + статусы `sent`/`rejected`).
 1a. Компания hh.ru получает не больше одного лида за `EMPLOYER_REPEAT_DAYS` (90; 0 — навсегда): остальные её вакансии —
-   `skipped/duplicate_employer:<hh_id>`. profi.ru не дедуплицируется (`employer` там — имя клиента).
+   `skipped/duplicate_employer:<hh_id>`. Вакансия и лид-компания одного работодателя — разные каналы и могут сосуществовать
+   (`repo._kind_sql`, `dedup.same_company`, v9.15). profi.ru не дедуплицируется (`employer` там — имя клиента).
 1b. Компания, куда владелец уже откликнулся, за те же `EMPLOYER_REPEAT_DAYS` не получает ни лида, ни письма:
-   её вакансии — `skipped/employer_responded:<hh_id>` (v9.3). Проверка стоит раньше 1а — она верна и тогда, когда
+   её вакансии — `skipped/employer_responded:<hh_id>` (v9.3). Проверка стоит раньше 1а (в `dedupe_evaluated` — после поиска близнеца среди оценённых) — она верна и тогда, когда
    лида у компании не было вовсе (отклик отправлен прямо на hh.ru).
 2. `applied=1` никогда не отправляется.
 3. Перезапуск после сбоя продолжает с места остановки: статусы фиксируются после каждого шага.
-4. «Проверено N» в заголовке = число строк `evaluations`, созданных после последнего дайджеста.
+4. «Проверено N» в заголовке = число строк `evaluations`, созданных после последнего полуденного дайджеста (`instant:*` и `manual:*` не в счёт).
 5. Резервная копия БД — каждую ночь в 03:40 (`db.backup`, 7 копий в `data/backups/`, kv `last_backup`).
 6. Отклик владельца датируется точно: кнопка «✅ Написал» — по `lead_actions.created_at`, отклик на hh.ru — по
    первому наблюдению в `negotiation_events`; `updated_at` — только запасной вариант, и `mark_applied` его не трогает,
@@ -143,14 +145,14 @@
 
 ## `employers` (v9.0, `_m009`)
 Досье на работодателя из открытых источников — одно на компанию, переиспользуется всеми её вакансиями.
-`employer_id` (PK) — hh.ru `company.id`, тот же ключ, что у «одна компания — один лид»; `name`;
+`employer_id` (PK) — hh.ru `company.id`, тот же ключ, что у «одна компания — один лид» (у строк каталога ОВЕН — `owen:<…>`); `name`;
 `found` (0/1 — искали и не нашли тоже запоминается, чтобы не платить за пустоту дважды); `brief` — JSON
-`CompanyBrief` (`what_they_do`, `industry`, `products`, `sites`, `scale`, `automation_hooks`, `sources`, `note`; с v9.15 —
+`CompanyBrief` (`found`, `what_they_do`, `industry`, `products`, `sites`, `scale`, `automation_hooks`, `sources`, `note`; с v9.15 —
 `website`, `contact_email`, `contact_phone`: общие контакты компании с её сайта/страницы hh, для карточек компаний без своих
 контактов);
 `sources` — JSON списка прочитанных URL; `researched_at`. Свежесть — `COMPANY_RESEARCH_TTL_DAYS` (180 дней).
 Заполняет `llm/company_research.py`; в карточку лида попадает строка «🏭 О компании» (`LEAD_SELECT` подмешивает
-`brief` как `company_brief`). Поля-факты собраны с прочитанных страниц, `automation_hooks` — явные предположения.
+`brief` как `company_brief` только при `found = 1`). Поля-факты собраны с прочитанных страниц, `automation_hooks` — явные предположения.
 
 ## Норма суток и мгновенные отправки (v9.8)
 kv `sending_since` (21.09) — момент начала мгновенной отправки после подхода; снимается в конце и при старте сервиса.
@@ -159,7 +161,7 @@ kv `sending_since` (21.09) — момент начала мгновенной о
 `digests.note = 'instant:<site>'` — лиды, ушедшие сразу после подхода, а не в дайджесте 12:00. Суточная норма
 `DIGEST_MAX_ITEMS` (0 = нормы нет, v9.14) общая на всех: `repo.leads_sent_today` считает строки `digest_items` с полуночи по местному
 времени, и мгновенная отправка и `plan_digest` берут только остаток. Другие значения `note`: `manual:/letter` (лид по `/letter` из очереди), `manual /digest` (ручной дайджест — с пробелом, считается
-дневным), `preview before first service start` (первый старт сервиса). `repo.last_daily_digest` /
+дневным), `preview before first service start` (первый старт сервиса); в базе есть ещё два старых значения от 14.09 («ручной дайджест по просьбе владельца», «очередь по просьбе владельца»), код их больше не пишет. `repo._last_daily_digest` /
 `evaluations_since_last_digest(daily_only=True)` пропускают `instant:*` и `manual:*`, чтобы «проверено N» в дневной шапке
 означало сутки, а не время с последнего подхода.
 
@@ -174,7 +176,7 @@ kv `sending_since` (21.09) — момент начала мгновенной о
 (`applied = 0`), попадают в колонку «без канала измерения»: их исход нам не виден, и в конверсию они не идут.
 
 ## `evaluated` — это очередь (v9.1)
-Статус `evaluated` с `total ≥ SCORE_THRESHOLD` означает не «ждёт ближайшего дайджеста», а «стоит в очереди».
+Статус `evaluated` с `total ≥ SCORE_THRESHOLD` или `evaluations.floor = 1` (`repo.IN_QUEUE_SQL`) означает не «ждёт ближайшего дайджеста», а «стоит в очереди».
 Отправка забирает всю очередь по приоритету `total + MIN(суток ожидания, QUEUE_WAIT_BONUS_MAX)` (при `DIGEST_MAX_ITEMS` > 0 — её остаток за вычетом `repo.leads_sent_today`),
 остальные **остаются `evaluated`** и соревнуются с завтрашними поступлениями (`repo.lead_queue`, `repo.queue_size`).
 `reject_below` по-прежнему списывает то, что ниже порога; `repo.expire_queue` — то, что простояло дольше
