@@ -147,6 +147,66 @@ def test_dedupe_evaluated_keeps_a_vacancy_lead_and_a_company_offer_of_one_employ
     assert dedup.same_company(_row(conn2, "P"), _row(conn2, "V")) is False
 
 
+# --- the evaluator feeds the pool too (v9.19) ---------------------------------------------------
+
+def _with_page(conn, hh_id):
+    conn.execute("UPDATE vacancies SET raw_json = ? WHERE hh_id = ?",
+                 (json.dumps({"description": "Завод: линии розлива на ПЛК ОВЕН, обслуживание КИПиА"}), hh_id))
+    return _row(conn, hh_id)
+
+
+def test_an_evaluated_operations_vacancy_of_a_plant_goes_into_the_pool_with_its_page():
+    conn = _conn()
+    row = _with_page(conn, _card(conn, "E", status="evaluated", skip_reason=None, note=None, total=30)["hh_id"])
+    assert plant.pool_evaluated(conn, S, row)
+    r = _row(conn, "E")
+    assert (r["status"], r["skip_reason"], r["lead_kind"], r["search_pass"]) == ("skipped", "plant_pool", "company", "plant")
+    assert "розлива" in json.loads(r["raw_json"])["description"]                    # the page travels with the row
+    assert conn.execute("SELECT COUNT(*) FROM evaluations WHERE vacancy_id = ?", (r["id"],)).fetchone()[0] == 0
+    # leaving the pool: a row with its page read goes straight to `prefiltered`, a bare card still needs the page
+    bare = _card(conn, "B", employer="Завод Лютик", employer_id="200")
+    assert plant.pool(conn, S, bare)
+    assert plant.admit(conn, S) == 2
+    assert _row(conn, "E")["status"] == "prefiltered" and _row(conn, "B")["status"] == "to_fetch"
+
+
+def test_pool_evaluated_leaves_a_company_with_a_vacancy_lead_alone():
+    conn = _conn()
+    _card(conn, "V", status="sent", skip_reason=None, note=None, total=80)
+    row = _with_page(conn, _card(conn, "E", status="evaluated", skip_reason=None, note=None, total=30)["hh_id"])
+    assert not plant.pool_evaluated(conn, S, row)
+    assert _row(conn, "E")["status"] == "evaluated"
+
+
+def test_the_evaluator_pools_a_flagged_plant_below_the_threshold_only(tmp_path):
+    import httpx
+    import respx
+    from hh_scout.llm.bridge_client import BridgeClient
+    from hh_scout.llm.evaluator import Evaluator
+
+    prompts = tmp_path / "prompts"
+    prompts.mkdir()
+    (prompts / "candidate_profile.md").write_text("ПРОФИЛЬ", encoding="utf-8")
+    (prompts / "vacancy_evaluation.md").write_text("h\n---\nEVAL {feedback_block}", encoding="utf-8")
+    s = Settings(_env_file=None, bridge_url="http://bridge.test", bridge_token="t", prompts_dir=prompts)
+    conn = _conn()
+    _with_page(conn, _card(conn, "1", status="prefiltered", skip_reason=None, note=None)["hh_id"])
+    _with_page(conn, _card(conn, "2", status="prefiltered", skip_reason=None, note=None, employer="Завод Лютик", employer_id="200")["hh_id"])
+
+    def scored(hh_id, tech, role, lead):
+        return {"hh_id": hh_id, "tech_score": tech, "role_score": role, "lead_score": lead, "ip_gph_possible": "maybe",
+                "is_agency": False, "company_kind": "end_customer", "verdict": "v", "pitch_hint": "p", "red_flags": [],
+                "plant": True}
+
+    with respx.mock:
+        respx.post("http://bridge.test/complete").mock(return_value=httpx.Response(200, json={"text": json.dumps(
+            [scored("1", 30, 20, 40), scored("2", 80, 70, 60)])}))
+        stats = Evaluator(s, conn, BridgeClient(s, sleep=lambda x: None)).run()
+    assert stats.evaluated == 2 and stats.pooled == 1
+    assert (_row(conn, "1")["status"], _row(conn, "1")["skip_reason"], _row(conn, "1")["search_pass"]) == ("skipped", "plant_pool", "plant")
+    assert _row(conn, "2")["status"] == "evaluated"                                    # a real lead stays a lead
+
+
 # --- quiet hours ------------------------------------------------------------------------------
 
 def test_quiet_hours_cross_midnight():

@@ -6,7 +6,9 @@ programmer of its own: for contract work that is a customer, not a miss. So a cl
 verdict does not die: it becomes the company's lead-in-waiting (`skipped/plant_pool`, `lead_kind='company'`,
 `search_pass='plant'`), and every run lets `PLANT_LEADS_PER_DAY` of them out of the pool (`to_fetch`, priority 3).
 From there the row walks the company-lead path of v9.13: one vacancy page, `company_evaluation.md`,
-`company_offer.md`.
+`company_offer.md`. Since v9.19 the evaluator feeds the pool too (`pool_evaluated`): a vacancy the triage opened
+that scored below the threshold as "operations, not programming" at a company with automation of its own — 53 of 73
+opened vacancy pages on 24.09 — carries its page along, so `admit` sends such a row straight to `prefiltered`.
 
 One company — one plant row, and a company the owner already wrote to (or that already has a lead) is left alone.
 The pool lives in `skipped` on purpose: those rows are inert for every stage, so no new status was needed.
@@ -61,9 +63,30 @@ def pool(conn: sqlite3.Connection, settings: Settings, row: sqlite3.Row) -> bool
     return True
 
 
+def pool_evaluated(conn: sqlite3.Connection, settings: Settings, row: sqlite3.Row) -> bool:
+    """An evaluated vacancy below the threshold whose evaluation says `plant` becomes the company's pool row (v9.19).
+
+    Same gates as `pool`; the vacancy's own evaluation is dropped — the row will be scored again as a company
+    (`company_evaluation.md`) when it leaves the pool. The page it already has (`raw_json`) stays. Commits nothing.
+    """
+    if repo.PLANT_PASS not in settings.company_channels_set:
+        return False
+    if repo.plant_row_exists(conn, row["employer_id"], row["employer"]):
+        return False
+    if dedup.answered_employer(conn, settings, row) is not None:
+        return False
+    if repo.employer_lead(conn, row["employer_id"], row["employer"], exclude_id=row["id"],
+                          threshold=settings.score_threshold, repeat_days=settings.employer_repeat_days,
+                          candidate_kind="company") is not None:
+        return False
+    repo.delete_evaluation(conn, row["id"])
+    repo.move_to_plant_pool(conn, row["id"])
+    return True
+
+
 def admit(conn: sqlite3.Connection, settings: Settings) -> int:
     """Daily gate from the pool to the page queue; rows whose company got covered meanwhile are skipped instead.
-    Returns how many are now `to_fetch`."""
+    Returns how many are now `to_fetch` — or `prefiltered` at once, when the row already carries its page (v9.19)."""
     if repo.PLANT_PASS not in settings.company_channels_set:
         return 0
     with transaction(conn):

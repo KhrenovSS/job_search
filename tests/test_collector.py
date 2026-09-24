@@ -127,10 +127,12 @@ def test_collect_dedups_stops_early_and_syncs_negotiations(monkeypatch):
     assert rows["2001"]["accept_temporary"] == 0 and rows["2001"]["civil_law_contracts"] is None
     assert rows["3001"]["search_pass"] == "project"
     assert stats.new_vacancies == 8  # 1002,1003,1004 + 2001 + 3001,3002 + 4001 + 5000 (1001 and 77 came in as applied stubs)
-    # second run adds nothing
+    # second run adds nothing — and a first page with nothing new ends the task (v9.19): negotiations + regional
+    # page 0 + remote + project + gph = 5 loads, regional page 1 is not opened any more
     c2, _, _ = _make(monkeypatch)
     c2.conn = conn
-    assert c2.run().new_vacancies == 0
+    stats2 = c2.run()
+    assert stats2.new_vacancies == 0 and stats2.page_loads == 5
 
 
 def test_budget_is_respected(monkeypatch):

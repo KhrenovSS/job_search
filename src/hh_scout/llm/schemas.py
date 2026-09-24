@@ -37,6 +37,9 @@ class VacancyEvaluation(BaseModel):
     verdict: str
     pitch_hint: str = ""
     red_flags: list[str] = Field(default_factory=list)
+    # v9.19: an operations/КИПиА vacancy of a company that runs automation itself — below the threshold it is not
+    # a miss but a `plant` lead-in-waiting (same meaning as `TriageVerdict.plant`, one stage later)
+    plant: bool = False
 
     @field_validator("hh_id", mode="before")
     @classmethod

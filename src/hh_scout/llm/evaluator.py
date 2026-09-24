@@ -28,7 +28,7 @@ from hh_scout.db import utcnow
 from hh_scout.llm.bridge_client import BridgeClient, BridgeError, extract_json
 from hh_scout.llm.prompts import render
 from hh_scout.llm.schemas import CompanyEvaluation, CompanyEvaluationBatch, EvaluationBatch, VacancyEvaluation
-from hh_scout.pipeline import outcomes, repo
+from hh_scout.pipeline import outcomes, plant, repo
 from hh_scout.pipeline.ranker import company_total_score, total_score
 from hh_scout.pipeline.rows import letter_key, row_site
 
@@ -45,6 +45,7 @@ class EvalStats:
     evaluated: int = 0
     failed: int = 0
     bridge_calls: int = 0
+    pooled: int = 0   # vacancies below the threshold that became plant pool rows instead of write-offs (v9.19)
 
 
 REASON_RU = {"salary": "зарплата", "format": "формат работы", "stack": "не мой стек", "agency": "агентство"}
@@ -172,13 +173,32 @@ class Evaluator:
                     seen.add(ev.hh_id)
                     self._store(row, ev)
                     self.stats.evaluated += 1
+                    if self._pool_if_plant(row, ev):
+                        self.stats.pooled += 1
                 for hh_id in set(by_id) - seen:
                     repo.set_status(self.conn, hh_id, "evaluation_failed", "missing_in_ai_answer")
                     self.stats.failed += 1
         self.stats.bridge_calls = self.bridge.calls
-        log.info("Оценка: оценено %d, неудачно %d, вызовов моста %d, cost $%.3f",
-                 self.stats.evaluated, self.stats.failed, self.stats.bridge_calls, self.bridge.cost_usd)
+        log.info("Оценка: оценено %d, неудачно %d, в пул эксплуатантов %d, вызовов моста %d, cost $%.3f",
+                 self.stats.evaluated, self.stats.failed, self.stats.pooled, self.stats.bridge_calls, self.bridge.cost_usd)
         return self.stats
+
+    def _pool_if_plant(self, row: sqlite3.Row, ev: VacancyEvaluation | CompanyEvaluation) -> bool:
+        """A vacancy below the threshold that the evaluator flagged `plant` joins the plant pool (v9.19).
+
+        Only vacancy rows of hh.ru: company rows have their own path, profi orders have no company channel.
+        The page already read travels with the row, so `plant.admit` will not load it again."""
+        if isinstance(ev, CompanyEvaluation) or not ev.plant or letter_key(row) != "hh":
+            return False
+        total = total_score(self.s, ev.tech_score, ev.role_score, ev.lead_score)
+        if total >= self.s.score_threshold:
+            return False
+        fresh = repo.vacancy_by_id(self.conn, row["id"])
+        if plant.pool_evaluated(self.conn, self.s, fresh):
+            log.info("В пул эксплуатантов после оценки: %s «%s» — %s (%d баллов)", row["hh_id"],
+                     (row["title"] or "")[:50], row["employer"] or "—", total)
+            return True
+        return False
 
     def _store(self, row: sqlite3.Row, ev: VacancyEvaluation | CompanyEvaluation) -> None:
         if isinstance(ev, CompanyEvaluation):

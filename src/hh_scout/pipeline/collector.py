@@ -217,8 +217,10 @@ class Collector:
             task.done = True
         elif task.next_page >= self.s.max_pages_per_query:
             task.done = True
-        elif new_here == 0 and task.next_page > 1:
-            # sorted by publication time desc: a page with nothing new means the rest is known too
+        elif new_here == 0 and task.next_page >= 1:
+            # sorted by publication time desc: a page with nothing new means the rest is known too — including
+            # page 0 (v9.19): at night hh posts almost nothing, and the second page of every task cost two night
+            # sittings 34 search pages for 13 new cards while vacancy pages were the scarce resource
             task.done = True
 
     def _store_cards(self, cards: list[VacancyCard], source: str, search_pass: str) -> int:

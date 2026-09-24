@@ -120,9 +120,15 @@ def plant_row_exists(conn: sqlite3.Connection, employer_id: str | None, employer
     return conn.execute(sql, [PLANT_PASS] + same_employer_params(employer_id, employer)).fetchone() is not None
 
 
+def delete_evaluation(conn: sqlite3.Connection, vacancy_id: int) -> None:
+    conn.execute("DELETE FROM evaluations WHERE vacancy_id = ?", (vacancy_id,))
+
+
 def admit_plant_leads(conn: sqlite3.Connection, per_day: int) -> list[sqlite3.Row]:
     """Let up to `per_day` pooled plant companies queue for a vacancy page today (`skipped/plant_pool` → `to_fetch`,
-    triage priority 3), newest first. Returns the admitted rows so the caller can drop those already covered."""
+    triage priority 3), newest first. A row that already carries its page (`raw_json`, pooled by the evaluator, v9.19)
+    goes straight to `prefiltered` — the page is not loaded twice. Returns the admitted rows so the caller can drop
+    those already covered."""
     if per_day <= 0:
         return []
     already = int(conn.execute(
@@ -136,8 +142,9 @@ def admit_plant_leads(conn: sqlite3.Connection, per_day: int) -> list[sqlite3.Ro
         "ORDER BY first_seen_at DESC, id DESC LIMIT ?", (PLANT_PASS, PLANT_POOL, room)).fetchall()
     now = utcnow()
     for r in rows:
-        conn.execute("UPDATE vacancies SET status = 'to_fetch', skip_reason = NULL, triage_priority = 3, updated_at = ? "
-                     "WHERE id = ?", (now, r["id"]))
+        status = "prefiltered" if r["raw_json"] else "to_fetch"
+        conn.execute("UPDATE vacancies SET status = ?, skip_reason = NULL, triage_priority = 3, updated_at = ? "
+                     "WHERE id = ?", (status, now, r["id"]))
     return rows
 
 
