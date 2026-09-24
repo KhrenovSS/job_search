@@ -16,16 +16,18 @@ log = logging.getLogger(__name__)
 # The letter must never quote money — neither the owner's figure nor the vacancy's (decisions #22-24).
 # 1) a figure next to a currency word; 2) a five-or-six-digit figure (with or without a thousands space) next to
 # money context; 3) «ставка от 2500», «2500 в час»; 4) shorthand like 300k / 300к; 5) a percentage under 100.
-# A phone (+7 …, digits with dashes), a vacancy id, a year and «100 %» are not money and must not trip the rule.
+# A phone (+7 …, digits with dashes), a vacancy id, a year, «100 %» and a project size («SCADA на 2500 тегов»)
+# are not money and must not trip the rule.
 _CONTEXT = r"(?:вилк|ставк|бюджет|оклад|доход|зарплат|ориентир|сумм|стоимост|оплат|гонорар|тариф|смет)"
 _SPACE = "[   ]?"
-_FIGURE = r"(?<![\d+\-()])\d{2,3}" + _SPACE + r"\d{3}(?![\d\-])"          # 120 000 / 120000, not a phone or an id
+_NOT_A_SIZE = r"(?!\s*(?:тег|точ|сигнал|параметр|переменн))"                 # 2500 тегов / точек / сигналов
+_FIGURE = r"(?<![\d+\-()])\d{2,3}" + _SPACE + r"\d{3}(?![\d\-])" + _NOT_A_SIZE   # 120 000 / 120000, not a phone or an id
 MONEY_RE = re.compile(
     r"\d[\d   ]{2,}\s*(?:₽|руб|р\.|тыс|на руки)"
     r"|(?:₽|руб|тыс)\s*\d"
     r"|" + _CONTEXT + r"[^\n.]{0,40}?" + _FIGURE +
     r"|" + _FIGURE + r"[^\n.]{0,40}?" + _CONTEXT +
-    r"|" + _CONTEXT + r"[^\n.]{0,25}?(?<![\d+\-()])\d{4,6}(?![\d\-])"
+    r"|" + _CONTEXT + r"[^\n.]{0,25}?(?<![\d+\-()])\d{4,6}(?![\d\-])" + _NOT_A_SIZE +
     r"|(?<![\d+\-()])\d{3,6}\s*(?:в|за)\s*(?:час|день|смену|месяц|мес\b)"
     r"|(?<![\w+\-])\d{2,3}\s?[kк](?![\w-])"
     r"|(?<!\d)[1-9]\d?\s?%",
@@ -50,9 +52,11 @@ ROLE_ADDRESS_RE = re.compile(
     re.IGNORECASE)
 
 PHONE_RE = re.compile(r"\+?\d[\d\s()\-]{8,}\d")
+EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 
 # The stamp is the text of the rules themselves, so any edit above changes it without anyone remembering to bump it.
-CODE_RULES = "\n".join((MONEY_RE.pattern, "|".join(BANNED), ROLE_ADDRESS_RE.pattern, "signature:3-lines/ИП/phone"))
+# The signature rule lives in `signature_problem`, not in a regex, so its shape is stamped by hand (decision #58).
+CODE_RULES = "\n".join((MONEY_RE.pattern, "|".join(BANNED), ROLE_ADDRESS_RE.pattern, "signature:4-lines/ИП/phone/email"))
 
 
 def strip_role_address(text: str) -> str:
@@ -94,17 +98,20 @@ def cliche_problem(text: str) -> str:
 
 
 def signature_problem(text: str) -> str:
-    """The last three non-empty lines must be: name, «… работаю по договору (ИП)», phone (prompt §7).
+    """The last four non-empty lines must be: name, «… работаю по договору (ИП)», phone, e-mail (prompt §7).
 
     The one structural rule no regex could *repair* (decision #46) — but it can be *checked*, and a letter
-    without the format line is the one the reader cannot place months later.
+    without the format line is the one the reader cannot place months later. The e-mail line came with
+    decision #58: a customer often finds it easier to write or to send documents than to call.
     """
     lines = [ln.strip() for ln in text.strip().splitlines() if ln.strip()]
-    if len(lines) < 3:
-        return "подпись не найдена — в конце должны быть три строки: имя, формат работы, телефон"
-    name, fmt, phone = lines[-3], lines[-2], lines[-1]
+    if len(lines) < 4:
+        return "подпись не найдена — в конце должны быть четыре строки: имя, формат работы, телефон, e-mail"
+    name, fmt, phone, email = lines[-4], lines[-3], lines[-2], lines[-1]
+    if not EMAIL_RE.search(email) or len(email) > 60:
+        return "последняя строка подписи должна быть e-mail из резюме"
     if not PHONE_RE.search(phone) or len(phone) > 40:
-        return "последняя строка подписи должна быть телефоном из резюме"
+        return "предпоследняя строка подписи должна быть телефоном из резюме"
     if "ип" not in fmt.lower() or len(fmt) > 120:
         return "вторая строка подписи должна называть формат работы: «… работаю по договору (ИП)»"
     if len(name) > 60 or name.endswith((".", "!", "?")):

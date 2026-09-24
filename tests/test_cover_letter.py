@@ -11,7 +11,7 @@ from hh_scout.llm.cover_letter import CoverLetterWriter, letter_payload, rules_h
 from hh_scout.pipeline import repo
 
 
-SIGNATURE = "\n\nИван Иванов\nинженер-программист ПЛК и SCADA, работаю по договору (ИП)\n+7 900 123-45-67"
+SIGNATURE = "\n\nИван Иванов\nинженер-программист ПЛК и SCADA, работаю по договору (ИП)\n+7 900 123-45-67\nivan@example.ru"
 GOOD = "Здравствуйте.\n" + "Опыт CODESYS и MasterSCADA. " * 30 + SIGNATURE
 
 
@@ -206,8 +206,16 @@ def test_code_checks_catch_money_and_cliches():
     assert check_letter("Здравствуйте. Работаю по ИП." + SIGNATURE, row, None) == ""   # no dossier — no such demand
     # the signature is checked by code too (decision #46 said no regex could *repair* it; it can refuse it)
     assert "подпис" in check_letter("Здравствуйте. Работаю по ИП.\n\nИван Иванов\n+7 900 123-45-67", row, None)
-    # a phone, a vacancy id, a year and «100 %» are not money
+    # since decision #58 the e-mail is the fourth line — the old three-line signature is refused
+    three = "\n\nИван Иванов\nинженер-программист ПЛК и SCADA, работаю по договору (ИП)\n+7 900 123-45-67"
+    assert "e-mail" in check_letter("Здравствуйте. Работаю по ИП." + three, row, None)
+    assert "телефон" in check_letter("Здравствуйте. Работаю по ИП.\n\nИван Иванов\nработаю по ИП\nivan@example.ru\nivan@example.ru", row, None)
+    # a phone, an e-mail, a vacancy id, a year and «100 %» are not money
     assert check_letter("Сдал объект в 2024 году, 100 % удалённо, вакансия 137256632." + SIGNATURE, row, None) == ""
+    # neither is the size of a SCADA project, even next to a money word (decision #58: «2500 точек»)
+    assert check_letter("Ориентир — проект MasterSCADA на 2500 тегов с архивами." + SIGNATURE, row, None) == ""
+    assert check_letter("Экраны MasterSCADA примерно на 2 500 точек контроля." + SIGNATURE, row, None) == ""
+    assert "сумма" in check_letter("Ориентир 2500 за смену. " + ok, row, company)
 
 
 @respx.mock
