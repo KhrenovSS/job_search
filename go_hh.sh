@@ -7,6 +7,11 @@ cd "$(dirname "$0")"
 DB="data/hh_scout.db"
 SINCE="${1:-today}"
 q() { sqlite3 -column -header "$DB" "$1"; }
+# journalctl без подсказки «you are currently not seeing messages from other users» в каждом вызове.
+jr() { journalctl -q -u hh-scout --since "$SINCE" --no-pager 2>/dev/null; }
+# Порог — из .env хозяйства (решение №52: 50), а не зашит в скрипт: владелец может его поменять.
+THRESHOLD="$(grep -E '^SCORE_THRESHOLD=' .env 2>/dev/null | tail -1 | cut -d= -f2 | tr -dc '0-9')"
+THRESHOLD="${THRESHOLD:-50}"
 
 # Границы времени строятся через strftime с «T», как хранится в базе (`2026-09-22T01:42:55+00:00`): у datetime()
 # разделитель — пробел, а ' ' < 'T', и сравнение строк втягивало лишние часы (за сутки насчитывалось 283 страницы
@@ -20,9 +25,11 @@ CHANNEL="case v.search_pass
            when 'plant' then 'эксплуатант' when 'profi' then 'profi' when 'similar' then 'похожие'
            else 'вакансия hh' end"
 # Очередь — то же, что видит `repo.lead_queue`: выше порога или добрано дневным минимумом.
-IN_QUEUE="v.status='evaluated' and (e.total >= 50 or e.floor = 1)"
+IN_QUEUE="v.status='evaluated' and (e.total >= $THRESHOLD or e.floor = 1)"
 
 echo "=== Сейчас: $(date '+%d.%m %H:%M') ==="
+echo "код: $(git log -1 --format='%h %ad %s' --date=format:'%d.%m %H:%M' 2>/dev/null | cut -c1-110)"
+echo "порог: $THRESHOLD · незакоммичено: $(git status --porcelain 2>/dev/null | wc -l) файл(ов)"
 bash scripts/svc.sh status 2>/dev/null | grep -v '^● '
 q "select coalesce((select strftime('%d.%m %H:%M', substr(value,1,19)) from kv where key='next_crawl_at'),
                     'не назначен') 'следующий подход',
@@ -109,13 +116,26 @@ q "select (select count(*) from vacancies where site='owen' and status='new')   
 
 echo
 echo "=== Журнал подхода (стадии, письма, отправка) ==="
-# Построчные «Письмо для …» и «Редактор поправил» сюда не берутся: при шести подходах по 30 писем они вытесняли
-# из хвоста сами стадии, а длина каждого письма и так видна в таблице лидов. Неудачи писем остаются.
-journalctl -u hh-scout --since "$SINCE" --no-pager 2>/dev/null \
-  | grep -E "Прогон #|План сбора|Серия |Пауза |Отклики: синхрон|Префильтр|Триаж:|Описания:|Каталог ОВЕН|Эксплуатанты|допущено|Оценка:|Письма:|Бюджет времени|отклонено|переписываем|прежним правилам|отправлено сразу|Дневной минимум|Добрано|Дайджест #|Карточка .* отозвана|Сбор завершён|avito" \
+# Построчные «Письмо для … — правим и переписываем» и «Редактор поправил» сюда не берутся: при шести подходах
+# по 30 писем они вытесняли из хвоста сами стадии, а длина каждого письма и так видна в таблице лидов.
+# Неудачи писем («Письмо для … отклонено») остаются.
+jr | grep -E "Прогон #|План сбора|Серия |Пауза |Отклики: синхрон|Префильтр|Триаж:|Описания:|Каталог ОВЕН|Эксплуатанты|допущено|Оценка:|Письма:|Бюджет времени|отклонено|прежним правилам|отправлено сразу|Дневной минимум|Добрано|Дайджест #|Карточка .* отозвана|Сбор завершён|avito" \
   | cut -c1-200 | tail -60
 
 echo
 echo "=== Предупреждения и ошибки ==="
-journalctl -u hh-scout --since "$SINCE" --no-pager -p warning 2>/dev/null | cut -c1-200 | tail -15 \
-  || echo "чисто"
+# Сервис пишет логи в stdout, и journald ставит всем строкам приоритет info — `journalctl -p warning` всегда пуст.
+# Поэтому уровень берём из текста строки. Сетевые повторы aiogram (Telegram не ответил, повтор через N с) — шум
+# самовосстановления: одной строкой-счётчиком, а не пятнадцатью строками хвоста.
+WARN="$(jr | grep -E " (WARNING|ERROR|CRITICAL) |Traceback")"
+if [ -z "$WARN" ]; then
+  echo "чисто"
+else
+  NET="$(grep -cE "aiogram.dispatcher: (Failed to fetch updates|Sleep for)" <<<"$WARN")"
+  [ "$NET" -gt 0 ] && echo "сетевые повторы Telegram (aiogram): $NET строк"
+  echo "по уровням и источникам:"
+  grep -vE "aiogram.dispatcher: (Failed to fetch updates|Sleep for)" <<<"$WARN" \
+    | grep -oE " (WARNING|ERROR|CRITICAL) +[a-z_.]+" | sort | uniq -c | sort -rn | head -10
+  echo "последние:"
+  grep -vE "aiogram.dispatcher: (Failed to fetch updates|Sleep for|Received SIGTERM)" <<<"$WARN" | cut -c1-200 | tail -15
+fi

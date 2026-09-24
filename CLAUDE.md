@@ -89,7 +89,8 @@ scripts/  install_service.sh (sudo) · install_geckodriver.sh · setup_firefox.s
           · svc.sh (status/logs/start/stop/restart/reinstall/bridge-restart; не рестартует во время сбора) · grant_agent_control.sh
           (владелец, один раз: sudoers-правило из sudoers-hh-scout.template → рестарты без пароля, в т.ч. агентом)
 go_hh.sh (быстрый разбор суток: сводка, прогоны и отправки за 24 ч, лиды по каналам, «ушло без письма», очередь и
-         пул эксплуатантов, стадии из журнала; только чтение, границы суток — местные, а не UTC)
+         пул эксплуатантов, стадии и предупреждения из журнала — уровень берётся из текста строки, а не из приоритета
+         journald; версия кода и порог из .env в шапке; только чтение, границы суток — местные, а не UTC)
 README.md · .gitignore · hh-scout.service.template + hh-scout-alert.service.template (юниты, рендерит install_service.sh) · pyproject.toml · requirements(-dev).txt
 · pytest.ini · .env.example · LICENSE (MIT)
 src/hh_scout/
