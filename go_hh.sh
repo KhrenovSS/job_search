@@ -55,6 +55,26 @@ q "select id, strftime('%d.%m %H:%M', started_at,'+3 hours') нач, time(finish
      from runs where started_at >= $H24 order by id;"
 
 echo
+echo "=== Страницы по подходам за сутки: поиск / описания / в пул после оценки (v9.19: ночью поиск ≤ ~10) ==="
+# Из журнала: «Прогон #N (…)» открывает подход, дальше «Сбор завершён: страниц X», «Описания: страниц Y»,
+# «Оценка: … в пул эксплуатантов Z». Только чтение журнала.
+journalctl -q -u hh-scout --since "24 hours ago" --no-pager 2>/dev/null \
+  | grep -E "Прогон #[0-9]+ \(|Сбор завершён: страниц|Описания: страниц|Оценка: оценено" \
+  | sed -E 's/^[^ ]+ +[0-9]+ ([0-9]{2}:[0-9]{2}):[0-9]{2} .*Прогон #([0-9]+) .*/RUN \2 \1/;
+            s/.*Сбор завершён: страниц ([0-9]+).*/SEARCH \1/;
+            s/.*Описания: страниц ([0-9]+).*/DET \1/;
+            s/.*Оценка: .*в пул эксплуатантов ([0-9]+).*/POOL \1/;
+            s/.*Оценка: .*/POOL —/' \
+  | awk '$1=="RUN"    { id=$2; when[id]=$3; order[++n]=id }
+         $1=="SEARCH" { search[id]=$2 }
+         $1=="DET"    { det[id]=$2 }
+         $1=="POOL"   { pooled[id]=$2 }
+         END { printf "%-7s %-6s %-6s %-9s %s\n", "подход", "время", "поиск", "описаний", "в пул после оценки";
+               for (i=1;i<=n;i++) { id=order[i];
+                 printf "#%-6s %-6s %-6s %-9s %s\n", id, when[id], (id in search ? search[id] : "—"),
+                        (id in det ? det[id] : "—"), (id in pooled ? pooled[id] : "—") } }'
+
+echo
 echo "=== Отправки за сутки (мгновенные и дайджест) ==="
 q "select id, strftime('%d.%m %H:%M', sent_at, '+3 hours') время, items_count лидов,
           coalesce(note,'дайджест 12:00') вид
@@ -109,10 +129,13 @@ echo "=== Очередь, каналы компаний и что ждёт от�
 q "select (select count(*) from vacancies where site='owen' and status='new')             'ОВЕН ждёт',
          (select count(*) from vacancies where site='owen' and status='sent')             'ОВЕН ушло',
          (select count(*) from vacancies where skip_reason='plant_pool')                  'эксплуатанты в пуле',
+         (select count(*) from vacancies where skip_reason='plant_pool' and raw_json is not null) 'из них со страницей',
          (select count(*) from vacancies where search_pass='plant' and status='to_fetch') 'эксплуатанты к открытию',
+         (select count(*) from vacancies where search_pass='plant' and status='prefiltered') 'эксплуатанты на оценке',
          (select count(*) from vacancies where search_pass='plant' and status='sent')     'эксплуатанты ушло',
          (select count(*) from vacancies where lead_kind='company' and site='hh' and status='to_fetch') 'компаний к открытию',
-         (select count(*) from vacancies where lead_kind='vacancy' and status='to_fetch')               'вакансий к открытию';"
+         (select count(*) from vacancies where lead_kind='vacancy' and status='to_fetch')               'вакансий к открытию',
+         (select count(*) from vacancies where skip_reason='low_priority_expired' and updated_at >= $H24) 'списано неоткрытыми за сутки';"
 
 echo
 echo "=== Журнал подхода (стадии, письма, отправка) ==="
