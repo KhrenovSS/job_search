@@ -6,7 +6,7 @@
 | Firefox ESR владельца с `--marionette` | вручную/из меню (`scripts/setup_firefox.sh` правит копию `.desktop`) | — |
 | Мост Claude `hh-scout-bridge` | systemd, `:8766`, слушает 0.0.0.0 (защита — токен) | `journalctl -u hh-scout-bridge` |
 | Бот + планировщик `hh-scout` | systemd (`scripts/install_service.sh` рендерит `hh-scout.service.template`, sudo) | `journalctl -u hh-scout -f` |
-| Управление сервисом | `bash scripts/svc.sh status\|logs [N]\|start\|stop\|restart\|reinstall\|bridge-restart` — без пароля после `grant_agent_control.sh` (ниже) | — |
+| Управление сервисом | `bash scripts/svc.sh status\|logs [N]\|incidents [дата]\|start\|stop\|restart\|reinstall\|bridge-restart` — без пароля после `grant_agent_control.sh` (ниже) | — |
 | Ручные CLI-шаги | из venv | stdout; при `setsid nohup … > data/logs/x.log` — файл |
 
 Логи пишутся в stdout (`logging_setup.py`); под systemd их собирает journald. Каталог `data/` (БД, логи) в .gitignore.
@@ -15,9 +15,11 @@
 | Команда | Что делает | Браузер | Мост |
 |---|---|---|---|
 | `hh_scout.pipeline.run [--trigger manual] [--budget N] [--gap-scale X]` | **весь прогон**: collect → prefilter → triage → details → evaluate → letters | да | да |
-| `hh_scout.pipeline.collector [--budget N] [--gap-scale X] [--no-gaps] [--stale-hours H]` | сбор карточек (3 прохода × запросы) + синк откликов | да | — |
+| `hh_scout.pipeline.collector [--budget N] [--gap-scale X] [--no-gaps] [--stale-hours H] [--pass P] [--period D]` | сбор карточек (проходы `SEARCH_PASSES` × запросы; по умолчанию один проход `regional` по всей России, v9.15) + синк откликов | да | — |
 | `hh_scout.pipeline.prefilter [--dry-run] [--show-skipped]` | правила: `new → triage/skipped` | — | — |
 | `scripts/profi_snapshot.py` | сохранить HTML уже открытых вкладок profi.ru из Firefox в `data/profi_snapshot_*.html` (ничего не загружает; для разбора разметки) | да (только чтение вкладок) | — |
+| `scripts/avito_snapshot.py [--channel jobs\|services\|equipment]… [--out DIR]` | этап 0 источника Avito (v9.14): загрузить по одной странице поиска на канал в своём окне Firefox и сохранить `data/avito_snapshot_*.html` для написания парсера. Загрузки считаются в лимите, при идущем сборе не стартует | да | — |
+| `scripts/sync_negotiations.py [--pages N] [--budget N]` | разовый добор списка откликов (`NEGOTIATIONS_PAGES` страниц): `applied`, `negotiation_state`, `negotiation_events`; считается в лимите, при идущем сборе не стартует | да | — |
 | `hh_scout.llm.triage [--limit N] [--dry-run]` | ИИ по карточкам: `triage → to_fetch/skipped` | — | да |
 | `hh_scout.pipeline.details [--budget N] [--gap-scale X] [--no-gaps] [--stale-hours H]` | страницы вакансий: `to_fetch → prefiltered` | да | — |
 | `hh_scout.llm.company_research (--employer-id ID \| --hh-id ID) [--force] [--preview]` | досье на компанию: CLI моста с веб-инструментами читает страницу работодателя на hh.ru и сайт компании → таблица `employers` (v9.0). Кэш `COMPANY_RESEARCH_TTL_DAYS` (180 дн.), `--force` игнорирует его. **Браузер не нужен и дневной лимит загрузок не тратится** — страницы читает CLI | — | да |
@@ -37,7 +39,7 @@
 
 ## Что нельзя запускать одновременно
 Marionette принимает **одну** сессию. Взаимно исключают друг друга: сервис `hh-scout` в момент сбора, `pipeline.run`,
-`collector`, `details`, `hh_pages`, `check_browser.py`, `profi_snapshot.py`, `sync_negotiations.py`.
+`collector`, `details`, `hh_pages`, `check_browser.py`, `profi_snapshot.py`, `avito_snapshot.py`, `sync_negotiations.py`.
 Внутри сервиса защита — `asyncio.Lock`; между процессами — проверка `svc.sh crawl_running()`: она смотрит и
 `runs.status='running'` (плановый подход идёт **внутри** процесса сервиса, снаружи его не видно), и запущенные
 браузерные CLI по `$BROWSER_CMD_RE`. Перед ручным браузерным шагом: `/status` в боте или
@@ -101,7 +103,7 @@ kv `daily_cap:<дата>`) — **за календарный день (Europe/Mo
 | 🚫 hh.ru не отдал данные | капча / просит войти (`CrawlReport.blocked`; подход остановлен на первой же такой странице, описания не открывались) | открыть hh.ru в этом Firefox руками, пройти проверку; следующий подход упрётся в неё снова после одной страницы, пока не пройдена; повторяется — снизить лимит, удлинить паузы |
 | 👤 hh.ru видит нас не как соискателя | вылетел логин | войти на hh.ru в Firefox |
 | 🧩 Поиск без карточек / страницы без данных | hh.ru изменил структуру `HH-Lux-InitialState` | обновить парсеры `browser/hh_pages.py` (фикстуры в tests/) |
-| ⚠️ Итог дня: подходов k из n | после 22:30 подходов было меньше, чем окон (полный день не сообщается) | `/status`, журнал; причины пропусков — тревоги выше |
+| ⚠️ Итог дня: подходов k из n | через 30 мин после конца последнего окна `CRAWL_WINDOWS` (у владельца — после 23:30) подходов было меньше, чем окон (полный день не сообщается) | `/status`, журнал; причины пропусков — тревоги выше |
 | 🚨 hh-scout: сервис упал и не смог перезапуститься | 5 падений за 10 мин (systemd OnFailure) | `journalctl -u hh-scout -n 50`, починить, `bash scripts/svc.sh restart` |
 
 Каждая тревога приходит не чаще раза в день. Юнит тревоги устанавливает `scripts/install_service.sh` (повторный запуск
@@ -137,7 +139,7 @@ root без пароля для этого пользователя (юнит з
 | Лид без письма | письмо дважды не прошло проверки кодом: длина 400–3600, суммы (в т.ч. без валюты рядом с «ставка/вилка/бюджет», `300k`, проценты), штампы, четырёхстрочная подпись (имя, формат, телефон, e-mail), названо ли производство (`llm/letter_checks.py`); ответ редактора проверяется так же | `/letter <hh_id>` или `cover_letter --hh-id X --force`; причина — в журнале «Письмо для … отклонено» |
 | После правки промпта/резюме/правил кода письма очереди переписываются и съедают бюджет времени | `rules_hash` включает и правила кода (`letter_checks.CODE_RULES`), устаревшие письма идут после новых | штатно; на большой очереди переписывание займёт один-два подхода |
 | Нужно вернуть карточки, отсеянные отменённым правилом | правило отменено, карточки остались `skipped` | `.venv/bin/python -m hh_scout.pipeline.prefilter --requeue-reason fly_in_fly_out --days 14` (только свежие; браузер не нужен) |
-| «⚠️ Сторож расписания упал: database is locked» / `database is locked` в журнале | два соединения одного процесса (бот и поток прогона) столкнулись на записи дольше `busy_timeout` 5 с; до v8.1 префильтр коммитил каждую из сотен карточек отдельно (~90 мс fsync на HDD) и морил голодом соединение бота | с v8.1 пакетные записи идут одной транзакцией (`db.transaction`), а отметка сторожа при коллизии — только warning в журнале. Если повторяется — `bash scripts/svc.sh incidents`, искать долгую запись рядом по времени |
+| «⚠️ Сторож расписания упал: database is locked» / `database is locked` в журнале | два соединения одного процесса (бот и поток прогона) столкнулись на записи дольше `busy_timeout` (30 с с 21.09, раньше 5 с); до v8.1 префильтр коммитил каждую из сотен карточек отдельно (~90 мс fsync на HDD) и морил голодом соединение бота | с v8.1 пакетные записи идут одной транзакцией (`db.transaction`), а отметка сторожа при коллизии — только warning в журнале. Если повторяется — `bash scripts/svc.sh incidents`, искать долгую запись рядом по времени |
 | Окно бота осталось в Firefox | процесс убит посреди серии | закроется следующим прогоном по хендлу из kv `bot_window_handle` (страница про окно не знает; `check_browser.py` чужие окна не трогает) |
 | `profi.ru: лента недоступна (WebDriverException)` в отчёте, hh.ru работает | сайт не резолвится или недоступен. Проверить: `getent hosts profi.ru` (пусто = DNS) и `dig +short @1.1.1.1 profi.ru` (отвечает = виноват DNS провайдера/роутера) | прогон из-за этого **не падает** (v8.6) — hh.ru идёт как обычно. Починить DNS на хосте (нужен root): `sudo nmcli con mod "Wired connection 1" ipv4.ignore-auto-dns yes ipv4.dns "1.1.1.1 8.8.8.8"`, затем `sudo nmcli con up "Wired connection 1"`; проверка — `getent hosts profi.ru`. Не нужен profi.ru — `PROFI_ENABLED=false` в `.env` |
 | Дайджест пуст несколько дней подряд, при этом «за день» заметно меньше лимита | периметр поиска вычерпан: сбор обрывает задачи по «страница без новых → дальше всё известное». Проверить: `select date(first_seen_at), count(*) from vacancies group by 1 order by 1 desc limit 7;` — приток упал; в журнале «карточек 393, новых 26» | расширять периметр, а не смягчать порог: запросы в `SEARCH_QUERIES`, `SEARCH_ALL_RUSSIA`, проходы. Сначала убедиться, что отсев верен: `.venv/bin/python -m hh_scout.pipeline.prefilter --dry-run --show-skipped` и `select skip_reason, count(*) …` |
@@ -178,10 +180,11 @@ PRAGMA wal_checkpoint(TRUNCATE);
 |---|---|
 | Что считается лидом, веса важности, стиль вердикта | `prompts/vacancy_evaluation.md`, `prompts/candidate_profile.md` (владелец) |
 | Что открывать по карточке | `prompts/card_triage.md` |
-| Стиль/длину писем, предложение по ИП | `prompts/cover_letter.md`; факты — `prompts/resume.md` (владелец; файл в .gitignore, образец `prompts/resume.example.md`) |
+| Стиль/длину писем, предложение по ИП, таблица «отрасль → проект из резюме» | `prompts/cover_letter.md` (вакансии), `prompts/company_offer.md` (компании), чеклист редактора `prompts/letter_review.md`; проверки кодом — `llm/letter_checks.py`; факты — `prompts/resume.md` (владелец; файл в .gitignore, образец `prompts/resume.example.md`, раздел «Ключевые проекты» — аналогичный опыт для писем). Всё это входит в `rules_hash`: после правки письма очереди переписываются |
 | Поисковые запросы, регионы, стоп-слова, обязательные слова | `config.py`: `SEARCH_QUERIES`, `REGION_NAMES`, `TITLE_STOP_WORDS`, `TITLE_KEEP_WORDS`, `TITLE_REQUIRED_ANY` |
 | Каналы лидов-компаний, порция каталога и пула в день, веса балла компании | `.env`: `COMPANY_CHANNELS` (panel,design,owen_si,plant; пусто — выключить все), `COMPANY_LEADS_PER_DAY` (25), `PLANT_LEADS_PER_DAY` (40), `WEIGHT_COMPANY_FIT`/`WEIGHT_COMPANY_LEAD` (0.6/0.4); что предлагать — `prompts/company_offer.md`, кого считать компанией-партнёром — `prompts/company_triage.md`, `prompts/company_evaluation.md`, кого считать эксплуатантом — п.9 `prompts/card_triage.md` |
 | Проходы поиска, окна подходов, тихие часы | `.env`: `SEARCH_PASSES` (regional; remote,project,gph — подмножества при поиске по всей России), `CRAWL_WINDOWS`, `QUIET_HOURS` (23:00-07:00, пусто — всегда со звуком) |
+| Очередь лидов, бюджет времени на письма, страницы вакансий по каналам, закрытие компании | `.env`: `QUEUE_TTL_DAYS` (30), `QUEUE_WAIT_BONUS_MAX` (7), `DIGEST_TAIL_ITEMS` (8), `LETTERS_BUDGET_MIN` (60 мин на проход), `DETAILS_BUDGET_SHARE` (0.55), `DETAILS_CHANNEL_SHARES` (vacancy:0.45,panel:0.20,design:0.10,plant:0.25), `EMPLOYER_REPEAT_DAYS` (90), `LOW_PRIORITY_TTL_DAYS` (3) |
 | Дневной минимум писем и его границы | `.env`: `DAILY_LETTERS_FLOOR` (5, 0 — выключить), `FLOOR_MIN_TOTAL` (40), `FLOOR_MIN_ROLE` (40), `FLOOR_LOOKBACK_DAYS` (3). После снижения порога вернуть недавние списанные: `python -m hh_scout.llm.evaluator --readmit --min-total 50 --days 3` (без переоценки и без браузера) |
 | Порог (50 с 20.09), веса total, размер дайджеста, лимит загрузок, паузы (в т.ч. `LONG_READ_*`), окно сбора, время дайджеста | `.env` (см. `.env.example`) — все поля `Settings` переопределяемы; паузы меньше 3 с и доля резерва вне 0…1 отвергаются при старте. Таймауты загрузки страницы (`PAGE_LOAD_TIMEOUT_S` 15, `MARKUP_WAIT_S` 20) — константы `browser/session.py` |
 | Модель Claude | `bridge/.env.bridge` `BRIDGE_MODEL` (по умолчанию для моста) или `.env` `BRIDGE_MODEL` (переопределяет на каждый запрос) |

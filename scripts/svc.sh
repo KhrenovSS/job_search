@@ -25,7 +25,7 @@ done
 # `from hh_scout.pipeline import repo` was enough to refuse a restart, 19.09), and it missed
 # scripts/sync_negotiations.py, whose command line does not contain that substring at all.
 # Browser-free CLIs (prefilter, audit_title_filter, tg_whoami, the llm/* tools) must NOT match.
-BROWSER_CMD_RE='python[^ ]*[[:space:]].*(-m[[:space:]]+hh_scout\.(pipeline\.(run|collector|details)|browser\.)|scripts/(check_browser|profi_snapshot|sync_negotiations)\.py)'
+BROWSER_CMD_RE='python[^ ]*[[:space:]].*(-m[[:space:]]+hh_scout\.(pipeline\.(run|collector|details)|browser\.)|scripts/(check_browser|profi_snapshot|avito_snapshot|sync_negotiations)\.py)'
 
 _own_pids() {
   # this shell and everything that spawned it: the check must never see itself as a crawl
