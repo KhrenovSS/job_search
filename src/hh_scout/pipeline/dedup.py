@@ -118,8 +118,11 @@ def revive_orphans(conn: sqlite3.Connection, settings: Settings) -> int:
 
 
 def same_company(a: sqlite3.Row, b: sqlite3.Row) -> bool:
-    if _lead_kind(a) == "vacancy" and _lead_kind(b) != "vacancy":
-        return False   # a vacancy lead and a company offer to the same employer are two channels, not twins (v9.15)
+    if (_lead_kind(a) == "vacancy") != (_lead_kind(b) == "vacancy"):
+        # a vacancy lead and a company offer to the same employer are two channels, not twins (v9.15) — in both
+        # directions: until 24.09 only `a`=vacancy was checked, so a company row with the higher total closed the
+        # programmer vacancy as its duplicate in `dedupe_evaluated`, against decision #55 (`repo._kind_sql`)
+        return False
     if a["employer_id"] and b["employer_id"]:
         return a["employer_id"] == b["employer_id"]
     return bool(a["employer"]) and (a["employer"] or "").casefold() == (b["employer"] or "").casefold()

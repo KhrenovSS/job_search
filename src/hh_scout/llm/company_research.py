@@ -1,8 +1,10 @@
 """What the open web says about an employer — one dossier per company, reused by every letter.
 
-The only place the bridge is allowed to use web tools (`allow_web`): the CLI opens the employer's page on
-hh.ru and, if it finds one, the company's own site. This runs **outside the owner's browser**, so it costs
-no page loads from the daily cap and leaves no trace on his hh session — only bridge money (~$0.05 a company).
+The only place the bridge is allowed to use web tools (`allow_web`): the CLI reads the employer's page on hh.ru,
+the company's own site if it answers, open sources and the company's other vacancies (v9.4; up to
+`COMPANY_RESEARCH_MAX_TURNS` turns, 6 network calls by the prompt); ОВЕН catalogue rows are researched too, from
+owen.ru. This runs **outside the owner's browser**, so it costs no page loads from the daily cap and leaves no trace
+on his hh session — only bridge money (opus, ~$0.2–0.3 a company).
 
 Cached in `employers` by hh.ru `company.id`, the same key as "one lead per company", so a company is researched
 once and every vacancy of it gets the same dossier. A failure is never fatal: the letter is simply written

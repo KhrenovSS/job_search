@@ -138,6 +138,13 @@ def test_dedupe_evaluated_keeps_a_vacancy_lead_and_a_company_offer_of_one_employ
     dedup.dedupe_evaluated(conn, S)
     assert _row(conn, "V")["status"] == "evaluated"
     assert _row(conn, "P")["status"] == "evaluated"                  # two channels, not twins
+    # the other way round: the company row scores higher and is seen first — the vacancy must survive too
+    conn2 = _conn()
+    _card(conn2, "V", status="evaluated", skip_reason=None, note=None, total=70)
+    _card(conn2, "P", status="evaluated", skip_reason=None, note=None, lead_kind="company", search_pass="plant", total=80)
+    dedup.dedupe_evaluated(conn2, S)
+    assert _row(conn2, "V")["status"] == "evaluated" and _row(conn2, "P")["status"] == "evaluated"
+    assert dedup.same_company(_row(conn2, "P"), _row(conn2, "V")) is False
 
 
 # --- quiet hours ------------------------------------------------------------------------------
