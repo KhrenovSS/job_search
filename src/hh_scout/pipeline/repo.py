@@ -478,7 +478,7 @@ def skip_as_responded(conn: sqlite3.Connection, vacancy_id: int, of_hh_id: str) 
 
 def save_cover_letter(conn: sqlite3.Connection, vacancy_id: int, text: str, model_note: str | None = None,
                       rules_hash: str | None = None, *, owner_hint: str | None = None, with_dossier: bool = False) -> None:
-    """Store the letter. `rules_hash` says which version of the rules wrote it (decision #46); `owner_hint` and
+    """Store the letter. `rules_hash` says which version of the rules wrote it (decision #50); `owner_hint` and
     `with_dossier` say what it was written with, so a rewrite keeps the hint and a new dossier makes it stale.
 
     `created_at` is the time of the *latest* write on purpose: it is what the daily letter quota counts.

@@ -86,7 +86,7 @@ def _evaluate_pending(settings: Settings) -> tuple[int, int]:
 
     Runs in a worker thread with its own connection right before the digest, so a crawl that is still
     fetching descriptions does not delay today's digest — what is ready gets sent, the rest waits for tomorrow.
-    It is the only letter-writing pass the digest makes: stale letters are rewritten here too (decision #46).
+    It is the only letter-writing pass the digest makes: stale letters are rewritten here too (decision #50).
     """
     conn = open_db(settings.db_path)
     try:
@@ -217,7 +217,7 @@ async def send_instant_leads(bot: Bot, conn: sqlite3.Connection, settings: Setti
     written here and now. hh leads come off the queue in priority order and their letters were already written
     by the run that found them (`run.py` step 6); a lead whose letter did not make it waits for the next sitting
     or for the noon digest rather than holding up the chat for minutes of bridge calls. A letter written before
-    the rules changed is held back the same way: the next writing pass rewrites it (decision #46).
+    the rules changed is held back the same way: the next writing pass rewrites it (decision #50).
     """
     left = daily_quota_left(settings, repo.leads_sent_today(conn))
     if left == 0:

@@ -3,7 +3,7 @@
 Used on the way in (the bridge answer, and again the editor's answer) and on the way out (`ranker.format_letter`
 sends a letter written days ago from the database verbatim). `CODE_RULES` is folded into the letter's rules
 stamp (`cover_letter.rules_hash`), so tightening a regex here makes stored letters stale the same way a prompt
-edit does — decision #46 was born from a code rule that stored letters violated.
+edit does — decision #50 was born from a code rule that stored letters violated.
 """
 
 from __future__ import annotations
@@ -100,7 +100,7 @@ def cliche_problem(text: str) -> str:
 def signature_problem(text: str) -> str:
     """The last four non-empty lines must be: name, «… работаю по договору (ИП)», phone, e-mail (prompt §7).
 
-    The one structural rule no regex could *repair* (decision #46) — but it can be *checked*, and a letter
+    The one structural rule no regex could *repair* (decision #50) — but it can be *checked*, and a letter
     without the format line is the one the reader cannot place months later. The e-mail line came with
     decision #58: a customer often finds it easier to write or to send documents than to call.
     """

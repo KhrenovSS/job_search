@@ -182,7 +182,7 @@ def format_letter(employer: str | None, text: str, key: str = "hh") -> str:
     """Cover letter (or a profi.ru bid) as a separate Telegram message; <pre> gives one-tap copy in Telegram clients.
 
     The last door before Telegram: a letter written days ago is sent from the database verbatim, so the
-    role-address label is cut here too (decision #46).
+    role-address label is cut here too (decision #50).
     """
     text = strip_role_address(text)
     if key == "profi":
