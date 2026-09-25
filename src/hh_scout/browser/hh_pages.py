@@ -319,10 +319,36 @@ def _accept_temporary(state: dict[str, Any], vv: dict[str, Any], hh_id: str) -> 
     return bool(normalize_civil_law_contracts(vv.get("civilLawContracts")))
 
 
-def parse_vacancy(state: dict[str, Any]) -> VacancyDetail:
+def _vacancy_block(state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The vacancy object and its side fields, in either layout hh.ru serves (2026-09-25).
+
+    Classic: everything under `vacancyView` (`vacancyId`, `name`, `description`, `publicationDate`, `userLabels` …).
+    Magritte (experiment `web_applicant_vacancy_magritte`, rolled out gradually on 25.09): the same object sits
+    under `vacancyView.vacancyFull.vacancy` with `publicationTimeIso` instead of `publicationDate`, and
+    `userLabels` moves to `vacancyView.vacancyFull.extraVacancyFields`. Returns `(vacancy, extra)`.
+    """
     vv = state.get("vacancyView")
-    if not isinstance(vv, dict) or not vv.get("vacancyId"):
+    if not isinstance(vv, dict):
         raise PageFormatError("нет vacancyView — это не страница вакансии")
+    if vv.get("vacancyId"):
+        return vv, vv
+    full = vv.get("vacancyFull")
+    if isinstance(full, dict) and isinstance(full.get("vacancy"), dict) and full["vacancy"].get("vacancyId"):
+        extra = full.get("extraVacancyFields") if isinstance(full.get("extraVacancyFields"), dict) else {}
+        return full["vacancy"], extra
+    raise PageFormatError(f"нет vacancyView.vacancyId и vacancyFull.vacancy — это не страница вакансии "
+                          f"(ключи vacancyView: {', '.join(sorted(vv)[:12])})")
+
+
+def _already_applied(state: dict[str, Any], hh_id: str) -> bool:
+    """hh's own answer in the response-status block (both layouts); the label scan stays as the fallback."""
+    statuses = state.get("applicantVacancyResponseStatuses")
+    block = (statuses or {}).get(hh_id) if isinstance(statuses, dict) else None
+    return bool(isinstance(block, dict) and block.get("alreadyApplied"))
+
+
+def parse_vacancy(state: dict[str, Any]) -> VacancyDetail:
+    vv, extra = _vacancy_block(state)
     status = vv.get("status") if isinstance(vv.get("status"), dict) else {}
     skills_raw = vv.get("keySkills")
     if isinstance(skills_raw, dict):
@@ -337,12 +363,12 @@ def parse_vacancy(state: dict[str, Any]) -> VacancyDetail:
         work_format=normalize_work_format(vv.get("workFormats")),
         employment=normalize_employment(vv.get("employmentForm")),
         compensation=vv.get("compensation") if isinstance(vv.get("compensation"), dict) else None,
-        published_at=vv.get("publicationDate"),
+        published_at=vv.get("publicationDate") or vv.get("publicationTimeIso"),
         description_html=desc_html,
         description_text=strip_html(desc_html),
         key_skills=skills,
         archived=bool(status.get("archived")) or not status.get("active", True),
-        applied=_labels_mean_applied(vv.get("userLabels") or []),
+        applied=_already_applied(state, str(vv["vacancyId"])) or _labels_mean_applied(extra.get("userLabels") or []),
         closed_for_applicants=bool(vv.get("closedForApplicants")),
         raw=vv,
         employer_id=_company_id(vv.get("company")),

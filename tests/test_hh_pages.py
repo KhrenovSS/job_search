@@ -95,6 +95,29 @@ def test_vacancy_page(vacancy_state):
         parse_vacancy({"foo": 1})
 
 
+def test_vacancy_page_magritte_layout():
+    """25.09.2026: hh.ru moved the vacancy object to `vacancyView.vacancyFull.vacancy` (experiment
+    `web_applicant_vacancy_magritte`); 30 of 30 pages of sitting #68 failed with «нет vacancyView»."""
+    import json
+    from pathlib import Path
+    state = json.loads((Path(__file__).parent / "fixtures" / "vacancy_page_magritte.json").read_text(encoding="utf-8"))
+    d = parse_vacancy(state)
+    assert d.hh_id == "136642844" and d.title == "Инженер АСУТП (Кармановская ГРЭС)"
+    assert d.employer == 'ООО "Башкирская генерирующая компания" (Теплогенерация)' and d.employer_id == "3959394"
+    assert d.area_name == "Нефтекамск"
+    assert d.work_format == "office" and d.employment == "full"
+    assert d.compensation["from"] == 55000 and d.published_at.startswith("2026-09-25")
+    assert d.archived is False and d.applied is False and d.closed_for_applicants is False
+    assert d.accept_temporary is False and d.civil_law_contracts == ()
+    assert "САР" in d.description_text and "<" not in d.description_text and len(d.description_text) > 500
+    # hh's own «already applied» flag is read in both layouts
+    state["applicantVacancyResponseStatuses"]["136642844"]["alreadyApplied"] = True
+    assert parse_vacancy(state).applied is True
+    # a vacancyView without either layout names the keys it saw
+    with pytest.raises(PageFormatError, match="vacancyFull"):
+        parse_vacancy({"vacancyView": {"area": {}, "vacancyFull": {"vacancy": {}}}})
+
+
 def test_normalizers():
     assert normalize_work_format([{"workFormatsElement": ["ON_SITE", "REMOTE", "HYBRID"]}]) == "remote"
     assert normalize_work_format(["HYBRID", "ON_SITE"]) == "hybrid"

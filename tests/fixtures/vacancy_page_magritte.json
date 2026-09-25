@@ -1,0 +1,347 @@
+{
+ "vacancyView": {
+  "vacancyFull": {
+   "vacancy": {
+    "vacancyId": 136642844,
+    "name": "Инженер АСУТП (Кармановская ГРЭС)",
+    "description": "<p> </p> <p><strong>Мы предлагаем:</strong></p> <ul> <li>График работы 5/2 с 09:00ч. до 17:45ч., выходные - суббота, воскресенье, праздничные дни;</li> <li>Доставку до работы;</li> <li>Годовую премию в размере 20% от совокупного годового дохода;</li> <li>ДМС со стоматологией;</li> <li>Компенсация различных услуг: процентов по ипотеке, коммунальных услуг, туристических и санаторных путевок по РФ, фитнес, обучение и др.</li> <li>Медосмотр за счет работодателя. Бесплатная выдача спецодежды, спецобуви и СИЗ в соответствии с условиями труда.</li> <li>Предоставляется бронирование;</li> <li>Место работы: с. Энергетик, Промзона, КГРЭС.</li> </ul> <p><strong>Обязанности:</strong></p> <ul> <li>Выполнение технического обслуживания и ремонта технических средств АСУ ТП: модулей ввода/вывода программно-технических комплексов, оборудования электрической части систем регулирования мощности энергоблоков, систем вентиляции ПТК;</li> <li> </li> </ul> <p><strong>Требования:</strong></p> <ul> <li>Высшее техническое образование;</li> <li> <p>Навыки разработки и корректировки алгоритмов систем автоматического регулирования (САР);разработки программ, проведения наладки и испытаний САР</p> </li> <li>Группа по электробезопасности не ниже IV.</li> </ul>",
+    "status": {
+     "archived": false,
+     "disabled": false,
+     "hiddenInArchive": false,
+     "premoderationStatus": "APPROVED",
+     "approved": true,
+     "moderatePriorityScore": 0
+    },
+    "company": {
+     "id": 3959394,
+     "name": "Группа «Интер РАО»",
+     "logos": [
+      {
+       "type": "ORIGINAL",
+       "url": "/employer-logo-original/1486478.png"
+      },
+      {
+       "type": "employerPage",
+       "url": "/employer-logo/12236278.png"
+      },
+      {
+       "type": "searchResultsPage",
+       "url": "/employer-logo/12236279.png"
+      },
+      {
+       "type": "small",
+       "url": "/employer-logo/12236279.png"
+      },
+      {
+       "type": "vacancyPage",
+       "url": "/employer-logo/12236280.png"
+      },
+      {
+       "type": "medium",
+       "url": "/employer-logo/12236280.png"
+      },
+      {
+       "type": "customVacancyLogo",
+       "url": "/ichameleon/511663.png"
+      }
+     ],
+     "department": {
+      "name": "ООО \"Башкирская генерирующая компания\" (Теплогенерация)",
+      "code": "3959394-3959394-bashcomp"
+     },
+     "showSimilarVacancies": true,
+     "trusted": true,
+     "category": "COMPANY",
+     "countryId": 1,
+     "employerWithSpecificCountryLaws": false,
+     "visibleName": "ООО \"Башкирская генерирующая компания\" (Теплогенерация)",
+     "structureName": "3959394",
+     "employerOrganizationFormId": 10,
+     "showOrganizationForm": false,
+     "mainEmployerId": 3959394,
+     "state": "APPROVED",
+     "badges": [
+      {
+       "type": "employer-hh-rating",
+       "description": "Финалист Рейтинга работодателей hh.ru",
+       "url": "https://rating.hh.ru/history/rating2025",
+       "position": "485",
+       "year": 2025
+      }
+     ],
+     "companySiteUrl": "https://interrao-oco.ru/",
+     "accreditedITEmployer": false,
+     "isIdentifiedByEsia": false,
+     "employerOnAdditionalCheck": false
+    },
+    "area": {
+     "id": 1360,
+     "regionId": 1347,
+     "countryIsoCode": "RU",
+     "name": "Нефтекамск",
+     "path": ".113.223.1347.1360."
+    },
+    "compensation": {
+     "from": 55000,
+     "to": 70000,
+     "currencyCode": "RUR",
+     "gross": false,
+     "perModeFrom": 55000,
+     "perModeTo": 70000,
+     "mode": "MONTH",
+     "frequency": "TWICE_PER_MONTH"
+    },
+    "showContact": true,
+    "closedForApplicants": false,
+    "publicationTimeIso": "2026-09-25T13:54:38.419+03:00",
+    "lastChangeTimeIso": "2026-09-25T13:54:38.48+03:00",
+    "validToTimeIso": "2026-10-25T13:54:38.41+03:00",
+    "inclusivenessTypes": [],
+    "workExperience": "between1And3",
+    "employmentForm": "FULL",
+    "workScheduleByDays": [
+     "FIVE_ON_TWO_OFF"
+    ],
+    "workingHours": [
+     "HOURS_8"
+    ],
+    "workFormats": [
+     "ON_SITE"
+    ],
+    "flyInFlyOutDurations": [],
+    "nightShifts": false,
+    "internship": false,
+    "vacancyPlatforms": [
+     "HH"
+    ],
+    "keySkills": [],
+    "languages": [],
+    "driverLicenseTypes": [],
+    "showSkillsSurvey": false,
+    "vacancyProperties": {
+     "id": "HH_STANDARD-HH_RESUME_GIFTS-HH_SEARCH_RESULTS_NORMAL_POSITION",
+     "properties": [
+      {
+       "id": 703562412,
+       "propertyType": "HH_STANDARD",
+       "defining": true,
+       "classifying": true,
+       "bundle": "HH",
+       "propertyWeight": 400,
+       "parameters": [
+        {
+         "key": "serviceId",
+         "value": "66584409"
+        },
+        {
+         "key": "packageName",
+         "value": "VP"
+        }
+       ],
+       "startTimeIso": "2026-09-25T13:54:38.41+03:00",
+       "endTimeIso": "2026-10-25T13:54:38.41+03:00"
+      },
+      {
+       "id": 703562411,
+       "propertyType": "HH_RESUME_GIFTS",
+       "bundle": "HH",
+       "propertyWeight": 400,
+       "parameters": [
+        {
+         "key": "serviceId",
+         "value": "66584409"
+        },
+        {
+         "key": "giftsCount",
+         "value": "15"
+        },
+        {
+         "key": "packageName",
+         "value": "VP"
+        }
+       ],
+       "startTimeIso": "2026-09-25T13:54:38.41+03:00",
+       "endTimeIso": "2026-10-25T13:54:38.41+03:00"
+      },
+      {
+       "id": 703562413,
+       "propertyType": "HH_SEARCH_RESULTS_NORMAL_POSITION",
+       "bundle": "HH",
+       "propertyWeight": 400,
+       "parameters": [
+        {
+         "key": "serviceId",
+         "value": "66584409"
+        },
+        {
+         "key": "packageName",
+         "value": "VP"
+        }
+       ],
+       "startTimeIso": "2026-09-25T13:54:38.41+03:00",
+       "endTimeIso": "2026-10-25T13:54:38.41+03:00"
+      }
+     ],
+     "calculatedStates": {
+      "HH": {
+       "free": false,
+       "standard": true,
+       "standardPlus": false,
+       "optimum": false,
+       "premium": false,
+       "anonymous": false,
+       "advertising": false,
+       "optionPremium": false,
+       "payForPerformance": false,
+       "virtualRecruiter": false,
+       "inPlatformCommunication": false,
+       "translationKeys": [
+        "employer.VacancyCreate.PublicationType.STANDARD"
+       ],
+       "filteredPropertyNames": [
+        "HH_SEARCH_RESULTS_NORMAL_POSITION",
+        "HH_RESUME_GIFTS",
+        "HH_STANDARD"
+       ],
+       "translation": "Стандарт"
+      }
+     }
+    },
+    "experimentalModes": [
+     "newContractFields",
+     "newEmploymentTerms",
+     "usingNewInclusivenessFields",
+     "newCompensationModes"
+    ],
+    "employment": "FULL",
+    "chatWritePossibility": "ENABLED_AFTER_INVITATION",
+    "acceptLaborContract": false,
+    "civilLawContracts": [],
+    "professionalRoleIds": [
+     177
+    ]
+   },
+   "extraVacancyFields": {
+    "aiAssistantInfo": {
+     "hasEverBeenEnabled": false,
+     "isCurrentlyEnabled": false
+    },
+    "allowChatWithManager": true,
+    "skillsSurveyProfession": null,
+    "branding": {
+     "type": "MAKEUP",
+     "constructor": null
+    },
+    "brandedTemplateType": "MAKEUP",
+    "userLabels": [],
+    "totalResponsesCount": 4,
+    "vacancyResponsesCount": 3,
+    "tags": [
+     {
+      "id": "vacancy-serp__vacancy-work-experience-between1And3",
+      "text": "Опыт 1-3 года",
+      "icon": "BriefcaseOutlinedSize16"
+     },
+     {
+      "id": "vacancy-serp__vacancy-compensation-frequency-TWICE_PER_MONTH",
+      "text": "Выплаты: Два раза в месяц"
+     }
+    ],
+    "labels": [
+     {
+      "id": "vacancy-label-be-first",
+      "text": "Откликнитесь среди первых"
+     }
+    ],
+    "extraLabels": [],
+    "companyLogosShowInSearch": true
+   },
+   "features": {
+    "features": [
+     "canApply",
+     "canComplain"
+    ]
+   },
+   "displayHost": "hh.ru"
+  },
+  "area": {
+   "areaNamePre": "Нефтекамске",
+   "areaCatalogTitle": "в Нефтекамске"
+  },
+  "asyncContactInfo": null,
+  "mapDisabled": false,
+  "showSignupForm": false,
+  "showResumeForm": false,
+  "systemInfo": null,
+  "vacancyOnMapLink": "/search/vacancy/map?vacancy_id=",
+  "autoRenewal": null,
+  "isAdv": false,
+  "otherCollectionsLinks": [
+   {
+    "path": "/vacancies/automation_engineer",
+    "title": "Automation engineer"
+   },
+   {
+    "path": "/vacancies/inzhener_po_avtomatizacii",
+    "title": "Инженер по автоматизации"
+   },
+   {
+    "path": "/vacancies/inzhener-po-zameram",
+    "title": "Инженер по замерам"
+   },
+   {
+    "path": "/vacancies/inzhener-po-avtomatizirovannym-sistemam-upravleniya",
+    "title": "Инженер по автоматизированным системам управления"
+   },
+   {
+    "path": "/vacancies/tehnik-kipia",
+    "title": "Техник КИПиА"
+   },
+   {
+    "path": "/vacancies/inzhener-po-avtomatike",
+    "title": "Инженер по автоматике"
+   },
+   {
+    "path": "/vacancies/inzhener_puskonaladochnykh_rabot",
+    "title": "Инженер пусконаладочных работ"
+   },
+   {
+    "path": "/vacancies/inzhener_po_naladke_i_ispytaniyam",
+    "title": "Инженер по наладке и испытаниям"
+   },
+   {
+    "path": "/vacancies/inzhener-pnr",
+    "title": "Инженер ПНР"
+   },
+   {
+    "path": "/vacancies/inzhener_kipia",
+    "title": "Инженер КИПиА"
+   }
+  ]
+ },
+ "applicantVacancyResponseStatuses": {
+  "136642844": {
+   "alreadyApplied": false,
+   "shortVacancy": {
+    "vacancyId": 136642844,
+    "name": "Инженер АСУТП (Кармановская ГРЭС)",
+    "acceptTemporary": false,
+    "civilLawContracts": [
+     {}
+    ]
+   }
+  }
+ },
+ "userType": "applicant",
+ "experiments": {
+  "checked": [
+   {
+    "name": "web_applicant_vacancy_magritte",
+    "group": "control",
+    "appName": "xhh",
+    "isBFF": true
+   }
+  ]
+ }
+}

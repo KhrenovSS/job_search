@@ -25,7 +25,16 @@
 `status {active, archived, disabled}`, `compensation`, `workFormats[]` (плоский список), `employmentForm`,
 `civilLawContracts[]` (плоский список), `acceptLaborContract`, `area {@id, name}`, `publicationDate`, `company`,
 `userLabels`, `address`, `workExperience`.
-**Внимание:** `acceptTemporary` в `vacancyView` **нет** — он лежит в
+**Вторая разметка «magritte» (с 25.09.2026, эксперимент `web_applicant_vacancy_magritte`, выкатывается поэтапно —
+в подходе 18:19 13 из 30 страниц, в 20:33 — все 30):** тот же объект вакансии лежит в
+`vacancyView.vacancyFull.vacancy` (`vacancyId`, `name`, `description`, `keySkills[]`, `status`, `compensation`,
+`workFormats[]`, `employmentForm`, `civilLawContracts[]`, `area`, `company`, `closedForApplicants`), дата —
+`publicationTimeIso` вместо `publicationDate`, `userLabels` — в `vacancyView.vacancyFull.extraVacancyFields`.
+`hh_pages._vacancy_block` распознаёт обе разметки (фикстуры `tests/fixtures/vacancy_page.html` и
+`vacancy_page_magritte.json`); «уже откликался» берётся из `applicantVacancyResponseStatuses.<id>.alreadyApplied`
+(есть в обеих), `userLabels` — запасной путь. Третья разметка даст `PageFormatError` с перечнем ключей `vacancyView`
+в warning — по ним видно, куда переехали данные.
+**Внимание:** `acceptTemporary` в объекте вакансии **нет** — он лежит в
 `applicantVacancyResponseStatuses.<id>.shortVacancy.acceptTemporary` (там же полная короткая карточка).
 `hh_pages._accept_temporary` читает оттуда, а при отсутствии блока выводит флаг из непустого `civilLawContracts`.
 
