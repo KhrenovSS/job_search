@@ -42,6 +42,12 @@ Window = tuple[time, time]
 BACKUP_HOUR, BACKUP_MINUTE = 3, 40   # v9.15: the 00-03 window may run until 03:30 (grace), the next opens at 04:00
 # The ОВЕН integrator catalogue changes slowly: once a week, Sunday night, is plenty (v9.13).
 OWEN_DAY, OWEN_HOUR, OWEN_MINUTE = "sun", 4, 0
+# How late a job may still run after its planned time (v9.20, decision #62): APScheduler's default is 1 s, and a
+# suspended computer delays every timer by the length of the sleep. The sitting's own grace is computed per window.
+DIGEST_GRACE_SEC = 3 * 3600      # a late digest is still the day's digest
+PRECHECK_GRACE_SEC = 10 * 60     # later than that the sitting itself is about to start
+BACKUP_GRACE_SEC = 6 * 3600
+OWEN_GRACE_SEC = 12 * 3600
 
 
 def _at(d: date, t: time) -> datetime:
@@ -134,7 +140,12 @@ class Scheduler:
 
     def start(self) -> None:
         dt = self.s.digest_time_parsed
-        self.aps.add_job(self.digest_job, CronTrigger(hour=dt.hour, minute=dt.minute, timezone=TZ), id="digest", replace_existing=True)
+        # Misfire grace (v9.20, decision #62): APScheduler drops a job that is more than 1 s late, and a suspended
+        # computer makes every timer late by the length of the sleep (25.09: a precheck was "missed by 0:09:34").
+        # A sitting, a digest or a backup is still worth running after a nap; `crawl_job` itself skips a sitting
+        # whose window has closed, so its grace can be generous.
+        self.aps.add_job(self.digest_job, CronTrigger(hour=dt.hour, minute=dt.minute, timezone=TZ), id="digest",
+                         replace_existing=True, misfire_grace_time=DIGEST_GRACE_SEC, coalesce=True)
         with self.conn:
             kv_set(self.conn, "crawl_attempts", None)  # v5 leftover
             # A scheduled run lives only inside this process: whatever is still 'running' was killed with it,
@@ -148,12 +159,12 @@ class Scheduler:
             log.warning("Дайджестов, прерванных вместе с сервисом (счётчик досчитан): %d", repaired)
         self._restore_crawl()
         self.aps.add_job(self.watchdog_job, IntervalTrigger(minutes=health.WATCHDOG_INTERVAL_MIN, timezone=TZ), id="watchdog",
-                         replace_existing=True)
+                         replace_existing=True, misfire_grace_time=health.WATCHDOG_INTERVAL_MIN * 60 - 60, coalesce=True)
         self.aps.add_job(self.backup_job, CronTrigger(hour=BACKUP_HOUR, minute=BACKUP_MINUTE, timezone=TZ), id="backup",
-                         replace_existing=True)
+                         replace_existing=True, misfire_grace_time=BACKUP_GRACE_SEC, coalesce=True)
         if "owen_si" in self.s.company_channels_set:
             self.aps.add_job(self.owen_job, CronTrigger(day_of_week=OWEN_DAY, hour=OWEN_HOUR, minute=OWEN_MINUTE, timezone=TZ),
-                             id="owen", replace_existing=True)
+                             id="owen", replace_existing=True, misfire_grace_time=OWEN_GRACE_SEC, coalesce=True)
         self.aps.start()
         nxt = self.next_crawl_at()
         log.info("Планировщик запущен: дайджест ежедневно в %s, окна сбора %s, следующий подход %s",
@@ -190,10 +201,16 @@ class Scheduler:
                 kv_set(self.conn, "crawl_window_date", when.date().isoformat())
 
     def _schedule_crawl(self, when: datetime) -> None:
-        self.aps.add_job(self.crawl_job, DateTrigger(run_date=when), id="crawl", replace_existing=True, kwargs={"trigger": "schedule"})
+        # late by up to the window's end plus grace: `crawl_job` checks the deadline itself and skips a closed window
+        idx = self.next_window_idx()
+        deadline = self.planned_deadline(self._planned_day(when), idx if idx is not None else self._window_idx_for(when))
+        grace = max(int((deadline - when).total_seconds()), 60)
+        self.aps.add_job(self.crawl_job, DateTrigger(run_date=when), id="crawl", replace_existing=True, kwargs={"trigger": "schedule"},
+                         misfire_grace_time=grace, coalesce=True)
         pre = when - timedelta(minutes=health.PRECHECK_LEAD_MIN)
         if pre > datetime.now(TZ):
-            self.aps.add_job(self.precheck_job, DateTrigger(run_date=pre), id="precheck", replace_existing=True, kwargs={"when": when})
+            self.aps.add_job(self.precheck_job, DateTrigger(run_date=pre), id="precheck", replace_existing=True, kwargs={"when": when},
+                             misfire_grace_time=PRECHECK_GRACE_SEC, coalesce=True)
         log.info("Подход запланирован на %s", when.strftime("%d.%m %H:%M"))
 
     def _done_idx_today(self, now: datetime) -> int | None:

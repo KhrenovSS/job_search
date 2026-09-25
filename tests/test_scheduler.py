@@ -77,6 +77,18 @@ def _scheduler():
     return Scheduler(settings, conn, _noop, _noop), conn
 
 
+def test_a_sitting_and_its_precheck_survive_a_computer_nap():
+    """v9.20, decision #62: APScheduler drops a job more than 1 s late; a suspend delays every timer by its length."""
+    from hh_scout.scheduler import PRECHECK_GRACE_SEC, DIGEST_GRACE_SEC
+    sch, conn = _scheduler()
+    # a day ahead of the real clock: the precheck is only scheduled when its moment is still in the future
+    when = sch.plan_next_crawl(now=(datetime.now(TZ) + timedelta(days=2)).replace(hour=6, minute=30, second=0, microsecond=0))
+    crawl = sch.aps.get_job("crawl")
+    assert crawl.misfire_grace_time >= (sch.planned_deadline(when.date(), 0) - when).total_seconds() - 1 >= 60
+    assert sch.aps.get_job("precheck").misfire_grace_time == PRECHECK_GRACE_SEC
+    assert DIGEST_GRACE_SEC >= 3600
+
+
 def test_restore_with_empty_kv_plans_today():
     sch, conn = _scheduler()
     sch._restore_crawl(now=_dt(6, 58))

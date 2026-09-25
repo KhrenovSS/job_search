@@ -40,6 +40,10 @@ class VacancyEvaluation(BaseModel):
     # v9.19: an operations/КИПиА vacancy of a company that runs automation itself — below the threshold it is not
     # a miss but a `plant` lead-in-waiting (same meaning as `TriageVerdict.plant`, one stage later)
     plant: bool = False
+    # v9.20 (decision #61): the only mandatory environment is one the owner does not sell himself (Siemens TIA Portal,
+    # Allen-Bradley Studio 5000, Omron, Mitsubishi, B&R …) — the company wants a specialist in it, not a contractor.
+    # The code turns this into `skipped/foreign_platform_only` whatever the scores say; a list of brands is not this.
+    foreign_platform_only: bool = False
 
     @field_validator("hh_id", mode="before")
     @classmethod

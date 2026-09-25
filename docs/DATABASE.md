@@ -38,7 +38,7 @@
 | `evaluated` | evaluator | оценена, строка в `evaluations`, кандидат в дайджест |
 | `sent` | `repo.add_digest_item`: дайджест 12:00, мгновенная отправка после подхода, `/letter` из очереди (или помечена при первом старте сервиса — `kv.preview_marked`); открыт/закрыт лид — по `lead_actions` |
 | `rejected` | digest | была `evaluated`, `total < score_threshold` на момент дайджеста (строки с `evaluations.floor = 1` не списываются); либо простояла в очереди дольше `QUEUE_TTL_DAYS` — тогда с `skip_reason = queue_expired`. Обратимо (v9.12): дневной минимум (`digest_builder.promote_floor`) и `evaluator --readmit` возвращают `rejected` без `skip_reason` в `evaluated` |
-| `skipped` | prefilter/collector/triage/details/dedup/digest · синхронизация откликов (`mark_applied` → `applied`, в т.ч. заглушки для незнакомых вакансий) · `plant.pool` (`plant_pool`) · письма (`no_email`) | отсеяна; всегда с `skip_reason` |
+| `skipped` | prefilter/collector/triage/details/dedup/digest · оценка (`foreign_platform_only`, v9.20) · синхронизация откликов (`mark_applied` → `applied`, в т.ч. заглушки для незнакомых вакансий) · `plant.pool` (`plant_pool`) · письма (`no_email`) | отсеяна; всегда с `skip_reason` |
 | `evaluation_failed` | evaluator (ИИ дважды вернул невалидный ответ / пропустил hh_id) или details (страница без `vacancyView`) | терминальная ошибка, автоматически не повторяется (вернуть вручную; `repo.reset_catalogue_rows` для строк ОВЕН вызывается только из тестов) |
 
 Лиды выше порога, к которым ещё не написано письмо (бюджет `LETTERS_BUDGET_MIN` кончился, мост молчал), остаются `evaluated` до следующей отправки.
@@ -58,7 +58,7 @@
 `employer_responded:<hh_id>` (v9.3: в компанию уже откликались — сам владелец на hh.ru (`applied=1`) или кнопкой «✅ Написал»
 (`lead_actions.responded`/`auto_responded`) — не позже `EMPLOYER_REPEAT_DAYS` назад; письмо уходит кадровику всей организации,
 второе на тот же стол не нужно. Причина **необратимая**, в отличие от `duplicate_employer:`: `revive_orphans` такие строки
-не воскрешает) · `no_email` (v9.16, решение №56: компания из каталога ОВЕН без e-mail ни в `raw_json.emails`, ни в `employers.brief.contact_email` — писать некуда; ставится стадией писем после разведки и `digest_builder.skip_unreachable` перед отправкой). `set_status` пишет ту причину, которую ему передали: у `evaluation_failed` это `invalid_ai_answer` / `missing_in_ai_answer` / `no_vacancy_view`, у `rejected` по сроку очереди — `queue_expired`.
+не воскрешает) · `no_email` (v9.16, решение №56: компания из каталога ОВЕН без e-mail ни в `raw_json.emails`, ни в `employers.brief.contact_email` — писать некуда; ставится стадией писем после разведки и `digest_builder.skip_unreachable` перед отправкой). `set_status` пишет ту причину, которую ему передали: у `evaluation_failed` это `invalid_ai_answer` / `missing_in_ai_answer` / `no_vacancy_view`, у `rejected` по сроку очереди — `queue_expired`. · `foreign_platform_only` (v9.20, решение №61: единственная обязательная среда вакансии — чужая (Siemens/TIA, Allen-Bradley, Omron, Mitsubishi, B&R …), ставится на шаге оценки `evaluator._lock_out` по флагу `foreign_platform_only` в ответе ИИ независимо от баллов; строка `evaluations` остаётся, в очередь, дневной минимум и `--requeue-rejected` не возвращается)
 
 ## Прочие поля `vacancies`
 - `work_format`: remote / hybrid / office / field / unknown (приоритет remote > hybrid > office > field).

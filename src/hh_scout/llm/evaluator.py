@@ -46,6 +46,7 @@ class EvalStats:
     failed: int = 0
     bridge_calls: int = 0
     pooled: int = 0   # vacancies below the threshold that became plant pool rows instead of write-offs (v9.19)
+    locked_out: int = 0   # vacancies whose only mandatory environment is not the owner's — never a lead (v9.20, #61)
 
 
 REASON_RU = {"salary": "зарплата", "format": "формат работы", "stack": "не мой стек", "agency": "агентство"}
@@ -173,15 +174,31 @@ class Evaluator:
                     seen.add(ev.hh_id)
                     self._store(row, ev)
                     self.stats.evaluated += 1
-                    if self._pool_if_plant(row, ev):
+                    if self._lock_out(row, ev):
+                        self.stats.locked_out += 1
+                    elif self._pool_if_plant(row, ev):
                         self.stats.pooled += 1
                 for hh_id in set(by_id) - seen:
                     repo.set_status(self.conn, hh_id, "evaluation_failed", "missing_in_ai_answer")
                     self.stats.failed += 1
         self.stats.bridge_calls = self.bridge.calls
-        log.info("Оценка: оценено %d, неудачно %d, в пул эксплуатантов %d, вызовов моста %d, cost $%.3f",
-                 self.stats.evaluated, self.stats.failed, self.stats.pooled, self.stats.bridge_calls, self.bridge.cost_usd)
+        log.info("Оценка: оценено %d, неудачно %d, чужая среда %d, в пул эксплуатантов %d, вызовов моста %d, cost $%.3f",
+                 self.stats.evaluated, self.stats.failed, self.stats.locked_out, self.stats.pooled, self.stats.bridge_calls,
+                 self.bridge.cost_usd)
         return self.stats
+
+    def _lock_out(self, row: sqlite3.Row, ev: VacancyEvaluation | CompanyEvaluation) -> bool:
+        """A vacancy whose only mandatory environment is not the owner's is never a lead (v9.20, decision #61).
+
+        The owner: a company that wants a Siemens (Allen-Bradley, Omron …) specialist gets no letter, however good the
+        role and the company look — so the scores stay in `evaluations` for the record, but the row leaves the queue as
+        `skipped/foreign_platform_only`. Neither the daily floor nor `--requeue-rejected` take `skipped` rows back."""
+        if isinstance(ev, CompanyEvaluation) or not ev.foreign_platform_only or letter_key(row) != "hh":
+            return False
+        repo.set_status(self.conn, row["hh_id"], "skipped", "foreign_platform_only")
+        log.info("Чужая среда, не лид: %s «%s» — %s (%s)", row["hh_id"], (row["title"] or "")[:50], row["employer"] or "—",
+                 "; ".join(ev.red_flags) or "единственная обязательная среда не из ядра")
+        return True
 
     def _pool_if_plant(self, row: sqlite3.Row, ev: VacancyEvaluation | CompanyEvaluation) -> bool:
         """A vacancy below the threshold that the evaluator flagged `plant` joins the plant pool (v9.19).

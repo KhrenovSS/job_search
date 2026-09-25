@@ -207,6 +207,48 @@ def test_the_evaluator_pools_a_flagged_plant_below_the_threshold_only(tmp_path):
     assert _row(conn, "2")["status"] == "evaluated"                                    # a real lead stays a lead
 
 
+def test_the_evaluator_locks_out_a_single_foreign_platform_whatever_the_scores(tmp_path):
+    """v9.20, decision #61: «only Siemens (Allen-Bradley, Omron …)» is never a lead — the owner does not sell that."""
+    import httpx
+    import respx
+    from hh_scout.llm.bridge_client import BridgeClient
+    from hh_scout.llm.evaluator import Evaluator
+    from hh_scout.llm.schemas import VacancyEvaluation
+
+    prompts = tmp_path / "prompts"
+    prompts.mkdir()
+    (prompts / "candidate_profile.md").write_text("ПРОФИЛЬ", encoding="utf-8")
+    (prompts / "vacancy_evaluation.md").write_text("h\n---\nEVAL {feedback_block}", encoding="utf-8")
+    s = Settings(_env_file=None, bridge_url="http://bridge.test", bridge_token="t", prompts_dir=prompts)
+    conn = _conn()
+    for hh_id, emp in (("1", "100"), ("2", "200"), ("3", "300")):
+        _with_page(conn, _card(conn, hh_id, status="prefiltered", skip_reason=None, note=None, employer=f"Завод {emp}",
+                               employer_id=emp)["hh_id"])
+
+    def scored(hh_id, tech, role, lead, **extra):
+        return {"hh_id": hh_id, "tech_score": tech, "role_score": role, "lead_score": lead, "ip_gph_possible": "maybe",
+                "is_agency": False, "company_kind": "manufacturer", "verdict": "v", "pitch_hint": "p",
+                "red_flags": ["весь стек на Siemens TIA Portal"], **extra}
+
+    with respx.mock:
+        respx.post("http://bridge.test/complete").mock(return_value=httpx.Response(200, json={"text": json.dumps([
+            scored("1", 65, 85, 65, foreign_platform_only=True),                 # the ЭКОМАШГРУПП case: 70 points, sent before
+            scored("2", 80, 70, 60),                                             # a real lead
+            scored("3", 20, 20, 40, foreign_platform_only=True, plant=True),     # a Siemens plant: no pool row either
+        ])}))
+        stats = Evaluator(s, conn, BridgeClient(s, sleep=lambda x: None)).run()
+    assert (stats.evaluated, stats.locked_out, stats.pooled) == (3, 2, 0)
+    for hh_id in ("1", "3"):
+        assert (_row(conn, hh_id)["status"], _row(conn, hh_id)["skip_reason"]) == ("skipped", "foreign_platform_only")
+    ev = conn.execute("SELECT e.tech_score, e.red_flags FROM evaluations e JOIN vacancies v ON v.id = e.vacancy_id "
+                      "WHERE v.hh_id = '1'").fetchone()
+    assert ev["tech_score"] == 65 and "Siemens" in ev["red_flags"]                 # the scores stay for the record
+    assert _row(conn, "2")["status"] == "evaluated"
+    assert [r["hh_id"] for r in repo.lead_queue(conn, 50)] == ["2"]
+    assert VacancyEvaluation(hh_id="x", tech_score=1, role_score=1, lead_score=1, ip_gph_possible="maybe",
+                             verdict="v").foreign_platform_only is False        # older answers without the field stay valid
+
+
 # --- quiet hours ------------------------------------------------------------------------------
 
 def test_quiet_hours_cross_midnight():
