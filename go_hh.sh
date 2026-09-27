@@ -31,8 +31,11 @@ echo "=== Сейчас: $(date '+%d.%m %H:%M') ==="
 echo "код: $(git log -1 --format='%h %ad %s' --date=format:'%d.%m %H:%M' 2>/dev/null | cut -c1-110)"
 echo "порог: $THRESHOLD · незакоммичено: $(git status --porcelain 2>/dev/null | wc -l) файл(ов)"
 bash scripts/svc.sh status 2>/dev/null | grep -v '^● '
-q "select coalesce((select strftime('%d.%m %H:%M', substr(value,1,19)) from kv where key='next_crawl_at'),
-                    'не назначен') 'следующий подход',
+# Пока подход идёт, ключа next_crawl_at в kv нет (scheduler пишет его после прогона) — показываем сам подход.
+q "select coalesce((select 'идёт #' || id || ' с ' || strftime('%H:%M', started_at, '+3 hours') from runs
+                     where status='running' order by id desc limit 1),
+                   (select strftime('%d.%m %H:%M', substr(value,1,19)) from kv where key='next_crawl_at'),
+                   'не назначен') 'следующий подход',
          (select coalesce(sum(page_loads),0) from runs where started_at >= $DAY) || ' / ' ||
          coalesce((select value from kv where key = 'daily_cap:' || date('now','+3 hours')), '?') 'страниц за день';"
 

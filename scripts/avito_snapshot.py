@@ -19,6 +19,7 @@ import argparse
 import json
 import logging
 import random
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -36,8 +37,12 @@ log = logging.getLogger("avito_snapshot")
 
 # What tells us the search page actually rendered, or that Avito wants a captcha instead. Either way the page
 # is done loading and worth saving — the whole point of the snapshot is to see which one we get.
-WAIT_MARKERS = ('data-marker="item"', "data-marker=\\'item\\'", "Ничего не найдено",
-                "Подтвердите, что вы не робот", "Доступ ограничен", "captcha")
+WAIT_MARKERS = ('data-marker="item"', "Ничего не найдено", "Подтвердите, что вы не робот",
+                "Доступ ограничен", 'class="firewall')
+# The ad page renders client-side too; these show up once the description is on screen (or the firewall is).
+ITEM_WAIT_MARKERS = ('itemprop="description"', 'data-marker="item-view/', "Подтвердите, что вы не робот",
+                     "Доступ ограничен", 'class="firewall')
+ITEM_HREF_RE = re.compile(r'href="(/[a-z_]+/vakansii/[^"?#]+_(\d+))')
 
 
 def main() -> int:
@@ -45,6 +50,8 @@ def main() -> int:
     ap.add_argument("--channel", choices=sorted(AVITO_QUERIES), action="append",
                     help="only this channel (repeatable); default — all three")
     ap.add_argument("--out", help="where to write the snapshots (default: next to the database, data/)")
+    ap.add_argument("--item", action="store_true",
+                    help="also open the first ad of the first channel and save it (one more page load)")
     args = ap.parse_args()
     settings = load_settings()
     setup_logging(settings.log_level)
@@ -56,7 +63,7 @@ def main() -> int:
 
     channels = args.channel or list(AVITO_QUERIES)
     used, cap = repo.page_loads_today(conn), daily_cap(conn, settings)
-    budget = max(0, min(len(channels), cap - used))
+    budget = max(0, min(len(channels) + (1 if args.item else 0), cap - used))
     print(f"Загрузок сегодня {used} из {cap}; снимаю {budget} стр.")
     if budget == 0:
         print("Дневной лимит загрузок исчерпан — снимок подождёт завтра.")
@@ -84,6 +91,19 @@ def main() -> int:
                 path.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
                 print(f"[{channel}] карточек {meta['cards']}, блок: {meta['looks_blocked']}, {meta['bytes']} байт\n"
                       f"     {meta['title'][:70]!r}\n     {meta['final_url'][:110]}\n     -> {path}")
+                if args.item and written < budget and (m := ITEM_HREF_RE.search(html)):
+                    item_url = "https://www.avito.ru" + m.group(1)
+                    item_html = b.open_raw(item_url, wait_for=ITEM_WAIT_MARKERS)
+                    written += 1
+                    ipath = out_dir / f"avito_snapshot_item_{stamp}.html"
+                    ipath.write_text(item_html, encoding="utf-8")
+                    ipath.with_suffix(".json").write_text(json.dumps(
+                        {"channel": "item", "requested_url": item_url, "final_url": d.current_url, "title": d.title,
+                         "saved_at": stamp, "bytes": ipath.stat().st_size,
+                         "looks_blocked": any(x in item_html for x in ("Подтвердите, что вы не робот", "Доступ ограничен"))},
+                        ensure_ascii=False, indent=2), encoding="utf-8")
+                    print(f"[item] {d.title[:70]!r}, {ipath.stat().st_size} байт -> {ipath}")
+                    args.item = False
     except BrowserUnavailable as e:
         repo.finish_run(conn, run_id, "failed", error=str(e)[:500], page_loads=written)
         print(f"ОШИБКА: {e}")
