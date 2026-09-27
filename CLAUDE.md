@@ -101,7 +101,8 @@ scripts/  install_service.sh (sudo) · install_geckodriver.sh · setup_firefox.s
           (владелец, один раз: sudoers-правило из sudoers-hh-scout.template → рестарты без пароля, в т.ч. агентом)
 go_hh.sh (быстрый разбор суток: сводка, прогоны и отправки за 24 ч, страницы поиск/описания по подходам, лиды по каналам,
          «ушло без письма», очередь и пул эксплуатантов, списано неоткрытыми за сутки, стадии и предупреждения из журнала — уровень берётся из текста строки, а не из приоритета
-         journald; версия кода и порог из .env в шапке; только чтение, границы суток — местные, а не UTC)
+         journald; версия кода и порог из .env в шапке; в конце — доступ к сайтам следующих источников с хоста (curl: trudvsem, InSAT,
+         profi, zakupki, hh) — по нему видно, когда прямой маршрут на роутере настроен; только чтение, границы суток — местные, а не UTC)
 README.md · .gitignore · hh-scout.service.template + hh-scout-alert.service.template (юниты, рендерит install_service.sh) · pyproject.toml · requirements(-dev).txt
 · pytest.ini · .env.example · LICENSE (MIT)
 src/hh_scout/
