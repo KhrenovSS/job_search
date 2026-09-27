@@ -18,7 +18,6 @@
 | `hh_scout.pipeline.collector [--budget N] [--gap-scale X] [--no-gaps] [--stale-hours H] [--pass P] [--period D]` | сбор карточек (проходы `SEARCH_PASSES` × запросы; по умолчанию один проход `regional` по всей России, v9.15) + синк откликов | да | — |
 | `hh_scout.pipeline.prefilter [--dry-run] [--show-skipped]` | правила: `new → triage/skipped` | — | — |
 | `scripts/profi_snapshot.py` | сохранить HTML уже открытых вкладок profi.ru из Firefox в `data/profi_snapshot_*.html` (ничего не загружает; для разбора разметки) | да (только чтение вкладок) | — |
-| `scripts/avito_snapshot.py [--channel jobs\|services\|equipment]… [--item] [--out DIR]` | этап 0 источника Avito (v9.14, доработан 27.09): загрузить по одной странице поиска на канал в своём окне Firefox и сохранить `page_source` в `data/avito_snapshot_<канал>_<штамп>.html` (+ `.json`: url, title, число карточек `data-marker="item"`, признак блока); `--item` — ещё и первую страницу объявления (`avito_snapshot_item_…`). Список Avito рендерится клиентом, скрипт ждёт карточки/«Ничего не найдено»/файрвол до `MARKUP_WAIT_S`. Ответ «Доступ ограничен: проблема с IP» с капчей — файрвол Avito на общий IP провайдера: владелец решает капчу в своей вкладке (куки общие), затем снимок повторяется. Загрузки считаются в дневном лимите (`runs`, trigger manual); не запускать во время подхода | да | — |
 | `scripts/sync_negotiations.py [--pages N] [--budget N]` | разовый добор списка откликов (`NEGOTIATIONS_PAGES` страниц): `applied`, `negotiation_state`, `negotiation_events`; считается в лимите, при идущем сборе не стартует | да | — |
 | `hh_scout.llm.triage [--limit N] [--dry-run]` | ИИ по карточкам: `triage → to_fetch/skipped` | — | да |
 | `hh_scout.pipeline.details [--budget N] [--gap-scale X] [--no-gaps] [--stale-hours H]` | страницы вакансий: `to_fetch → prefiltered` | да | — |
@@ -39,7 +38,7 @@
 
 ## Что нельзя запускать одновременно
 Marionette принимает **одну** сессию. Взаимно исключают друг друга: сервис `hh-scout` в момент сбора, `pipeline.run`,
-`collector`, `details`, `hh_pages`, `check_browser.py`, `profi_snapshot.py`, `avito_snapshot.py`, `sync_negotiations.py`.
+`collector`, `details`, `hh_pages`, `check_browser.py`, `profi_snapshot.py`, `sync_negotiations.py`.
 Внутри сервиса защита — `asyncio.Lock`; между процессами — проверка `svc.sh crawl_running()`: она смотрит и
 `runs.status='running'` (плановый подход идёт **внутри** процесса сервиса, снаружи его не видно), и запущенные
 браузерные CLI по `$BROWSER_CMD_RE`. Перед ручным браузерным шагом — `bash scripts/svc.sh status` («сбор идёт: нет»);

@@ -63,7 +63,7 @@ Firefox должен быть открыт ночью; в `config.py` по ум�
 
 ## Быстрый старт для агента
 **Сначала** убедитесь, что браузером никто не пользуется: Marionette держит одну сессию, поэтому `check_browser.py`,
-`pipeline.run`, `collector`, `details`, `hh_pages`, `sync_negotiations.py`, `profi_snapshot.py`, `avito_snapshot.py` нельзя запускать, пока сервис `hh-scout` в сборе или идёт другой такой
+`pipeline.run`, `collector`, `details`, `hh_pages`, `sync_negotiations.py`, `profi_snapshot.py` нельзя запускать, пока сервис `hh-scout` в сборе или идёт другой такой
 процесс. Проверка — `bash scripts/svc.sh status` («сбор идёт: нет», «отправка лидов идёт: нет»): она видит и плановый подход внутри сервиса, и браузерные CLI (`BROWSER_CMD_RE`); `/status` в боте показывает только собственный подход сервиса (`crawl_lock`), чужие CLI он не видит. Самодельный `pgrep -f 'hh_scout…'` не годится: ловит собственную командную строку и не видит скрипты.
 ```bash
 cd "$(git rev-parse --show-toplevel)"                 # корень репо
@@ -96,7 +96,7 @@ bridge/   hh_scout_bridge.py  мост Claude: FastAPI → `claude -p` под п
 scripts/  install_service.sh (sudo) · install_geckodriver.sh · setup_firefox.sh · check_browser.py · tg_whoami.py
           · tg_alert.sh (Telegram через curl для systemd OnFailure)
           · sync_negotiations.py (разовый добор списка откликов, считается в лимите) · audit_title_filter.py
-          · profi_snapshot.py · avito_snapshot.py (снимки разметки profi.ru / Avito из Firefox для написания парсеров; Avito — этап 0, парсера нет)
+          · profi_snapshot.py (снимок разметки profi.ru из Firefox для написания парсера; Avito закрыт решением №66)
           · svc.sh (status/logs/incidents/start/stop/restart/reinstall/bridge-restart; не рестартует во время сбора и отправки) · grant_agent_control.sh
           (владелец, один раз: sudoers-правило из sudoers-hh-scout.template → рестарты без пароля, в т.ч. агентом)
 go_hh.sh (быстрый разбор суток: сводка, прогоны и отправки за 24 ч, страницы поиск/описания по подходам, лиды по каналам,
@@ -107,7 +107,7 @@ README.md · .gitignore · hh-scout.service.template + hh-scout-alert.service.te
 src/hh_scout/
   config.py        Settings из .env (порог, веса, лимиты, окна, ритм, токены) + константы: SEARCH_QUERIES (5),
                    REGION_NAMES (49 — запасной путь при SEARCH_ALL_RUSSIA=false; по умолчанию ищем по всей России),
-                   TITLE_STOP/KEEP/REQUIRED_ANY, COMPANY_QUERIES (каналы panel/design), AVITO_QUERIES (снимки);  logging_setup.py — логи в stdout/journald
+                   TITLE_STOP/KEEP/REQUIRED_ANY, COMPANY_QUERIES (каналы panel/design);  logging_setup.py — логи в stdout/journald
   db.py            SQLite (автокоммит, WAL), миграции _m001…_m015 (PRAGMA user_version), kv_get/kv_set, transaction(),
                    backup() — ночная копия в data/backups/ (7 штук)
   main.py          сервис: aiogram polling + планировщик; первый старт помечает превью как sent
