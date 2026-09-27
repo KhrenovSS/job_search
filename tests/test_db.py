@@ -6,7 +6,7 @@ def test_migrations_create_schema_and_are_idempotent():
     assert migrate(conn) == len(MIGRATIONS)
     tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"areas_cache", "vacancies", "evaluations", "digests",
-            "digest_items", "feedback", "runs", "kv", "employers"} <= tables
+            "digest_items", "feedback", "runs", "kv", "employers", "employer_contacts"} <= tables
     run_cols = {r["name"] for r in conn.execute("PRAGMA table_info(runs)")}
     assert {"page_loads", "bridge_calls", "trigger"} <= run_cols
     # second run is a no-op
@@ -121,3 +121,24 @@ def test_m014_marks_floor_rows():
     assert migrate(conn) == len(MIGRATIONS)
     cols = {r[1]: r for r in conn.execute("PRAGMA table_info(evaluations)")}
     assert cols["floor"][4] == "0"
+
+
+def test_m016_backfills_contacts_from_the_catalogue_and_the_dossiers():
+    """v9.22: the contact keys of what the DB already knows — catalogue e-mails and sites, dossier addresses."""
+    from hh_scout.pipeline import repo
+    conn = connect(":memory:")
+    for step in MIGRATIONS[:15]:
+        step(conn)
+    conn.execute("PRAGMA user_version = 15")
+    conn.execute("INSERT INTO vacancies(hh_id, site, lead_kind, title, employer, employer_id, url, source, search_pass, status, "
+                 "raw_json, first_seen_at, updated_at) VALUES ('owen:1','owen','company','СИ','Фирма','owen:1','u','owen_catalog',"
+                 "'owen_si','new','{\"emails\": [\" Sales@Firm.RU. \"], \"site\": \"http://www.firm.ru/\"}','t','t')")
+    conn.execute("INSERT INTO employers(employer_id, name, found, brief, sources, researched_at) VALUES "
+                 "('108', 'Фирма', 1, '{\"website\": \"https://firm.ru\", \"contact_email\": \"info@mail.ru\"}', '[]', 't'),"
+                 "('109', 'Пусто', 0, '{\"website\": \"https://other.ru\"}', '[]', 't')")
+    assert migrate(conn) == len(MIGRATIONS)
+    rows = {(r["employer_id"], r["kind"], r["value"]) for r in conn.execute("SELECT * FROM employer_contacts")}
+    assert rows == {("owen:1", "email", "sales@firm.ru"), ("owen:1", "domain", "firm.ru"),
+                    ("108", "domain", "firm.ru"), ("108", "email", "info@mail.ru")}   # no mail.ru domain, no 109
+    assert repo.linked_employer_ids(conn, "108") == ["owen:1"]
+    assert {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")} >= {"idx_employer_contacts_value"}

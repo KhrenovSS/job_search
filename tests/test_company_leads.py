@@ -263,3 +263,24 @@ def test_send_side_guard_drops_a_queued_catalogue_company_without_an_email():
     assert skip_unreachable(conn, s) == 0
     assert {r["hh_id"] for r in plan_digest(conn, s).leads} == {"owen:21", "23"}
     assert conn.execute("SELECT status, skip_reason FROM vacancies WHERE hh_id = 'owen:22'").fetchone()[:] == ("skipped", "no_email")
+
+
+def test_the_vacancy_page_records_the_company_site_as_a_contact_key():
+    """v9.22: `companySiteUrl` from the page links the hh.ru employer to the same firm in the ОВЕН catalogue."""
+    from pathlib import Path
+    from hh_scout.browser.hh_pages import parse_vacancy
+    conn = _db()
+    state = json.loads((Path(__file__).parent / "fixtures" / "vacancy_page_magritte.json").read_text(encoding="utf-8"))
+    d = parse_vacancy(state)
+    conn.execute("INSERT INTO vacancies(hh_id,title,url,source,search_pass,status,first_seen_at,updated_at) "
+                 "VALUES (?,'t','u','s','regional','to_fetch','x','x')", (d.hh_id,))
+    assert repo.save_details(conn, d) == "prefiltered"
+    row = conn.execute("SELECT raw_json FROM vacancies WHERE hh_id = ?", (d.hh_id,)).fetchone()
+    assert json.loads(row["raw_json"])["company"]["companySiteUrl"] == "https://interrao-oco.ru/"
+    assert [(r["kind"], r["value"]) for r in conn.execute("SELECT kind, value FROM employer_contacts")] == [("domain", "interrao-oco.ru")]
+    # a catalogue firm with the same site is now the same organisation
+    conn.execute("INSERT INTO vacancies(hh_id,site,lead_kind,title,employer,employer_id,url,source,search_pass,status,"
+                 "raw_json,first_seen_at,updated_at) VALUES ('owen:5','owen','company','СИ','ИнтерРАО','owen:5','u',"
+                 "'owen_catalog','owen_si','new','{}','t','t')")
+    repo.record_contacts(conn, "owen:5", urls=["http://www.interrao-oco.ru/contacts"])
+    assert repo.linked_employer_ids(conn, d.employer_id) == ["owen:5"]

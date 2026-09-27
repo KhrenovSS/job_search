@@ -7,11 +7,10 @@ each grew their own `"x" in row.keys()` dance. One place instead (v9.11).
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 from typing import Any
 
-_EMAIL_RE = re.compile(r"^[^@\s<>()]+@[^@\s<>()]+\.[a-zA-Zа-яА-Я]{2,}$")
+from hh_scout.pipeline.contacts import normalize_email as _as_email  # the address rule lives with the contact keys (v9.22)
 
 
 def row_get(row: sqlite3.Row | dict, column: str, default: Any = None) -> Any:
@@ -53,11 +52,6 @@ def needs_email(row: sqlite3.Row | dict) -> bool:
     """A catalogue company (ОВЕН, `site='owen'`) has no hh.ru vacancy to answer, so the only way to reach it is
     its e-mail: without one the lead is useless and does not go out (decision #56)."""
     return row_site(row) == "owen" and lead_kind(row) == "company"
-
-
-def _as_email(value: Any) -> str | None:
-    text = str(value or "").strip().strip(".,;").lower()
-    return text if _EMAIL_RE.match(text) else None
 
 
 def contact_email(row: sqlite3.Row | dict, brief: dict | None = None) -> str | None:

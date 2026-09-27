@@ -29,6 +29,7 @@ from hh_scout.db import utcnow
 from hh_scout.llm.bridge_client import BridgeClient, BridgeError, extract_json
 from hh_scout.llm.prompts import load_prompt_body
 from hh_scout.llm.schemas import CompanyBrief
+from hh_scout.pipeline import repo
 from hh_scout.pipeline.rows import row_site
 
 log = logging.getLogger(__name__)
@@ -66,6 +67,9 @@ def save(conn: sqlite3.Connection, employer_id: str, name: str | None, brief: Co
         (employer_id, name, int(brief.found), brief.model_dump_json(),
          json.dumps(brief.sources, ensure_ascii=False), utcnow()),
     )
+    if brief.found:
+        # the general address and the site the dossier read are the company's contact keys (v9.22, decision #64)
+        repo.record_contacts(conn, employer_id, emails=[brief.contact_email], urls=[brief.website])
 
 
 def payload(row: sqlite3.Row) -> dict:

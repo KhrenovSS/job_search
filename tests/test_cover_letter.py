@@ -368,3 +368,69 @@ def test_a_rewrite_keeps_the_owners_hint(tmp_path):
     w.run()
     assert "больше про SCADA" in route.calls[-1].request.content.decode()
     assert conn.execute("SELECT owner_hint FROM cover_letters WHERE vacancy_id = 1").fetchone()[0] == "больше про SCADA"
+
+
+# --- v9.22: one contact — one lead (decision #64) ----------------------------------------------------------------
+
+def _company_row(conn, vid, *, employer="ООО", employer_id=None, status="sent"):
+    conn.execute("INSERT INTO vacancies(id,hh_id,site,lead_kind,title,employer,employer_id,url,source,search_pass,status,"
+                 "raw_json,first_seen_at,updated_at) VALUES (?,?,'hh','company','Сборщик шкафов',?,?,'u','s','panel',?,"
+                 "'{\"description\": \"шкафы\"}','t','t')", (vid, str(vid), employer, employer_id, status))
+
+
+@respx.mock
+def test_a_company_offer_the_owner_answered_does_not_block_the_letter_for_that_firms_vacancy(tmp_path):
+    """The queue lets a programmer vacancy through a cold offer to the same firm (`repo._kind_sql`); the letter
+    writer used to disagree and refused to write — the lead was evaluated for nothing (v9.22 fix)."""
+    s = _settings(tmp_path)
+    conn = _db()
+    _company_row(conn, 9)
+    conn.execute("INSERT INTO lead_actions(vacancy_id, action, created_at) VALUES (9, 'responded', 't')")
+    respx.post("http://bridge.test/complete").mock(return_value=httpx.Response(200, json={"text": GOOD, "cost_usd": 0.01}))
+    w = CoverLetterWriter(s, conn, BridgeClient(s, sleep=lambda x: None))
+    assert w.answered_employer(repo.lead_by_hh_id(conn, "1")) is None
+    company = conn.execute("SELECT * FROM vacancies WHERE id = 9").fetchone()
+    assert w.answered_employer(company) is not None                     # a second company offer is still blocked
+    assert w.run().written == 2
+
+
+@respx.mock
+def test_research_that_reveals_a_shared_address_stops_the_letter(tmp_path):
+    """The dossier says the firm's inbox is one already written to — no letter, the lead is a duplicate."""
+    from hh_scout.llm import company_research
+    from hh_scout.llm.schemas import CompanyBrief
+    s = _settings(tmp_path)
+    conn = _db()
+    conn.execute("UPDATE vacancies SET employer = 'ООО Альфа', employer_id = '100' WHERE id = 1")
+    conn.execute("UPDATE vacancies SET employer = 'АО Альфа-Сервис', employer_id = '200' WHERE id = 3")
+    conn.execute("UPDATE vacancies SET status = 'sent' WHERE id = 1")
+    repo.record_contacts(conn, "100", emails=["info@alpha.ru"])
+    route = respx.post("http://bridge.test/complete").mock(return_value=httpx.Response(200, json={"text": GOOD, "cost_usd": 0.01}))
+    w = CoverLetterWriter(s, conn, BridgeClient(s, sleep=lambda x: None))
+
+    def research(row, *, force=False):
+        brief = CompanyBrief(found=True, what_they_do="щиты", contact_email="Info@Alpha.ru")
+        with conn:
+            company_research.save(conn, row["employer_id"], row["employer"], brief)
+        return brief
+
+    w.researcher.for_row = research
+    assert w.write_for(repo.lead_by_hh_id(conn, "3")) is None
+    assert route.call_count == 0
+    assert conn.execute("SELECT status, skip_reason FROM vacancies WHERE id = 3").fetchone()[:] == ("skipped", "duplicate_employer:1")
+
+
+@respx.mock
+def test_a_rewrite_of_a_sent_lead_is_never_turned_into_a_skip(tmp_path):
+    from hh_scout.llm.schemas import CompanyBrief
+    s = _settings(tmp_path)
+    conn = _db()
+    conn.execute("UPDATE vacancies SET employer = 'ООО Альфа', employer_id = '100', status = 'sent' WHERE id = 1")
+    conn.execute("UPDATE vacancies SET employer = 'АО Альфа-Сервис', employer_id = '200', status = 'sent' WHERE id = 3")
+    repo.record_contacts(conn, "100", emails=["info@alpha.ru"])
+    repo.record_contacts(conn, "200", emails=["info@alpha.ru"])
+    respx.post("http://bridge.test/complete").mock(return_value=httpx.Response(200, json={"text": GOOD, "cost_usd": 0.01}))
+    w = CoverLetterWriter(s, conn, BridgeClient(s, sleep=lambda x: None))
+    w.researcher.for_row = lambda row, *, force=False: CompanyBrief(found=False)
+    assert w.write_for(repo.lead_by_hh_id(conn, "3"), hint="ещё раз")          # `/letter 3 ещё раз`
+    assert conn.execute("SELECT status FROM vacancies WHERE id = 3").fetchone()[0] == "sent"

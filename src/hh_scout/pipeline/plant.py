@@ -57,7 +57,7 @@ def pool(conn: sqlite3.Connection, settings: Settings, row: sqlite3.Row) -> bool
         return False                    # the owner already wrote to this company
     if repo.employer_lead(conn, row["employer_id"], row["employer"], exclude_id=row["id"],
                           threshold=settings.score_threshold, repeat_days=settings.employer_repeat_days,
-                          candidate_kind="company") is not None:
+                          candidate_kind="company", linked_ids=repo.linked_employer_ids(conn, row["employer_id"])) is not None:
         return False                    # the company has a lead on its way — a vacancy or another company row
     repo.move_to_plant_pool(conn, row["id"])
     return True
@@ -77,7 +77,7 @@ def pool_evaluated(conn: sqlite3.Connection, settings: Settings, row: sqlite3.Ro
         return False
     if repo.employer_lead(conn, row["employer_id"], row["employer"], exclude_id=row["id"],
                           threshold=settings.score_threshold, repeat_days=settings.employer_repeat_days,
-                          candidate_kind="company") is not None:
+                          candidate_kind="company", linked_ids=repo.linked_employer_ids(conn, row["employer_id"])) is not None:
         return False
     repo.delete_evaluation(conn, row["id"])
     repo.move_to_plant_pool(conn, row["id"])

@@ -262,9 +262,13 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
     if "owen_si" in settings.company_channels_set:
         try:
             with conn:
-                admitted = repo.admit_company_leads(conn, settings.company_leads_per_day)
-            if admitted:
-                log.info("Каталог ОВЕН: допущено в оценку %d компаний", admitted)
+                rows = repo.admit_company_leads(conn, settings.company_leads_per_day)
+                # a catalogue firm already reached through hh.ru (shared e-mail / domain) is a duplicate, not a lead (v9.22)
+                admitted = sum(1 for r in rows
+                               if dedup.skip_if_covered(conn, settings, repo.vacancy_by_id(conn, r["id"])) is None)
+            if rows:
+                log.info("Каталог ОВЕН: допущено в оценку %d компаний (%d уже достигнуты через hh.ru)", admitted,
+                         len(rows) - admitted)
         except Exception as e:  # noqa: BLE001
             log.exception("Допуск компаний из каталога упал")
             report.errors.append(f"каталог: {e}")

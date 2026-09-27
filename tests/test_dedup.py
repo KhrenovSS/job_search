@@ -224,3 +224,113 @@ def test_mark_applied_takes_a_card_out_of_the_pipeline_at_any_stage():
     _vac(conn, "s", "sent")
     repo.mark_applied(conn, "s", has_chat=False)
     assert _status(conn, "s")[0] == "sent"                                  # a delivered lead keeps its status
+
+
+# --- v9.22: one contact — one lead (decision #64) ---------------------------------------------------------------
+
+def _owen(conn, tag, status, *, employer="ООО Интегратор", emails=(), site_url=None, total=None, skip_reason=None):
+    """A catalogue row with its contacts recorded, as `repo.insert_integrator` does."""
+    import json
+    hh_id = f"owen:{tag}"
+    conn.execute("INSERT INTO vacancies(hh_id, site, lead_kind, title, employer, employer_id, url, area_name, source, "
+                 "search_pass, status, skip_reason, raw_json, first_seen_at, updated_at) "
+                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                 (hh_id, "owen", "company", "Системный интегратор ОВЕН", employer, hh_id, "u", "Тула", "owen_catalog",
+                  "owen_si", status, skip_reason, json.dumps({"emails": list(emails), "site": site_url}), "t", utcnow()))
+    vid = conn.execute("SELECT id FROM vacancies WHERE hh_id = ?", (hh_id,)).fetchone()[0]
+    repo.record_contacts(conn, hh_id, emails=emails, urls=[site_url])
+    if total is not None:
+        conn.execute("INSERT INTO evaluations(vacancy_id,tech_score,salary_score,format_score,role_score,lead_score,total,"
+                     "ip_gph_possible,is_agency,employment_hint,company_kind,verdict,pitch_hint,red_flags,created_at) "
+                     "VALUES (?,80,0,0,80,60,?,'maybe',0,'staff','integrator','v','p','[]',?)", (vid, total, utcnow()))
+    return vid
+
+
+def test_shared_email_or_domain_links_two_hh_employers():
+    s = Settings(_env_file=None, employer_repeat_days=90)
+    conn = _conn()
+    _vac(conn, "L", "sent", employer="ООО Альфа", employer_id="100")
+    repo.record_contacts(conn, "100", emails=["Info@Alpha.ru"], urls=["https://www.alpha.ru/"])
+    _vac(conn, "a", "triage", employer="АО Альфа-Сервис", employer_id="200")       # same inbox, other legal entity
+    repo.record_contacts(conn, "200", emails=["info@alpha.ru"])
+    _vac(conn, "b", "triage", employer="Альфа Инжиниринг", employer_id="300")     # same site, other address
+    repo.record_contacts(conn, "300", emails=["sales@alpha.ru"])
+    _vac(conn, "c", "triage", employer="ООО Гамма", employer_id="400")             # free mail links nobody
+    repo.record_contacts(conn, "400", emails=["alpha@gmail.com"])
+    _vac(conn, "d", "triage", employer="ООО Гамма-2", employer_id="500")
+    repo.record_contacts(conn, "500", emails=["alpha@gmail.com"])
+    assert repo.linked_employer_ids(conn, "100") == ["200", "300"]
+    assert repo.linked_employer_ids(conn, "400") == ["500"]                       # the very same address still links
+    assert dedup.skip_covered(conn, s, "triage") == 2
+    assert _status(conn, "a") == ("skipped", "duplicate_employer:L")
+    assert _status(conn, "b") == ("skipped", "duplicate_employer:L")
+    assert _status(conn, "c")[0] == "triage" and _status(conn, "d")[0] == "triage"   # neither is a lead yet
+
+
+def test_catalogue_row_and_hh_rows_of_one_firm_meet_both_ways():
+    s = Settings(_env_file=None, employer_repeat_days=90)
+    conn = _conn()
+    # hh.ru vacancy already sent; its page gave the company site
+    _vac(conn, "L", "sent", employer="ООО Завод", employer_id="100")
+    repo.record_contacts(conn, "100", urls=["http://www.zavod.ru"])
+    vid = _owen(conn, "7", "prefiltered", employer="Завод", site_url="https://zavod.ru/about")
+    row = repo.vacancy_by_id(conn, vid)
+    assert dedup.skip_if_covered(conn, s, row) is not None
+    assert _status(conn, "owen:7") == ("skipped", "duplicate_employer:L")
+    # the other way: a catalogue offer went out, the same firm turns up on hh.ru
+    conn2 = _conn()
+    _owen(conn2, "8", "sent", employer="Завод", emails=["info@zavod.ru"])
+    _vac(conn2, "p", "triage", employer="ООО Завод", employer_id="100")
+    conn2.execute("UPDATE vacancies SET lead_kind = 'company', search_pass = 'panel' WHERE hh_id = 'p'")
+    _vac(conn2, "v", "triage", employer="ООО Завод", employer_id="100")
+    repo.record_contacts(conn2, "100", urls=["zavod.ru"])
+    assert dedup.skip_covered(conn2, s, "triage") == 1
+    assert _status(conn2, "p") == ("skipped", "duplicate_employer:owen:8")   # a company offer duplicates the offer
+    assert _status(conn2, "v")[0] == "triage"                                # a programmer vacancy is another channel
+
+
+def test_an_answered_catalogue_offer_does_not_close_a_vacancy_but_closes_a_company_row():
+    s = Settings(_env_file=None, employer_repeat_days=90)
+    conn = _conn()
+    ovid = _owen(conn, "9", "sent", employer="Завод", emails=["info@zavod.ru"])
+    _responded(conn, ovid)                                                      # «✅ Написал» on the catalogue card
+    _vac(conn, "v", "triage", employer="ООО Завод", employer_id="100")
+    _vac(conn, "p", "triage", employer="ООО Завод", employer_id="100")
+    conn.execute("UPDATE vacancies SET lead_kind = 'company', search_pass = 'design' WHERE hh_id = 'p'")
+    repo.record_contacts(conn, "100", emails=["INFO@zavod.ru"])
+    v = conn.execute("SELECT * FROM vacancies WHERE hh_id = 'v'").fetchone()
+    assert dedup.answered_employer(conn, s, v) is None
+    assert dedup.skip_covered(conn, s, "triage") == 1
+    assert _status(conn, "p") == ("skipped", "employer_responded:owen:9")
+    assert _status(conn, "v")[0] == "triage"
+
+
+def test_dedupe_evaluated_collapses_catalogue_twins_and_leaves_profi_alone():
+    s = Settings(_env_file=None, score_threshold=50)
+    conn = _conn()
+    _owen(conn, "1", "evaluated", employer="Интегратор", emails=["info@integ.ru"], total=70)
+    _owen(conn, "2", "evaluated", employer="Интегратор (филиал)", emails=["info@integ.ru"], total=60)
+    _vac(conn, "profi:5", "evaluated", employer="Иван", employer_id=None, site="profi", total=65)
+    assert dedup.dedupe_evaluated(conn, s) == 1
+    assert _status(conn, "owen:2") == ("skipped", "duplicate_employer:owen:1")
+    assert _status(conn, "owen:1")[0] == "evaluated" and _status(conn, "profi:5")[0] == "evaluated"
+
+
+def test_revive_orphans_returns_a_catalogue_twin_to_prefiltered():
+    s = Settings(_env_file=None, score_threshold=50)
+    conn = _conn()
+    _owen(conn, "1", "rejected", employer="Интегратор", emails=["info@integ.ru"])
+    _owen(conn, "2", "skipped", employer="Интегратор (филиал)", emails=["info@integ.ru"], skip_reason="duplicate_employer:owen:1")
+    assert dedup.revive_orphans(conn, s) == 1
+    assert _status(conn, "owen:2") == ("prefiltered", None)                  # never `to_fetch`: no page to open
+
+
+def test_linking_needs_an_employer_id():
+    s = Settings(_env_file=None, employer_repeat_days=90)
+    conn = _conn()
+    assert repo.record_contacts(conn, None, emails=["info@x.ru"]) == 0
+    assert repo.linked_employer_ids(conn, None) == []
+    _vac(conn, "L", "sent", employer="ООО Ромашка", employer_id=None)
+    _vac(conn, "a", "triage", employer="ооо ромашка", employer_id=None)        # by name, as before
+    assert dedup.skip_covered(conn, s, "triage") == 1
+    assert _status(conn, "a") == ("skipped", "duplicate_employer:L")

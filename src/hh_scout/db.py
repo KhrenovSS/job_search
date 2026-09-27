@@ -361,6 +361,52 @@ def _m015_lead_kind(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE evaluations ADD COLUMN offer_focus TEXT")
 
 
+def _m016_employer_contacts(conn: sqlite3.Connection) -> None:
+    """v9.22: contacts of an organisation — e-mail addresses and web domains (decision #64).
+
+    "One company — one lead" knew a company by its hh.ru id or name only, so a firm listed in the ОВЕН catalogue
+    (`owen:<tag>`) and the same firm on hh.ru were two strangers and one inbox could get two letters. Every source of
+    an address writes here (`repo.record_contacts`): the catalogue entry, the company dossier, the vacancy page's
+    `companySiteUrl`. `repo.linked_employer_ids` joins employers that share a key.
+
+    Backfill: catalogue rows (`raw_json.emails` / `.site`) and dossiers with `found = 1` (`brief.contact_email` /
+    `.website`). hh.ru rows cannot be backfilled — `trim_vacancy_view` dropped the site until now; they link from
+    the next page fetch. Inline INSERTs on purpose: a migration must not call `repo` (repo imports db).
+    """
+    import json as _json
+    from hh_scout.pipeline.contacts import contact_keys
+
+    conn.executescript(
+        """
+        BEGIN;
+        CREATE TABLE employer_contacts (
+            employer_id TEXT NOT NULL,
+            kind        TEXT NOT NULL CHECK (kind IN ('email', 'domain')),
+            value       TEXT NOT NULL,
+            updated_at  TEXT NOT NULL,
+            PRIMARY KEY (employer_id, kind, value)
+        );
+        CREATE INDEX idx_employer_contacts_value ON employer_contacts(kind, value);
+        COMMIT;
+        """
+    )
+    now = utcnow()
+    found: list[tuple[str, str, str, str]] = []
+    for r in conn.execute("SELECT employer_id, raw_json FROM vacancies WHERE site = 'owen' AND employer_id IS NOT NULL "
+                          "AND raw_json IS NOT NULL AND json_valid(raw_json)").fetchall():
+        raw = _json.loads(r["raw_json"]) or {}
+        for kind, value in contact_keys(raw.get("emails") or [], [raw.get("site")]):
+            found.append((r["employer_id"], kind, value, now))
+    for r in conn.execute("SELECT employer_id, brief FROM employers WHERE found = 1 AND brief IS NOT NULL "
+                          "AND json_valid(brief)").fetchall():
+        brief = _json.loads(r["brief"]) or {}
+        for kind, value in contact_keys([brief.get("contact_email")], [brief.get("website")]):
+            found.append((r["employer_id"], kind, value, now))
+    if found:
+        conn.executemany("INSERT OR IGNORE INTO employer_contacts(employer_id, kind, value, updated_at) VALUES (?,?,?,?)", found)
+        log.info("Контакты компаний из каталога и досье: %d ключей записано", len(found))
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m001_initial,
     _m002_triage_columns,
@@ -377,6 +423,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m013_letter_context,
     _m014_floor,
     _m015_lead_kind,
+    _m016_employer_contacts,
 ]
 
 

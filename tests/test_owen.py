@@ -42,15 +42,15 @@ def test_admission_lets_a_few_companies_in_per_day_best_partners_first():
     conn = connect(":memory:")
     migrate(conn)
     owen.store(conn, _cards())
-    assert repo.admit_company_leads(conn, 2) == 2
+    assert len(repo.admit_company_leads(conn, 2)) == 2
     admitted = [r["employer"] for r in conn.execute(
         "SELECT employer FROM vacancies WHERE status = 'prefiltered' ORDER BY json_extract(raw_json, '$.status')")]
     statuses = {r["employer"]: json.loads(r["raw_json"])["status"] for r in conn.execute("SELECT employer, raw_json FROM vacancies")}
     assert sorted(statuses[n] for n in admitted) == ["Золотой", "Серебряный"]
-    assert repo.admit_company_leads(conn, 2) == 0                       # today's allowance is spent
+    assert repo.admit_company_leads(conn, 2) == []                       # today's allowance is spent
     t = repo.owen_totals(conn)
     assert t == {"total": 3, "waiting": 1, "sent": 0}
-    assert repo.admit_company_leads(conn, 0) == 0
+    assert repo.admit_company_leads(conn, 0) == []
 
 
 def test_research_payload_for_a_catalogue_company_points_at_owen_not_hh():

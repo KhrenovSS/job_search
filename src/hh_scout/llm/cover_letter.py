@@ -23,7 +23,7 @@ from hh_scout.llm.bridge_client import BridgeClient, BridgeError
 from hh_scout.llm.company_research import CompanyResearcher
 from hh_scout.llm.letter_checks import strip_role_address
 from hh_scout.llm.prompts import PrivatePromptMissing, load_prompt_body, read_private, render
-from hh_scout.pipeline import repo
+from hh_scout.pipeline import dedup, repo
 from hh_scout.pipeline.rows import contact_email, letter_key, needs_email, row_get, row_site
 
 log = logging.getLogger(__name__)
@@ -254,10 +254,10 @@ class CoverLetterWriter:
         The single choke point for the owner's rule «пишем только туда, куда ещё не откликались»: it holds for the
         digest, for `/letter` and for any ad-hoc script, and it fires before research, so a skip costs nothing.
         """
-        if row_site(row) != "hh":
-            return None
-        answered = repo.employer_responded(self.conn, row["employer_id"], row["employer"],
-                                           exclude_id=None, within_days=self.s.employer_repeat_days)
+        # `exclude_self=False`: a row the owner already answered himself is not a candidate either. Through
+        # `dedup` the row's own kind is passed (v9.22): a company offer marked «✅ Написал» does not block the
+        # letter for that firm's programmer vacancy — the same rule the queue applies (`repo._kind_sql`).
+        answered = dedup.answered_employer(self.conn, self.s, row, exclude_self=False)
         if answered is not None:
             log.info("Письмо для %s не пишу: в «%s» уже откликались (%s, %s)", row["hh_id"], row["employer"] or "—",
                      answered["hh_id"], (answered["answered_at"] or "")[:10])
@@ -268,6 +268,12 @@ class CoverLetterWriter:
 
         A rewrite keeps the owner's earlier wish (`cover_letters.owner_hint`) unless a new one is given: the
         instruction typed into `/letter <id> …` must survive a rules change (v9.11).
+
+        The dossier may reveal an address already written to (v9.22): when the company now has linked employers
+        (`employer_contacts`), the company-dedup runs once more after research — for a lead still waiting
+        (`evaluated`) only: a `/letter` rewrite of a sent lead must never turn it into a skip. The higher-scored row
+        may thus yield to a lower-scored linked twin researched earlier; it is the same organisation either way and
+        the letter has not been paid for yet.
         """
         key = letter_key(row)
         if self.answered_employer(row) is not None:
@@ -278,6 +284,10 @@ class CoverLetterWriter:
         if key in REVIEWED_KEYS:
             brief = self.researcher.for_row(row)
             company = brief.model_dump(include=set(DOSSIER_FIELDS)) if brief is not None and brief.found else None
+            if row_get(row, "status") == "evaluated" and repo.linked_employer_ids(self.conn, row["employer_id"]):
+                with self.conn:
+                    if dedup.skip_if_covered(self.conn, self.s, row) is not None:
+                        return None
             if self.unreachable(row, brief.model_dump() if brief is not None else None):
                 return None
         payload = letter_payload(row, company, hint)

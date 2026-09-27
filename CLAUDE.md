@@ -31,7 +31,10 @@
 по `/letter <id> [пожелание]`; через 30 дней выбывают. Каждое письмо проходит проверки кодом (суммы и штампы — все; подпись — hh и компании) и редактора (hh и компании, `REVIEWED_KEYS`; заявки profi без него).
 **Одна компания — один лид**: письмо пишется HR всей организации, поэтому похожие вакансии одного работодателя в разных
 регионах схлопываются в один лид (`pipeline/dedup.py`, `EMPLOYER_REPEAT_DAYS`); если «победитель» лидом так и не стал,
-дубли возвращаются в очередь (`dedup.revive_orphans`). По той же причине **отклик закрывает компанию** на
+дубли возвращаются в очередь (`dedup.revive_orphans`). **Компания — это hh `employer_id`, имя или общий e-mail / домен
+сайта** (`employer_contacts`, `pipeline/contacts.py`; решение №64, v9.22): адреса собираются из каталога ОВЕН, досье и
+`companySiteUrl` страницы вакансии, поэтому строка каталога и та же фирма на hh.ru не получают по письму каждая; предложение
+компании при этом по-прежнему не закрывает её вакансию программиста (`repo._kind_sql`). По той же причине **отклик закрывает компанию** на
 `EMPLOYER_REPEAT_DAYS`: отправил владелец отклик сам на hh.ru (`applied=1`) или нажал «✅ Написал» — новые вакансии
 этой компании становятся `skipped/employer_responded:<hh_id>`, письма ей не пишутся (в т.ч. по `/letter`).
 В штатном режиме бот **молчит о себе**: о своей работе пишет только при сбоях (тревоги `health.py`) и строкой
@@ -123,7 +126,8 @@ src/hh_scout/
                    remote/project/gph его подмножества; v9.15) · plant.py (канал `plant`: пул эксплуатантов автоматики,
                    допуск по `PLANT_LEADS_PER_DAY`, задел `--backfill`; v9.15) ·
                    prefilter.py · details.py · ranker.py (total, карточка) · profi_collector.py (лента заказов profi.ru, v7)
-                   digest_builder.py · dedup.py (одна компания — один лид) · run.py (оркестратор одного прогона)
+                   digest_builder.py · dedup.py (одна компания — один лид) · contacts.py (e-mail/домены организации,
+                   `employer_contacts`; v9.22) · run.py (оркестратор одного прогона)
   bot/             app.py (только владелец) · handlers.py (команды: /start=/help /status /digest /crawl [N] /next /pause /resume
                    /skipped /letter /inbox /done /cleanup /stats) · digest.py · feedback.py (кнопки 👍/👎/✅/⏸) · lead_actions.py
                    (сворачивание карточек, автозакрытие по откликам) · keyboards.py

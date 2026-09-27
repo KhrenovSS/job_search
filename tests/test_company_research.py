@@ -155,3 +155,15 @@ def test_research_waits_longer_than_an_ordinary_call(tmp_path):
     CompanyResearcher(s, conn, BridgeClient(s, retries=0)).for_row(_row(conn))
     assert route.calls[0].request.extensions["timeout"]["read"] == s.company_research_timeout_s
     assert s.company_research_timeout_s > s.bridge_timeout_s
+
+
+def test_a_found_dossier_records_the_companys_contacts_and_an_empty_one_does_not():
+    """v9.22: the general address and the site the dossier read become the firm's contact keys (decision #64)."""
+    from hh_scout.pipeline import repo
+    conn = _db()
+    save(conn, "108082", "ФомЛайн", CompanyBrief(found=True, website="https://www.fomline.ru/", contact_email="Info@FomLine.ru"))
+    rows = {(r["kind"], r["value"]) for r in conn.execute("SELECT kind, value FROM employer_contacts WHERE employer_id = '108082'")}
+    assert rows == {("email", "info@fomline.ru"), ("domain", "fomline.ru")}
+    save(conn, "1", "Пусто", CompanyBrief(found=False, website="https://nothing.ru"))
+    assert conn.execute("SELECT COUNT(*) FROM employer_contacts WHERE employer_id = '1'").fetchone()[0] == 0
+    assert repo.linked_employer_ids(conn, "108082") == []

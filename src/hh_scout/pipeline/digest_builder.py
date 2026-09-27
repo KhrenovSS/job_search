@@ -30,6 +30,7 @@ def promote_floor(conn: sqlite3.Connection, settings: Settings) -> int:
     if short <= 0:
         return 0
     chosen: list[sqlite3.Row] = []
+    links = repo.contact_links(conn)
     for row in repo.floor_candidates(conn, threshold=settings.score_threshold, min_total=settings.floor_min_total,
                                      min_role=settings.floor_min_role, lookback_days=settings.floor_lookback_days):
         if len(chosen) >= short:
@@ -38,7 +39,7 @@ def promote_floor(conn: sqlite3.Connection, settings: Settings) -> int:
         if (dedup.answered_employer(conn, settings, row, exclude_self=False) is not None
                 or dedup.covering_lead(conn, settings, row) is not None):
             continue
-        if any(dedup.same_company(c, row) for c in chosen):
+        if any(dedup.same_company(c, row, links) for c in chosen):
             continue
         chosen.append(row)
     if chosen:

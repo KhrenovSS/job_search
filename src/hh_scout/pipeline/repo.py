@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterable, Sequence
 from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
 from hh_scout.browser.hh_pages import VacancyCard, VacancyDetail
 from hh_scout.config import TZ
 from hh_scout.db import utcnow
+from hh_scout.pipeline.contacts import contact_keys
 from hh_scout.hh.salary import normalize
 
 
@@ -92,6 +94,7 @@ def insert_integrator(conn: sqlite3.Connection, card: "IntegratorCard") -> bool:
          card.site or card.projects_url or "https://owen.ru/spisok_sistemnih_integratorov", card.city, "unknown", "unknown",
          now, "owen_catalog", OWEN_PASS, json.dumps(raw, ensure_ascii=False), "new", 0, now, now),
     )
+    record_contacts(conn, card.ext_id, emails=card.emails, urls=[card.site])
     return True
 
 
@@ -161,21 +164,22 @@ def plant_totals(conn: sqlite3.Connection) -> dict[str, int]:
     return out
 
 
-def admit_company_leads(conn: sqlite3.Connection, per_day: int, search_pass: str = OWEN_PASS) -> int:
+def admit_company_leads(conn: sqlite3.Connection, per_day: int, search_pass: str = OWEN_PASS) -> list[sqlite3.Row]:
     """Let up to `per_day` catalogue companies into evaluation today (`new` → `prefiltered`), best partners first.
+    Returns the admitted rows (`id`), so the caller can run the company-dedup over them (v9.22).
 
     The catalogue arrives all at once; without a daily gate 230 companies would enter the queue in one evening
     and push every vacancy lead behind them for days. `updated_at` moves on admission, which is how "today's"
     admissions are counted.
     """
     if per_day <= 0:
-        return 0
+        return []
     already = int(conn.execute(
         "SELECT COUNT(*) FROM vacancies WHERE search_pass = ? AND status != 'new' AND updated_at >= ?",
         (search_pass, _today_start_utc())).fetchone()[0])
     room = per_day - already
     if room <= 0:
-        return 0
+        return []
     rank = " ".join(f"WHEN '{k}' THEN {v}" for k, v in _OWEN_STATUS_RANK.items())
     rows = conn.execute(
         f"""SELECT id FROM vacancies WHERE search_pass = ? AND status = 'new'
@@ -185,7 +189,7 @@ def admit_company_leads(conn: sqlite3.Connection, per_day: int, search_pass: str
     now = utcnow()
     for r in rows:
         conn.execute("UPDATE vacancies SET status = 'prefiltered', updated_at = ? WHERE id = ?", (now, r["id"]))
-    return len(rows)
+    return rows
 
 
 def insert_order(conn: sqlite3.Connection, order: "OrderCard") -> bool:
@@ -300,7 +304,7 @@ DETAIL_KEYS = ("vacancyId", "name", "description", "keySkills", "compensation", 
 def trim_vacancy_view(raw: dict[str, Any]) -> dict[str, Any]:
     out = {k: raw.get(k) for k in DETAIL_KEYS if k in raw}
     company = raw.get("company") if isinstance(raw.get("company"), dict) else {}
-    out["company"] = {k: company.get(k) for k in ("id", "name", "visibleName", "@trusted") if k in company}
+    out["company"] = {k: company.get(k) for k in ("id", "name", "visibleName", "@trusted", "companySiteUrl") if k in company}
     addr = raw.get("address") if isinstance(raw.get("address"), dict) else {}
     out["address"] = {k: addr.get(k) for k in ("city", "street", "building", "displayName") if k in addr}
     return out
@@ -335,6 +339,8 @@ def save_details(conn: sqlite3.Connection, detail: VacancyDetail) -> str:
          json.dumps(detail.compensation, ensure_ascii=False) if detail.compensation else None,
          int(detail.applied), status, reason, utcnow(), detail.hh_id),
     )
+    company = detail.raw.get("company") if isinstance(detail.raw.get("company"), dict) else {}
+    record_contacts(conn, detail.employer_id, urls=[company.get("companySiteUrl")])
     return status
 
 
@@ -386,6 +392,58 @@ def requeue_skipped(conn: sqlite3.Connection, skip_reason: str, since_days: int)
     return cur.rowcount
 
 
+# --- contacts of an organisation (v9.22, decision #64) ---------------------------------------------
+
+def record_contacts(conn: sqlite3.Connection, employer_id: str | None, *, emails: Iterable[object] = (),
+                    urls: Iterable[object] = ()) -> int:
+    """Remember the e-mail addresses and web domains of `employer_id` (hh.ru company id or `owen:<tag>`).
+
+    Called wherever an address is learned: the catalogue entry, the dossier, the vacancy page. A row without an
+    employer id (a pre-v8 card) has nothing to hang a contact on — no-op. Returns how many keys were written."""
+    if not employer_id:
+        return 0
+    keys = contact_keys(emails, urls)
+    if not keys:
+        return 0
+    now = utcnow()
+    conn.executemany(
+        "INSERT INTO employer_contacts(employer_id, kind, value, updated_at) VALUES (?,?,?,?) "
+        "ON CONFLICT(employer_id, kind, value) DO UPDATE SET updated_at = excluded.updated_at",
+        [(employer_id, kind, value, now) for kind, value in sorted(keys)])
+    return len(keys)
+
+
+def linked_employer_ids(conn: sqlite3.Connection, employer_id: str | None) -> list[str]:
+    """Other employer ids that share an e-mail address or a web domain with `employer_id` — one hop only
+    (A–B by e-mail and B–C by domain do not make A–C)."""
+    if not employer_id:
+        return []
+    rows = conn.execute(
+        """SELECT DISTINCT b.employer_id FROM employer_contacts a
+             JOIN employer_contacts b ON b.kind = a.kind AND b.value = a.value
+            WHERE a.employer_id = ? AND b.employer_id != ? ORDER BY b.employer_id""", (employer_id, employer_id)).fetchall()
+    return [r["employer_id"] for r in rows]
+
+
+def contact_links(conn: sqlite3.Connection) -> dict[str, set[str]]:
+    """The whole link graph in one query — for in-memory comparisons over a list of rows (`dedup.same_company`)."""
+    links: dict[str, set[str]] = {}
+    for r in conn.execute("""SELECT a.employer_id AS x, b.employer_id AS y FROM employer_contacts a
+                               JOIN employer_contacts b ON b.kind = a.kind AND b.value = a.value
+                              WHERE a.employer_id != b.employer_id"""):
+        links.setdefault(r["x"], set()).add(r["y"])
+    return links
+
+
+def _linked_sql(alias: str, linked_ids: Sequence[str]) -> tuple[str, list[str]]:
+    """`OR alias.employer_id IN (...)` for the employers linked by a shared contact; empty when there are none.
+    No `site = 'hh'` here on purpose — this is how a catalogue row and an hh.ru row of one firm meet, both ways."""
+    ids = [i for i in linked_ids if i]
+    if not ids:
+        return "", []
+    return f" OR {alias}.employer_id IN ({','.join('?' * len(ids))})", ids
+
+
 # --- one lead per company -----------------------------------------------------------
 
 def same_employer_sql(alias: str = "v") -> str:
@@ -422,24 +480,29 @@ def _kind_sql(candidate_kind: str) -> str:
 
 
 def employer_lead(conn: sqlite3.Connection, employer_id: str | None, employer: str | None, *, exclude_id: int | None,
-                  threshold: int, repeat_days: int, candidate_kind: str = "company") -> sqlite3.Row | None:
+                  threshold: int, repeat_days: int, candidate_kind: str = "company",
+                  linked_ids: Sequence[str] = ()) -> sqlite3.Row | None:
     """The vacancy of this employer that already is a lead (sent within `repeat_days`; 0 = ever) or is about to become one
     (`prefiltered`, or `evaluated` at/above the threshold and waiting for the digest). None if the company is still free.
-    `candidate_kind` is the lead kind of the row asking — see `_kind_sql`."""
-    if employer_id is None and not employer:
+    `candidate_kind` is the lead kind of the row asking — see `_kind_sql`. `linked_ids` — employers that share an
+    e-mail or a domain with the asking one (`linked_employer_ids`, v9.22): their rows count as this company's too."""
+    if employer_id is None and not employer and not linked_ids:
         return None
     cutoff = _ago(repeat_days) if repeat_days > 0 else "1970-01-01T00:00:00+00:00"
-    sql = (f"SELECT v.id, v.hh_id, v.status FROM vacancies v WHERE {same_employer_sql('v')} AND v.id IS NOT ? "
+    linked_sql, linked_params = _linked_sql("v", linked_ids)
+    sql = (f"SELECT v.id, v.hh_id, v.status, v.employer_id FROM vacancies v "
+           f"WHERE (({same_employer_sql('v')}){linked_sql}) AND v.id IS NOT ? "
            f"{_kind_sql(candidate_kind)} "
            "AND ((v.status = 'sent' AND v.updated_at >= ?) OR v.status = 'prefiltered' "
            "     OR (v.status = 'evaluated' AND EXISTS (SELECT 1 FROM evaluations e WHERE e.vacancy_id = v.id "
            "                                            AND (e.total >= ? OR e.floor = 1)))) "
            "ORDER BY CASE v.status WHEN 'sent' THEN 0 WHEN 'evaluated' THEN 1 ELSE 2 END, v.id LIMIT 1")
-    return conn.execute(sql, same_employer_params(employer_id, employer) + [exclude_id, cutoff, threshold]).fetchone()
+    return conn.execute(sql, same_employer_params(employer_id, employer) + linked_params + [exclude_id, cutoff, threshold]).fetchone()
 
 
 def employer_responded(conn: sqlite3.Connection, employer_id: str | None, employer: str | None, *,
-                       exclude_id: int | None, within_days: int, candidate_kind: str = "company") -> sqlite3.Row | None:
+                       exclude_id: int | None, within_days: int, candidate_kind: str = "company",
+                       linked_ids: Sequence[str] = ()) -> sqlite3.Row | None:
     """The vacancy of this employer the owner has already answered, within `within_days` (0 = ever), newest first.
 
     Two ways an answer is recorded: the owner applied on hh.ru himself and the collector saw it in his negotiations
@@ -449,24 +512,25 @@ def employer_responded(conn: sqlite3.Connection, employer_id: str | None, employ
 
     When the answer happened: the button press is exact; for a response made on hh.ru itself the best we have is the
     first time the sync saw it (`negotiation_events`), never `updated_at` — that column moves for other reasons and
-    once kept every company closed for good (v9.11).
+    once kept every company closed for good (v9.11). `linked_ids` — see `employer_lead`.
     """
-    if employer_id is None and not employer:
+    if employer_id is None and not employer and not linked_ids:
         return None
     cutoff = _ago(within_days) if within_days > 0 else "1970-01-01T00:00:00+00:00"
+    linked_sql, linked_params = _linked_sql("v", linked_ids)
     sql = (f"""SELECT * FROM (
-                 SELECT v.id, v.hh_id, v.title, v.status,
+                 SELECT v.id, v.hh_id, v.title, v.status, v.employer_id,
                         COALESCE((SELECT MAX(a.created_at) FROM lead_actions a
                                     WHERE a.vacancy_id = v.id
                                       AND a.action IN ('responded', 'auto_responded')),
                                  (SELECT MIN(ne.seen_at) FROM negotiation_events ne WHERE ne.vacancy_id = v.id),
                                  v.updated_at) AS answered_at
                    FROM vacancies v
-                  WHERE {same_employer_sql('v')} AND v.id IS NOT ? {_kind_sql(candidate_kind)}
+                  WHERE (({same_employer_sql('v')}){linked_sql}) AND v.id IS NOT ? {_kind_sql(candidate_kind)}
                     AND (v.applied = 1 OR EXISTS (SELECT 1 FROM lead_actions a WHERE a.vacancy_id = v.id
                                                    AND a.action IN ('responded', 'auto_responded')))
                ) WHERE answered_at >= ? ORDER BY answered_at DESC, id DESC LIMIT 1""")
-    return conn.execute(sql, same_employer_params(employer_id, employer) + [exclude_id, cutoff]).fetchone()
+    return conn.execute(sql, same_employer_params(employer_id, employer) + linked_params + [exclude_id, cutoff]).fetchone()
 
 
 def skip_as_duplicate(conn: sqlite3.Connection, vacancy_id: int, of_hh_id: str) -> None:
