@@ -144,6 +144,16 @@ class Settings(BaseSettings):
     profi_orders_url: str = "https://profi.ru/backoffice/n.php"
     profi_pages_per_run: int = 1
 
+    # «Работа России» (trudvsem.ru, v9.25) — the state portal's open vacancy API: JSON, no browser, no page limit.
+    # Off by default; the host reaches it only through the owner's direct (non-VPN) route (decision #66).
+    trudvsem_enabled: bool = False
+    trudvsem_api_url: str = "https://opendata.trudvsem.ru/api/v1/vacancies"
+    trudvsem_backfill_days: int = 14       # first sync: how far back; later syncs read since the last one
+    trudvsem_per_run: int = 60             # rows let into evaluation per sync; the rest wait as `new` (a 30-day backfill is ~700)
+    trudvsem_max_pages_per_query: int = 10  # × 100 vacancies
+    trudvsem_request_gap_s: float = 3.0     # a public API, but no need to hammer it: ~9 s per answer anyway
+    trudvsem_timeout_s: float = 90.0
+
     # AI triage of search cards before opening vacancy pages
     triage_batch_size: int = 30
 
@@ -370,6 +380,14 @@ SEARCH_QUERIES: tuple[str, ...] = (
 # Company channels on hh.ru (v9.13, decision #53): the vacancy is only the way to see the company. A panel builder
 # hiring an assembler has customers who want a working program in the cabinet; a design bureau hiring a designer has
 # projects that someone must program and commission. One task per channel per sitting, all of Russia.
+# «Работа России» text queries (v9.25): the API searches the full text, one word or phrase per call, no OR.
+# Broad trade names («КИПиА», «инженер-электроник») are left out on purpose — they bring thousands of
+# maintenance vacancies; those companies reach the `plant` pool through the evaluator anyway.
+TRUDVSEM_QUERIES: tuple[str, ...] = (
+    "АСУ ТП", "АСУТП", "ПЛК", "SCADA", "CODESYS", "MasterSCADA", "ОВЕН", "программист контроллеров",
+    "промышленной автоматизации", "автоматизации технологических процессов",
+)
+
 COMPANY_QUERIES: dict[str, str] = {
     "panel": '("сборщик шкафов" OR "сборщик щитов" OR "сборщик электрощитового" OR "электромонтажник шкафов" '
              'OR "электромонтажник щитов" OR "электромонтажник-сборщик" OR "шкафов автоматики" OR "шкафов управления" '

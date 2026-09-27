@@ -50,8 +50,9 @@ def letter_key(row: sqlite3.Row | dict) -> str:
 
 def needs_email(row: sqlite3.Row | dict) -> bool:
     """A catalogue company (ОВЕН, `site='owen'`) has no hh.ru vacancy to answer, so the only way to reach it is
-    its e-mail: without one the lead is useless and does not go out (decision #56)."""
-    return row_site(row) == "owen" and lead_kind(row) == "company"
+    its e-mail: without one the lead is useless and does not go out (decision #56). The same holds for a vacancy
+    from «Работа России» (`site='trudvsem'`, v9.25): the letter goes to the address the portal states."""
+    return (row_site(row) == "owen" and lead_kind(row) == "company") or row_site(row) == "trudvsem"
 
 
 def contact_email(row: sqlite3.Row | dict, brief: dict | None = None) -> str | None:

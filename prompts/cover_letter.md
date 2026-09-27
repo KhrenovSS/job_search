@@ -2,7 +2,7 @@
 
 Код подставляет `{resume}` и `{candidate_profile}`, отправляет как system. Пользовательское сообщение — JSON одной вакансии
 (title, employer, company, company_kind, city, address, work_format, description, key_skills, verdict, pitch_hint,
-employment, accept_temporary, civil_law_contracts, ip_gph_possible, salary_stated, salary_note, owner_hint).
+employment, accept_temporary, civil_law_contracts, ip_gph_possible, salary_stated, salary_note, owner_hint, channel).
 `company` — досье на работодателя из открытых источников (`prompts/company_research.md`) или `null`.
 Ответ — только текст письма, без заголовков и пояснений.
 
@@ -42,6 +42,13 @@ employment, accept_temporary, civil_law_contracts, ip_gph_possible, salary_state
 Если поле не пустое — это прямое указание человека, который отправит письмо («больше про SCADA», «короче»,
 «упомяни выезд на объект»). Выполни его, не нарушая остальных правил: деньги, честность про стек и формат
 по ИП не отменяются ничем.
+
+## Канал (`channel`)
+
+`hh_response` — письмо уходит откликом на hh.ru: резюме компания видит рядом с ним, вакансию нашли на hh.ru.
+`email` — вакансия найдена на портале «Работа России» (trudvsem.ru), отклика там нет: письмо уходит на e-mail
+компании, резюме приложено файлом. Тогда в первой строке скажи, что пишу по вакансии с «Работы России» (не с hh.ru),
+и там, где ниже говорится «резюме на hh», имей в виду приложенное резюме. Больше канал ничего не меняет.
 
 ## Как писать
 

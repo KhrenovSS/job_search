@@ -87,6 +87,18 @@ initialState, conversationMessagesCount, hasNewMessages, archived, resumeId, cha
   (Дистанционно / У клиента / У специалиста) и город, удобное время, имя клиента, «Вчера в 12:09». Фикстура —
   `tests/fixtures/profi_orders.html` (обезличенный снимок 2026-09-10, имена клиентов заменены).
 
+## 1c. «Работа России» (trudvsem.ru) — открытое API, без браузера (v9.25)
+- `GET https://opendata.trudvsem.ru/api/v1/vacancies?text=<запрос>&offset=<N>&limit=100[&modifiedFrom=YYYY-MM-DDTHH:MM:SSZ]`
+  → `{status, meta: {total, limit}, results: {vacancies: [{vacancy: {...}}]}}`. Поиск полнотекстовый (по требованиям
+  тоже), без OR — по запросу на вызов (`config.TRUDVSEM_QUERIES`). Ответ ~9 с, `httpx` с `TRUDVSEM_TIMEOUT_S`=90.
+- Поля записи: `id` (uuid), `job-name`, `duty`, `requirements`, `skills`, `salary_min/max`, `employment`, `schedule`,
+  `region.name`, `addresses.address[].location`, `company {name, inn, ogrn, companycode, email, hr-agency, url}`,
+  `contact_list [{contact_type: «Эл. почта»|«Телефон», contact_value}]`, `contact_person`, `vac_url`, `date_modify`,
+  `requirement {education, experience}`, `category.specialisation`. Парсер — `sources/trudvsem.parse_vacancy`; фикстура —
+  `tests/fixtures/trudvsem_vacancies.json` (три реальные записи и три синтетические: Крым, без адреса, стоп-слово).
+- Доступ с хоста — только через прямой маршрут на роутере владельца (решение №66); без него `opendata.` уходит
+  в таймаут, `trudvsem.ru` отвечает 460. Сбой — `TrudvsemUnavailable` → `report.trudvsem_error` → мягкая тревога.
+
 ## 2. Мост Claude (`bridge/`)
 
 Собственный сервис проекта: FastAPI + systemd на хосте, порт **8766** (слушает 0.0.0.0, защита — токен), на каждый запрос запускает

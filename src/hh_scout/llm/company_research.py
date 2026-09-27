@@ -87,6 +87,19 @@ def payload(row: sqlite3.Row) -> dict:
             "vacancy_title": None,
             "vacancy_summary": strip_html(raw.get("description"))[:MAX_SUMMARY_CHARS],
         }
+    if row_site(row) == "trudvsem":
+        # a «Работа России» vacancy (v9.25): the company's page on the portal instead of hh.ru; INN for the search
+        return {
+            "employer": row["employer"],
+            "employer_id": row["employer_id"],
+            "employer_url": raw.get("company_url") or row["url"],
+            "company_site": None,
+            "inn": raw.get("inn"),
+            "source": "портал «Работа России» (trudvsem.ru)",
+            "city": row["area_name"],
+            "vacancy_title": row["title"],
+            "vacancy_summary": strip_html(raw.get("description"))[:MAX_SUMMARY_CHARS],
+        }
     return {
         "employer": row["employer"],
         "employer_id": row["employer_id"],
@@ -110,7 +123,7 @@ class CompanyResearcher:
         """The dossier for this vacancy's employer, from cache or the web. None if it cannot be had."""
         if not self.s.company_research_enabled:
             return None
-        if row_site(row) not in ("hh", "owen") or not row["employer_id"]:
+        if row_site(row) not in ("hh", "owen", "trudvsem") or not row["employer_id"]:
             return None  # profi.ru clients are private people; cards without an id have no stable key
         if not force:
             hit = cached(self.conn, row["employer_id"], self.s.company_research_ttl_days)

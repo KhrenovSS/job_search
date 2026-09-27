@@ -481,14 +481,19 @@ def _linked_sql(alias: str, linked_ids: Sequence[str]) -> tuple[str, list[str]]:
 
 # --- one lead per company -----------------------------------------------------------
 
+NAMED_SITES = "('hh', 'trudvsem')"   # sites whose `employer` is a real company name (profi: a first name; owen: has its own ids)
+
+
 def same_employer_sql(alias: str = "v") -> str:
     """WHERE fragment: `alias` is an hh.ru row of the employer given by params (employer_id, employer_id, employer, employer).
 
     Match by hh.ru company id, or by name (case-insensitive via the `casefold` function registered in db.connect) —
     cards collected before v8 carry no id.
-    profi.ru rows never match (their `employer` is a client's first name).
+    profi.ru rows never match (their `employer` is a client's first name). A «Работа России» row (v9.25) is a
+    named company too — by its own id (`tv:<ОГРН>`) or by name; across the two sites the link is usually the
+    shared e-mail domain (`employer_contacts`), because the portal writes «ООО "ХОЛОД"» where hh writes «Холод».
     """
-    return (f"{alias}.site = 'hh' AND ((? IS NOT NULL AND {alias}.employer_id = ?) "
+    return (f"{alias}.site IN {NAMED_SITES} AND ((? IS NOT NULL AND {alias}.employer_id = ?) "
             f"OR (? IS NOT NULL AND casefold({alias}.employer) = casefold(?)))")
 
 
@@ -497,7 +502,7 @@ def same_employer_params(employer_id: str | None, employer: str | None) -> list:
 
 
 # Correlated form of the same identity, for use inside a SELECT over `v`: rows `o` of v's employer.
-_SAME_EMPLOYER_AS_V = ("o.site = 'hh' AND ((v.employer_id IS NOT NULL AND o.employer_id = v.employer_id) "
+_SAME_EMPLOYER_AS_V = (f"o.site IN {NAMED_SITES} AND ((v.employer_id IS NOT NULL AND o.employer_id = v.employer_id) "
                        "OR (v.employer_id IS NULL AND casefold(o.employer) = casefold(v.employer)))")
 
 # For how many days we have been seeing v's employer advertise this very role (decision #44). hh bumps the
@@ -873,7 +878,7 @@ _OUTCOMES_SQL = f"""
     JOIN digest_items di ON di.vacancy_id = v.id
     JOIN digests d ON d.id = di.digest_id
     LEFT JOIN cover_letters c ON c.vacancy_id = v.id
-    WHERE v.site IN ('hh', 'owen') AND d.sent_at >= ?
+    WHERE v.site IN ('hh', 'owen', 'trudvsem') AND d.sent_at >= ?
       AND EXISTS (SELECT 1 FROM lead_actions a WHERE a.vacancy_id = v.id
                   AND a.action IN ('responded', 'auto_responded'))
     GROUP BY v.id

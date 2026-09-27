@@ -20,6 +20,7 @@ from hh_scout.bot.keyboards import vote_kb
 from hh_scout.bot.lead_actions import cleanup_stale, collapse_lead
 from hh_scout.config import TZ, Settings
 from hh_scout.db import kv_get
+from hh_scout.sources import trudvsem
 from hh_scout.llm.cover_letter import CoverLetterWriter
 from hh_scout.pipeline import outcomes, repo
 from hh_scout.pipeline.digest_builder import record_manual_letter
@@ -117,6 +118,13 @@ async def status_cmd(m: Message, settings: Settings, conn: sqlite3.Connection, s
                      f"(по {settings.plant_leads_per_day} в день)")
     lines.append("profi.ru: " + (f"✅ включён · заказов в базе {repo.count_site(conn, 'profi')}" if settings.profi_enabled
                                 else "выключен (PROFI_ENABLED=false)"))
+    if settings.trudvsem_enabled:
+        tv = (kv_get(conn, "trudvsem_last") or "").split("|")
+        last = f"синхронизация {_fmt_dt(tv[0])} · в выдаче {tv[1]} · новых {tv[2]}" if len(tv) == 3 else "ещё не синхронизировался"
+        lines.append(f"Работа России: ✅ включён · вакансий в базе {repo.count_site(conn, 'trudvsem')} · ждут допуска "
+                     f"{trudvsem.waiting(conn)} (по {settings.trudvsem_per_run} за подход) · {last}")
+    else:
+        lines.append("Работа России: выключен (TRUDVSEM_ENABLED=false)")
     wd = kv_get(conn, "watchdog_last")
     sending = kv_get(conn, "sending_since")
     lines.append("Отправка лидов идёт: " + (f"да, с {_fmt_dt(sending)} — не перезапускать" if sending else "нет"))

@@ -82,10 +82,10 @@
   `ip_gph_possible` = maybe; `offer_focus` — JSON-список кодов предложения (`schemas.OFFER_FOCUS`). Строки каталога входят
   `new` и допускаются в `prefiltered` по `COMPANY_LEADS_PER_DAY` в день (`repo.admit_company_leads`, порядок по статусу
   партнёра). Дедуп «одна компания — один лид» для `site='owen'` не действует (ключ уникален сам по себе).
-- `site` (v7, `_m006`): `hh` (по умолчанию) / `profi` / `owen` (v9.13). Заказы profi.ru: `hh_id = 'profi:<номер заказа>'` — глобальный `UNIQUE`
+- `site` (v7, `_m006`): `hh` (по умолчанию) / `profi` / `owen` (v9.13) / `trudvsem` (v9.25: `hh_id='tv:<uuid>'`, `employer_id='tv:<ОГРН|ИНН>'`, `area_path` NULL — регион словами в `area_name`, `raw_json = {site, description (HTML из обязанностей/требований), keySkills, workExperience, emails, phones, contact_person, inn, ogrn, region, city, company_url, …}`, `salary_raw = {from, to, RUR, gross: null, MONTH}`, статус сразу `prefiltered` или `skipped/<правило|no_email>`, сверх `TRUDVSEM_PER_RUN` за подход — `new` до допуска `trudvsem.admit_waiting`). Заказы profi.ru: `hh_id = 'profi:<номер заказа>'` — глобальный `UNIQUE`
   остаётся, коллизий с hh нет; `employer` = имя клиента, `employment = project`, `raw_json = {description, budget, when, client,
   posted, work_format, city, site}`, `salary_raw = {"profi_budget": "до 5000 ₽", from, to, …}`; статус сразу `prefiltered`.
-- `source`: `search:<idx>` / `similar_to_resume` / `negotiations` / `profi` / `owen_catalog` (каталог ОВЕН); `search_pass`: regional / remote / project / **gph**
+- `source`: `search:<idx>` / `similar_to_resume` / `negotiations` / `profi` / `owen_catalog` (каталог ОВЕН) / `trudvsem:<запрос>` (v9.25); `search_pass`: regional / remote / project / **gph**
   (v8.2, поиск с фильтром hh `accept_temporary=true`; с v9.15 по умолчанию идёт только regional — `SEARCH_PASSES`) / similar /
   negotiations / profi / каналы компаний panel / design / owen_si / **plant** (v9.15: строка вакансии, перекрашенная в
   лид-компанию `plant.pool`; исходный проход при этом теряется — канал важнее).
@@ -133,6 +133,7 @@
 | `preview_marked` | `"1"` | одноразовый флаг первого старта сервиса (`main.py`) |
 | `sending_since` | ISO | идёт отправка лидов после подхода (`after_crawl`: автозакрытие и мгновенная отправка; дайджест 12:00 и `/digest` его не ставят); `svc.sh restart` и `/status` смотрят сюда; снимается в `finally` и при старте сервиса (v9.15) |
 | `owen_last` | `ISO\|всего\|новых` | последнее чтение каталога интеграторов ОВЕН (`Scheduler.owen_job`, воскресенье 04:00) |
+| `trudvsem_last` | `ISO\|в выдаче\|новых` | последняя удачная синхронизация «Работы России» (v9.25); следующая читает с этого момента минус 2 дня |
 | `alerts_today` | — | остаток старых версий, кодом не читается и не пишется; можно удалить |
 
 ## Инварианты

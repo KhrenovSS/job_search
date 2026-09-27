@@ -25,7 +25,7 @@ SHARED_DOMAINS: frozenset[str] = frozenset({
     "gmail.com", "googlemail.com", "rambler.ru", "lenta.ru", "myrambler.ru", "outlook.com", "hotmail.com", "live.com",
     "icloud.com", "me.com", "yahoo.com", "protonmail.com", "proton.me", "mail.com", "tut.by", "ukr.net", "i.ua",
     "vk.com", "vk.ru", "t.me", "telegram.me", "telegram.org", "ok.ru", "instagram.com", "facebook.com", "linkedin.com",
-    "youtube.com", "hh.ru", "owen.ru", "avito.ru", "2gis.ru", "tiu.ru", "prom.ru", "pulscen.ru", "google.com",
+    "youtube.com", "hh.ru", "owen.ru", "avito.ru", "trudvsem.ru", "2gis.ru", "tiu.ru", "prom.ru", "pulscen.ru", "google.com",
     "sbis.ru", "rusprofile.ru", "zachestnyibiznes.ru", "list-org.com", "spark-interfax.ru", "checko.ru",
     "companies.rbc.ru", "kontur.ru", "focus.kontur.ru", "egrul.nalog.ru", "yandex.ru", "maps.yandex.ru",
 })

@@ -125,6 +125,13 @@ def analyze_report(report) -> list[Alert]:
         bucket = datetime.now(TZ).timetuple().tm_yday // 3
         alerts.append(Alert(f"profi_blocked:{bucket}",
                             f"🚫 profi.ru: {pe}. Заказы подождут следующего подхода; hh.ru это не затронуло."))
+    te = getattr(report, "trudvsem_error", None)
+    if te:
+        # Same cadence as profi: the API answers in ~9 s and the route to it is the owner's router (decision #66),
+        # so an outage is either a slow day or a lost route — once in three days is enough to notice both.
+        bucket = datetime.now(TZ).timetuple().tm_yday // 3
+        alerts.append(Alert(f"trudvsem_down:{bucket}",
+                            f"🚫 Работа России: {te}. Вакансии портала подождут следующего подхода; hh.ru это не затронуло."))
     return alerts
 
 

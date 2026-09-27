@@ -116,7 +116,7 @@ def revive_orphans(conn: sqlite3.Connection, settings: Settings) -> int:
     a catalogue row (`site='owen'`, v9.22) has no page to open and goes straight back to `prefiltered`.
     No loop: a revived twin ends up `rejected` (not `skipped`), so it is never picked up a second time."""
     rows = conn.execute(
-        "SELECT * FROM vacancies WHERE site IN ('hh', 'owen') AND status = 'skipped' AND skip_reason LIKE ? ORDER BY id",
+        "SELECT * FROM vacancies WHERE site IN ('hh', 'owen', 'trudvsem') AND status = 'skipped' AND skip_reason LIKE ? ORDER BY id",
         (DUPLICATE_PREFIX + "%",)).fetchall()
     n = 0
     with transaction(conn):
@@ -127,8 +127,8 @@ def revive_orphans(conn: sqlite3.Connection, settings: Settings) -> int:
                 continue                                   # that vacancy may still become the company's lead
             if covering_lead(conn, settings, row) is not None:
                 continue                                   # the company has a lead (or one on its way) — stay a duplicate
-            if row_site(row) == "owen":
-                status = "prefiltered"
+            if row_site(row) in ("owen", "trudvsem"):
+                status = "prefiltered"   # nothing to open: the catalogue card / the API item is the whole page
             else:
                 status = "to_fetch" if row["triage_priority"] is not None else "triage"
             repo.set_status(conn, row["hh_id"], status, None)

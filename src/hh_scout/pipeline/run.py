@@ -35,6 +35,7 @@ from hh_scout.pipeline.collector import Collector
 from hh_scout.pipeline.details import DetailsFetcher
 from hh_scout.pipeline.profi_collector import ProfiCollector
 from hh_scout.profi.pages import ProfiBlocked
+from hh_scout.sources import trudvsem
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +69,10 @@ class CrawlReport:
     profi_orders: int | None = None    # profi.ru: orders seen in the feed (None = source disabled / not reached)
     profi_new: int = 0
     profi_error: str | None = None     # profi.ru feed without the cabinet (login/captcha) — hh.ru is unaffected
+    trudvsem_seen: int | None = None   # «Работа России» (v9.25): vacancies in the API answer (None = source disabled)
+    trudvsem_new: int = 0
+    trudvsem_waiting: int = 0          # passed the rules, wait for a later sync (TRUDVSEM_PER_RUN)
+    trudvsem_error: str | None = None  # the API did not answer — hh.ru is unaffected
     duplicate_employers: int = 0       # vacancies skipped because the company already has a lead (all stages)
     revived_duplicates: int = 0        # twins put back into the queue: their covering vacancy is no lead
 
@@ -88,6 +93,11 @@ class CrawlReport:
             lines.append(f"profi.ru: заказов в ленте {self.profi_orders} · новых {self.profi_new}")
         if self.profi_error:
             lines.append(f"profi.ru: {self.profi_error}")
+        if self.trudvsem_seen is not None:
+            lines.append(f"Работа России: в выдаче {self.trudvsem_seen} · новых {self.trudvsem_new}"
+                         + (f" · ждут {self.trudvsem_waiting}" if self.trudvsem_waiting else ""))
+        if self.trudvsem_error:
+            lines.append(f"Работа России: {self.trudvsem_error}")
         if self.browser_error:
             lines.append(("🚫 hh.ru: " if self.blocked else "Браузер: ") + self.browser_error)
         if self.bridge_error:
@@ -171,6 +181,19 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
             log.exception("profi.ru упал")
             report.profi_error = f"лента недоступна ({e.__class__.__name__})"
         report.page_loads += loaded(pc, ps)   # counted even when the feed had no cabinet: it was loaded all the same
+
+    # 1b. «Работа России» open API (v9.25): no browser, no page budget — the rows land as `prefiltered` and are
+    # evaluated in step 5 with the hh.ru ones. A failure is a soft alert (health.py), never an error of the run.
+    if settings.trudvsem_enabled:
+        try:
+            ts = trudvsem.sync(conn, settings)
+            report.trudvsem_seen, report.trudvsem_new = ts.seen, ts.new
+            report.trudvsem_waiting = trudvsem.waiting(conn)
+        except trudvsem.TrudvsemUnavailable as e:
+            report.trudvsem_error = str(e)
+        except Exception as e:  # noqa: BLE001
+            log.exception("Работа России: синхронизация упала")
+            report.trudvsem_error = f"синхронизация упала ({e.__class__.__name__})"
 
     # 1. collect — hold back a share of the budget so step 4 always has pages left for vacancy descriptions.
     # Without it a wide search eats the whole sitting and nothing is ever opened (no evaluations, no leads).

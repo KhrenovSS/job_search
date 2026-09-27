@@ -20,9 +20,10 @@ THRESHOLD="${THRESHOLD:-50}"
 DAY="strftime('%Y-%m-%dT%H:%M:%S','now','+3 hours','start of day','-3 hours')"
 H24="strftime('%Y-%m-%dT%H:%M:%S','now','-24 hours')"
 # Канал лида человеческими словами: по нему видно, откуда пришла компания (v9.13, v9.15).
-CHANNEL="case v.search_pass
-           when 'panel' then 'щитовик' when 'design' then 'бюро' when 'owen_si' then 'ОВЕН'
-           when 'plant' then 'эксплуатант' when 'profi' then 'profi' when 'similar' then 'похожие'
+CHANNEL="case when v.site = 'trudvsem' then 'Работа России'
+           when v.search_pass = 'panel' then 'щитовик' when v.search_pass = 'design' then 'бюро'
+           when v.search_pass = 'owen_si' then 'ОВЕН' when v.search_pass = 'plant' then 'эксплуатант'
+           when v.search_pass = 'profi' then 'profi' when v.search_pass = 'similar' then 'похожие'
            else 'вакансия hh' end"
 # Очередь — то же, что видит `repo.lead_queue`: выше порога или добрано дневным минимумом.
 IN_QUEUE="v.status='evaluated' and (e.total >= $THRESHOLD or e.floor = 1)"
@@ -185,11 +186,11 @@ probe() {  # $1 — номер строки (порядок вывода), $2 �
   printf '%s\t%-22s\t%s\t%s\n' "$1" "$2" "$v" "$4"
 }
 {
-  probe 1 "trudvsem.ru"          "https://trudvsem.ru/"                                              "1-й источник: открытое API «Работы России»" &
-  probe 2 "opendata.trudvsem.ru" "https://opendata.trudvsem.ru/api/v1/vacancies?text=%D0%90%D0%A1%D0%A3&limit=1" "  само API (JSON, без браузера и лимита)" &
+  probe 1 "trudvsem.ru"          "https://trudvsem.ru/"                                              "источник v9.25: открытое API «Работы России»" &
+  probe 2 "opendata.trudvsem.ru" "https://opendata.trudvsem.ru/api/v1/vacancies?text=%D0%90%D0%A1%D0%A3&limit=1" "  само API (JSON, без браузера и лимита; отвечает ~9 с)" &
   probe 3 "insat.ru"             "https://insat.ru/"                                                 "2-й: каталог интеграторов MasterSCADA" &
-  probe 4 "profi.ru"             "https://profi.ru/"                                                 "3-й, решение владельца: v7 готов, выключен 20.09" &
-  probe 5 "zakupki.gov.ru"       "https://zakupki.gov.ru/"                                           "тендеры — канал на потом" &
+  probe 4 "profi.ru"             "https://profi.ru/"                                                 "решение владельца: v7 готов, выключен 20.09" &
+  probe 5 "zakupki.gov.ru"       "https://zakupki.gov.ru/"                                           "тендеры: RSS поиска, robots Crawl-delay 60 с, нужен корневой сертификат Минцифры" &
   probe 6 "hh.ru"                "https://hh.ru/"                                                    "основной источник (через VPN — нероссийский IP, риск №51)" &
   probe 7 "rabota.ru"            "https://www.rabota.ru/"                                            "открыт и так; API нет" &
   wait

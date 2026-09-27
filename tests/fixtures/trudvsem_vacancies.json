@@ -1,0 +1,377 @@
+{
+ "status": "200",
+ "meta": {
+  "total": 5,
+  "limit": 100
+ },
+ "results": {
+  "vacancies": [
+   {
+    "vacancy": {
+     "id": "5f37fb28-5258-11f1-8535-e714bd19e8c4",
+     "source": "Вакансия работодателя",
+     "region": {
+      "region_code": "2200000000000",
+      "name": "Алтайский край"
+     },
+     "company": {
+      "companycode": "1022200704900",
+      "email": "simonov@oooholod.ru",
+      "hr-agency": false,
+      "inn": "2205006790",
+      "kpp": "220501001",
+      "name": "ООО \"ХОЛОД\"",
+      "ogrn": "1022200704900",
+      "url": "https://trudvsem.ru/company/1022200704900"
+     },
+     "creation-date": "2026-05-18",
+     "date_modify": "2026-09-15T04:06:21+0300",
+     "salary": "от 101900",
+     "salary_min": 101900,
+     "salary_max": 179800,
+     "job-name": "Инженер АСУ ТП",
+     "vac_url": "https://trudvsem.ru/vacancy/card/1022200704900/5f37fb28-5258-11f1-8535-e714bd19e8c4",
+     "employment": "Полная занятость",
+     "schedule": "Полный рабочий день",
+     "qualification": "Инженер",
+     "requirements": "Знания языка программирования промышленных PLC и SCADA систем. Программы разработки АСУ ТП (WinCC, Flexible, Intouch, Step7, TIA Portal и т.д).",
+     "duty": "Разработка проектов по автоматизации объектов, ввод АСУ ТП в эксплуатацию, сопровождение АСУ ТП.",
+     "category": {
+      "specialisation": "Пищевая промышленность"
+     },
+     "requirement": {
+      "education": "Высшее образование — специалитет, магистратура",
+      "experience": 1
+     },
+     "addresses": {
+      "address": [
+       {
+        "location": "Алтайский край, г Заринск, Зеленая улица, 51",
+        "lng": "84.931075",
+        "lat": "53.689928"
+       }
+      ]
+     },
+     "social_protected": "",
+     "contact_list": [
+      {
+       "contact_type": "Телефон",
+       "contact_value": "+7(913) 082-64-06"
+      },
+      {
+       "contact_type": "Мобильный телефон",
+       "contact_value": "+7(913) 082-64-06"
+      },
+      {
+       "contact_type": "Эл. почта",
+       "contact_value": "Personal7@oooholod.ru"
+      }
+     ],
+     "contact_person": "Злобина Марина Сергеевна",
+     "work_places": 2,
+     "code_profession": "201294",
+     "typicalPosition": "Инженер автоматизированных систем управления технологическими процессами (АСУ ТП)",
+     "skills": [],
+     "workPlaceType": {
+      "workPlaceForeign": false,
+      "workPlaceOrdinary": true,
+      "workPlaceQuota": false,
+      "workPlaceSpecial": false
+     },
+     "shift": [],
+     "conditions": "Допустимые",
+     "trainingDays": 0,
+     "currency": "«руб.»"
+    }
+   },
+   {
+    "vacancy": {
+     "id": "46347519-96c6-11f1-bf91-e781a974275b",
+     "source": "Вакансия работодателя",
+     "region": {
+      "region_code": "7000000000000",
+      "name": "Томская область"
+     },
+     "company": {
+      "companycode": "1117017000825",
+      "email": "oilteam@tomsk.oilteam.ru",
+      "hr-agency": false,
+      "inn": "7017277099",
+      "kpp": "701701001",
+      "name": "ООО \"КОМПАНИЯ ОЙЛТИМ\"",
+      "ogrn": "1117017000825",
+      "url": "https://trudvsem.ru/company/1117017000825"
+     },
+     "creation-date": "2026-08-13",
+     "date_modify": "2026-09-15T09:45:33+0300",
+     "salary": "от 200000",
+     "salary_min": 200000,
+     "salary_max": 280000,
+     "job-name": "Инженер автоматизированных систем управления технологическими процессами (АСУ ТП)",
+     "vac_url": "https://trudvsem.ru/vacancy/card/1117017000825/46347519-96c6-11f1-bf91-e781a974275b",
+     "schedule": "Вахтовый метод",
+     "qualification": "диплом",
+     "requirements": "Опыт работы со SCADA-системами при разработке прикладного ПО и наладке АСУ ТП энергообъектов. Опыт работы с оборудованием АСУ ТП: серверное оборудование, сетевое оборудование, др.; Опыт конфигурирования цифровых протоколов связи в АСУ ТП. Желательно: знание протоколов резервирование сети Ethernet (PRP, RSTP). Личные качества: работоспособность ответственность внимательность, способность к быстрому обучению, желание развиваться. Соблюдение правил охраны труда и электробезопасности на объектах выполнения работ.",
+     "duty": "Опыт работы со SCADA-системами при разработке прикладного ПО и наладке АСУ ТП энергообъектов. Опыт работы с оборудованием АСУ ТП: серверное оборудование, сетевое оборудование, др.; Опыт конфигурирования цифровых протоколов связи в АСУ ТП. Желательно: знание протоколов резервирование сети Ethernet (PRP, RSTP); Личные качества: работоспособность ответственность внимательность, способность к быстрому обучению, желание развиваться. Соблюдение правил охраны труда и электробезопасности на объектах выполнения.",
+     "category": {
+      "specialisation": "Добывающая промышленность"
+     },
+     "requirement": {
+      "education": "Высшее образование — специалитет, магистратура",
+      "experience": 1
+     },
+     "addresses": {
+      "address": [
+       {
+        "location": "Томская область, Каргасокский район, Каргасок село,  СТР. 1, Адрес работодателя: г.Томск, Телевизионный переулок, дом 3, стр. 1 Место работы: Красноярский край",
+        "lng": "80.866719",
+        "lat": "59.042195"
+       }
+      ]
+     },
+     "social_protected": "",
+     "contact_list": [
+      {
+       "contact_type": "Телефон",
+       "contact_value": "+7(382) 266-01-30"
+      }
+     ],
+     "contact_person": "Лавров Владимир Владимирович",
+     "work_places": 1,
+     "code_profession": "201319",
+     "typicalPosition": "Ничего не выбрано",
+     "skills": [
+      "Ответственность , добросовестность",
+      "Ответственность , добросовестность"
+     ],
+     "workPlaceType": {
+      "workPlaceForeign": false,
+      "workPlaceOrdinary": true,
+      "workPlaceQuota": false,
+      "workPlaceSpecial": false
+     },
+     "shift": [],
+     "scheduleTypeComment": "10 или 12 часовой рабочий день",
+     "trainingDays": 0,
+     "currency": "«руб.»"
+    }
+   },
+   {
+    "vacancy": {
+     "id": "11111111-2222-3333-4444-555555555555",
+     "source": "Вакансия работодателя",
+     "region": {
+      "region_code": "3500000000000",
+      "name": "Республика Крым"
+     },
+     "company": {
+      "companycode": "80dee960-feb9-11ec-8534-550ed7335bbe",
+      "email": "secretar@ural.fsk-ees.ru",
+      "hr-agency": false,
+      "inn": "9102000001",
+      "kpp": "667102003",
+      "name": "ООО \"КРЫМАВТОМАТИКА\"",
+      "ogrn": "1149102000001",
+      "url": "https://trudvsem.ru/company/80dee960-feb9-11ec-8534-550ed7335bbe"
+     },
+     "creation-date": "2026-01-23",
+     "date_modify": "2026-09-07T14:15:25+0300",
+     "salary": "от 82857",
+     "salary_min": 82857,
+     "salary_max": 82857,
+     "job-name": "Инженер-программист ПЛК",
+     "vac_url": "https://trudvsem.ru/vacancy/card/80dee960-feb9-11ec-8534-550ed7335bbe/f4812648-f842-11f0-a027-0dd543315e5a",
+     "employment": "Полная занятость",
+     "schedule": "Полный рабочий день",
+     "qualification": "Инженер",
+     "requirements": "С высшим образованием по направлению: АСУ ТП, Связь; Со стажем работы в электроэнергетике или отраслях, связанных с профилем работы участка РЗА и АСУ ТП от 1 года.",
+     "duty": "Поддерживать в работоспособном состоянии системы АСУ ТП; Проводить регламентные работы по техническом обслуживанию систем АСУ ТП; Планировать работы по ТО; Составлять отчеты о проделанных работах; Работать с системным оператором в части телемеханики.",
+     "category": {
+      "specialisation": "Электроэнергетика"
+     },
+     "requirement": {
+      "education": "Высшее образование — специалитет, магистратура",
+      "experience": 1
+     },
+     "addresses": {
+      "address": [
+       {
+        "location": "Республика Крым, г Симферополь, ул Киевская, 1"
+       }
+      ]
+     },
+     "social_protected": "",
+     "contact_list": [
+      {
+       "contact_type": "Телефон",
+       "contact_value": "+7(343) 372-93-57"
+      },
+      {
+       "contact_type": "Эл. почта",
+       "contact_value": "Ivantsova-AA@fskees.ru"
+      }
+     ],
+     "contact_person": "Иванцова Анна Александровна",
+     "work_places": 1,
+     "code_profession": "201319",
+     "typicalPosition": "Ничего не выбрано",
+     "skills": [],
+     "workPlaceType": {
+      "workPlaceForeign": false,
+      "workPlaceOrdinary": true,
+      "workPlaceQuota": false,
+      "workPlaceSpecial": false
+     },
+     "shift": [],
+     "benefit": "Добровольное медицинское страхование",
+     "trainingDays": 0,
+     "currency": "«руб.»"
+    }
+   },
+   {
+    "vacancy": {
+     "id": "aaaaaaaa-0000-0000-0000-000000000001",
+     "source": "Вакансия работодателя",
+     "region": {
+      "region_code": "7000000000000",
+      "name": "Томская область"
+     },
+     "company": {
+      "companycode": "1020000000002",
+      "name": "АО \"БЕЗАДРЕСА\"",
+      "inn": "7700000002",
+      "ogrn": "1020000000002",
+      "hr-agency": false,
+      "url": "https://trudvsem.ru/company/1020000000002"
+     },
+     "creation-date": "2026-08-13",
+     "date_modify": "2026-09-15T09:45:33+0300",
+     "salary": "от 200000",
+     "salary_min": 200000,
+     "salary_max": 280000,
+     "job-name": "Инженер АСУТП",
+     "vac_url": "https://trudvsem.ru/vacancy/card/1117017000825/46347519-96c6-11f1-bf91-e781a974275b",
+     "schedule": "Вахтовый метод",
+     "qualification": "диплом",
+     "requirements": "Опыт работы со SCADA-системами при разработке прикладного ПО и наладке АСУ ТП энергообъектов. Опыт работы с оборудованием АСУ ТП: серверное оборудование, сетевое оборудование, др.; Опыт конфигурирования цифровых протоколов связи в АСУ ТП. Желательно: знание протоколов резервирование сети Ethernet (PRP, RSTP). Личные качества: работоспособность ответственность внимательность, способность к быстрому обучению, желание развиваться. Соблюдение правил охраны труда и электробезопасности на объектах выполнения работ.",
+     "duty": "Опыт работы со SCADA-системами при разработке прикладного ПО и наладке АСУ ТП энергообъектов. Опыт работы с оборудованием АСУ ТП: серверное оборудование, сетевое оборудование, др.; Опыт конфигурирования цифровых протоколов связи в АСУ ТП. Желательно: знание протоколов резервирование сети Ethernet (PRP, RSTP); Личные качества: работоспособность ответственность внимательность, способность к быстрому обучению, желание развиваться. Соблюдение правил охраны труда и электробезопасности на объектах выполнения.",
+     "category": {
+      "specialisation": "Добывающая промышленность"
+     },
+     "requirement": {
+      "education": "Высшее образование — специалитет, магистратура",
+      "experience": 1
+     },
+     "addresses": {
+      "address": [
+       {
+        "location": "Томская область, Каргасокский район, Каргасок село,  СТР. 1, Адрес работодателя: г.Томск, Телевизионный переулок, дом 3, стр. 1 Место работы: Красноярский край",
+        "lng": "80.866719",
+        "lat": "59.042195"
+       }
+      ]
+     },
+     "social_protected": "",
+     "contact_list": [
+      {
+       "contact_type": "Телефон",
+       "contact_value": "+7(495) 000-00-02"
+      }
+     ],
+     "contact_person": "Лавров Владимир Владимирович",
+     "work_places": 1,
+     "code_profession": "201319",
+     "typicalPosition": "Ничего не выбрано",
+     "skills": [
+      "Ответственность , добросовестность",
+      "Ответственность , добросовестность"
+     ],
+     "workPlaceType": {
+      "workPlaceForeign": false,
+      "workPlaceOrdinary": true,
+      "workPlaceQuota": false,
+      "workPlaceSpecial": false
+     },
+     "shift": [],
+     "scheduleTypeComment": "10 или 12 часовой рабочий день",
+     "trainingDays": 0,
+     "currency": "«руб.»"
+    }
+   },
+   {
+    "vacancy": {
+     "id": "bbbbbbbb-0000-0000-0000-000000000003",
+     "source": "Вакансия работодателя",
+     "region": {
+      "region_code": "7200000000000",
+      "name": "Тюменская область"
+     },
+     "company": {
+      "companycode": "bae6b440-831b-11ec-b19e-57fc951f3846",
+      "email": "info@tnpz.rusinvest.ru",
+      "hr-agency": false,
+      "inn": "7705551779",
+      "kpp": "720343001",
+      "name": "ООО \"ЛОГИСТИКА\"",
+      "ogrn": "1020000000003",
+      "url": "https://trudvsem.ru/company/bae6b440-831b-11ec-b19e-57fc951f3846"
+     },
+     "creation-date": "2026-03-31",
+     "date_modify": "2026-08-28T12:03:32+0300",
+     "salary": "от 108000",
+     "salary_min": 108000,
+     "salary_max": 108000,
+     "job-name": "Водитель погрузчика",
+     "vac_url": "https://trudvsem.ru/vacancy/card/bae6b440-831b-11ec-b19e-57fc951f3846/a1e21200-2ce0-11f1-b896-f7acc8f2fb19",
+     "employment": "Полная занятость",
+     "schedule": "Полный рабочий день",
+     "qualification": "высшее техническое образование",
+     "requirements": "высшее образование по направлению \"автоматизация технологических процессов\" опыт работы инженером АСУ ТП не менее 1 года",
+     "duty": "обслуживание обрудования АСУ ТП",
+     "category": {
+      "specialisation": "Производство"
+     },
+     "requirement": {
+      "education": "Высшее образование — бакалавриат",
+      "experience": 1
+     },
+     "addresses": {
+      "address": [
+       {
+        "location": "Тюменская область, г Тюмень, автодороги тракт Старый Тобольский территория, 6-ой километр, 20",
+        "lng": "65.749456",
+        "lat": "57.100377"
+       }
+      ]
+     },
+     "social_protected": "",
+     "contact_list": [
+      {
+       "contact_type": "Телефон",
+       "contact_value": "+7(345) 253-23-99"
+      },
+      {
+       "contact_type": "Эл. почта",
+       "contact_value": "a.rusin@tnpz.ri-invest.ru"
+      }
+     ],
+     "contact_person": "Русин Александр",
+     "work_places": 1,
+     "code_profession": "201318",
+     "typicalPosition": "Ничего не выбрано",
+     "skills": [],
+     "workPlaceType": {
+      "workPlaceForeign": false,
+      "workPlaceOrdinary": true,
+      "workPlaceQuota": false,
+      "workPlaceSpecial": false
+     },
+     "shift": [],
+     "conditions": "Вредные",
+     "trainingDays": 0,
+     "currency": "«руб.»"
+    }
+   }
+  ]
+ }
+}

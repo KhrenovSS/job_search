@@ -130,6 +130,8 @@ def letter_payload(row: sqlite3.Row, company: dict | None = None, owner_hint: st
         "verdict": row["verdict"],
         "pitch_hint": row["pitch_hint"],
         "salary_note": "вакансия просит указать зарплатные ожидания" if asks_salary else "зарплату не упоминать",
+        # v9.25: a «Работа России» vacancy is answered by e-mail, the resume attached — not as an hh.ru response
+        "channel": "email" if row_site(row) == "trudvsem" else "hh_response",
     }
 
 

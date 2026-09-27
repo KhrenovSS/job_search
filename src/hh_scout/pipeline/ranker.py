@@ -93,7 +93,8 @@ def format_card(position: int, v: sqlite3.Row, e: sqlite3.Row) -> str:
     kind = COMPANY_RU.get(e["company_kind"] or "unknown")
     who = v["employer"] or ("заказчик не указан" if profi else "компания не указана")
     head = f"<b>{position}. {_esc(v['title'])}</b> — {_esc(who)}" + (f" ({kind})" if kind and not profi else "")
-    facts = ["🛠 заказ на profi.ru" if profi else None, f"💰 {human_from_raw(salary_raw)}", WORK_FORMAT_RU.get(v["work_format"]),
+    trudvsem = row_site(v) == "trudvsem"
+    facts = ["🛠 заказ на profi.ru" if profi else None, "🇷🇺 Работа России" if trudvsem else None, f"💰 {human_from_raw(salary_raw)}", WORK_FORMAT_RU.get(v["work_format"]),
              f"📍 {v['area_name']}" if v["area_name"] else None, EMPLOYMENT_RU.get(v["employment"] or "unknown")]
     lead_bits = []
     hh_note = hh_contract_note(v)
@@ -125,8 +126,22 @@ def format_card(position: int, v: sqlite3.Row, e: sqlite3.Row) -> str:
         lines.append(f"   ✉️ Зацепка: {_esc(e['pitch_hint'])}")
     if flags:
         lines.append(f"   ⚠️ {_esc('; '.join(flags))}")
+    if trudvsem:
+        lines += _portal_contacts(v)   # no hh.ru response here: the letter goes to the address the portal states
     lines.append(f"   {v['url']}")
     return "\n".join(lines)
+
+
+def _portal_contacts(v: sqlite3.Row) -> list[str]:
+    """«📧 Писать на:» and the contact person/phone of a «Работа России» vacancy (v9.25)."""
+    raw = json.loads(v["raw_json"]) if v["raw_json"] else {}
+    email = contact_email(v)
+    out = [f"   📧 Писать на: <b>{_esc(email)}</b>" if email else "   📧 адреса нет"]
+    who = [raw.get("contact_person"), *(raw.get("phones") or [])[:1]]
+    who = [str(x) for x in who if x]
+    if who:
+        out.append("   📞 " + _esc(", ".join(who)))
+    return out
 
 
 def _dossier_contacts(v: sqlite3.Row) -> list[str]:
