@@ -25,6 +25,7 @@ from hh_scout.browser.bursts import run_in_bursts
 from hh_scout.browser.hh_pages import PageFormatError, parse_vacancy, vacancy_url
 from hh_scout.browser.session import BrowserSession, BrowserUnavailable, HHBlocked, WindowRegistry
 from hh_scout.config import Settings
+from hh_scout.hh.areas import blocked_region
 from hh_scout.pipeline import dedup, repo
 
 log = logging.getLogger(__name__)
@@ -111,6 +112,10 @@ class DetailsFetcher:
             return self._next() is not None
         with self.conn:
             status = repo.save_details(self.conn, detail)
+            region = blocked_region(detail.area_path) if status == "prefiltered" else None
+            if region:   # the card had no `area.path`, the page has — decision #65 holds before any evaluation
+                status = "skipped"
+                repo.set_status(self.conn, hh_id, status, repo.REGION_PREFIX + region)
         self.stats.outcomes[status] += 1
         log.info("Вакансия %s «%s» → %s (описание %d симв., навыков %d)", hh_id, detail.title[:50], status,
                  len(detail.description_text), len(detail.key_skills))

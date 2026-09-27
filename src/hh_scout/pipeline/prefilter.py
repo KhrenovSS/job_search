@@ -17,8 +17,9 @@ import sqlite3
 from collections import Counter
 from dataclasses import dataclass
 
-from hh_scout.config import TITLE_KEEP_WORDS, TITLE_REQUIRED_ANY, TITLE_STOP_WORDS, Settings
+from hh_scout.config import BLOCKED_REGIONS, TITLE_KEEP_WORDS, TITLE_REQUIRED_ANY, TITLE_STOP_WORDS, Settings
 from hh_scout.db import transaction
+from hh_scout.hh.areas import blocked_region
 from hh_scout.pipeline import repo
 from hh_scout.pipeline.rows import lead_kind
 
@@ -32,6 +33,7 @@ class CardFacts:
     applied: bool
     archived: bool
     company: bool = False   # a company-channel card (v9.13): the title names the company's trade, not a programmer
+    region: str | None = None  # the blocked region the card lies in (`hh.areas.blocked_region`), decision #65
 
 
 # Stop words match only at the start of a word: "водитель" must not hit "руководитель".
@@ -44,6 +46,8 @@ def decide(card: CardFacts) -> str | None:
         return "applied"
     if card.archived:
         return "archived"
+    if card.region:
+        return repo.REGION_PREFIX + card.region   # the owner does not work there — whatever the title says
     title = card.title.casefold()
     keep = any(k in title for k in TITLE_KEEP_WORDS)
     if not keep:
@@ -61,7 +65,8 @@ def decide(card: CardFacts) -> str | None:
 
 def _facts(row: sqlite3.Row) -> CardFacts:
     return CardFacts(hh_id=row["hh_id"], title=row["title"] or "", applied=bool(row["applied"]),
-                     archived=(row["skip_reason"] == "archived"), company=(lead_kind(row) == "company"))
+                     archived=(row["skip_reason"] == "archived"), company=(lead_kind(row) == "company"),
+                     region=blocked_region(row["area_path"]))
 
 
 def run(conn: sqlite3.Connection, settings: Settings, *, dry_run: bool = False) -> Counter:
@@ -81,6 +86,12 @@ def run(conn: sqlite3.Connection, settings: Settings, *, dry_run: bool = False) 
                 repo.set_status(conn, row["hh_id"], "skipped", reason)
             else:
                 repo.set_status(conn, row["hh_id"], "triage")
+        if not dry_run:
+            # Rows past `new` that turned out to lie in a blocked region (an old card whose page was opened before
+            # the rule existed, a region added to the list, the plant pool) are withdrawn here as well.
+            withdrawn = repo.skip_blocked_regions(conn, BLOCKED_REGIONS)
+            if withdrawn:
+                log.info("Закрытые регионы: снято с очереди %s", ", ".join(f"{k} — {v}" for k, v in withdrawn.items()))
     log.info("Префильтр: %d карточек → %s", len(rows), dict(outcomes))
     return outcomes
 

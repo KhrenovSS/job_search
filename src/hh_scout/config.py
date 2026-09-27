@@ -406,10 +406,24 @@ REGION_NAMES: tuple[str, ...] = (
     "Ульяновская область", "Пензенская область",
     # Юг (без кавказских республик и новых территорий)
     "Ростовская область", "Краснодарский край", "Республика Адыгея", "Волгоградская область",
-    "Астраханская область", "Республика Калмыкия", "Республика Крым", "Ставропольский край",
+    "Астраханская область", "Республика Калмыкия", "Ставропольский край",
 )
 # Control values for cache validation (documented ids on hh.ru).
 KNOWN_AREA_IDS: dict[str, int] = {"Москва": 1, "Московская область": 2019}
+
+# Regions the owner does not work with at all (decision #65, 2026-09-27): Crimea (Sevastopol is inside it on hh.ru)
+# and the four regions annexed in 2022. A vacancy there is skipped by the rules stage before any AI or page load,
+# whatever its score, and a lead already in the queue is withdrawn. Keyed by the hh.ru area id of the region: every
+# card and vacancy page carries `area.path` (".113.225.2114.131." for Симферополь, ".113.2173.123." for Луганск —
+# the federal district is not always in it), so a city is matched through its region id, never by name:
+# «Донецк (Ростовская область)» stays. Ids from api.hh.ru/areas (tests/fixtures/areas_russia.json).
+BLOCKED_REGIONS: dict[int, str] = {
+    2114: "Республика Крым",
+    2134: "Донецкая Народная Республика",
+    2155: "Запорожская область",
+    2173: "Луганская Народная Республика",
+    2209: "Херсонская область",
+}
 
 # Conservative stop words for the local prefilter. When in doubt, let the AI decide.
 # Matched case-insensitively against the vacancy title only.

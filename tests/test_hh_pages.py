@@ -31,7 +31,7 @@ def test_search_page_parses_cards(search_state):
     assert first.hh_id == "136519902"
     assert first.title == "Инженер-программист АСУ ТП (PLC, HMI, частотные преобразователи)"  # nbsp/‑ normalised
     assert first.employer == "Амперика" and first.employer_id == "9070507"
-    assert first.area_name == "Москва"
+    assert first.area_name == "Москва" and first.area_path == ".113.232.1."
     assert first.work_format == "office" and first.employment == "full"
     assert first.compensation["from"] == 140000 and first.compensation["gross"] is True
     assert first.published_at.startswith("2026-09-07T17:03:08")
@@ -82,6 +82,7 @@ def test_vacancy_page(vacancy_state):
     d = parse_vacancy(vacancy_state)
     assert d.hh_id == "136519902"
     assert d.employer == "Амперика" and d.employer_id == "9070507" and d.area_name == "Москва"
+    assert d.area_path == ".113.232.1."
     assert d.work_format == "office" and d.employment == "full"
     # the page keeps the flag outside vacancyView, in the response-status block
     assert d.accept_temporary is True
@@ -172,3 +173,12 @@ def test_parse_negotiations_tolerant():
     assert items["200"].state == "INVITATION" and items["200"].has_messages is True
     assert parse_negotiations({"nothing": []}) == []
     assert user_type({"userType": "applicant"}) == "applicant"
+
+
+def test_area_path_falls_back_to_region_id_and_tolerates_junk():
+    from hh_scout.browser.hh_pages import _area_path
+
+    assert _area_path({"@id": 131, "name": "Симферополь", "path": ".113.225.2114.131."}) == ".113.225.2114.131."
+    assert _area_path({"id": 123, "regionId": 2173, "name": "Луганск"}) == ".2173."
+    assert _area_path({"id": 123, "name": "Луганск", "path": ""}) is None
+    assert _area_path({"id": 1}) is None and _area_path(None) is None and _area_path("Москва") is None

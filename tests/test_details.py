@@ -169,3 +169,22 @@ def test_channel_shares_validation():
     for bad in ("plant:1.5", "plant", "vacancy:0.7,plant:0.5"):
         with pytest.raises(ValueError):
             Settings(_env_file=None, details_channel_shares=bad)
+
+
+def test_details_withdraws_a_blocked_region_seen_only_on_the_page(monkeypatch, vacancy_state):
+    """Decision #65: the card had no `area.path`, the vacancy page says Симферополь → skipped before evaluation,
+    and the row remembers its path for the next sweep."""
+    from hh_scout.browser import pacing
+    monkeypatch.setattr(pacing, "sleep", lambda s: None)
+    conn = _db_with([("136519902", 1), ("555", 2)])
+    crimea = json.loads(json.dumps(vacancy_state))
+    crimea["vacancyView"]["vacancyId"] = 555
+    crimea["vacancyView"]["area"] = {"@id": 131, "id": 131, "name": "Симферополь", "path": ".113.225.2114.131.", "regionId": 2114}
+    states = {"136519902": vacancy_state, "555": crimea}
+    f = DetailsFetcher(Settings(_env_file=None), conn, session_factory=lambda b: FakeSession(b, states, []), rng=random.Random(0), page_budget=10)
+    stats = f.run()
+    rows = {r["hh_id"]: r for r in conn.execute("SELECT * FROM vacancies")}
+    assert rows["555"]["status"] == "skipped" and rows["555"]["skip_reason"] == "region:Республика Крым"
+    assert rows["555"]["area_path"] == ".113.225.2114.131." and rows["555"]["area_name"] == "Симферополь"
+    assert rows["136519902"]["status"] == "prefiltered" and rows["136519902"]["area_path"] == ".113.232.1."
+    assert stats.outcomes["skipped"] == 1 and stats.outcomes["prefiltered"] == 1

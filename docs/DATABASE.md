@@ -9,7 +9,9 @@
 (`vacancies.negotiation_state`, `negotiation_seen_at`), `_m011_letter_rules` (`cover_letters.rules_hash`),
 `_m012_negotiation_events` (`negotiation_events` + засев из снимка), `_m013_letter_context` (`cover_letters.owner_hint`,
 `with_dossier`), `_m014_floor` (`evaluations.floor` — взята по дневному минимуму ниже порога, решение №52),
-`_m015_lead_kind` (`vacancies.lead_kind` vacancy/company, `evaluations.offer_focus` — решение №53).
+`_m015_lead_kind` (`vacancies.lead_kind` vacancy/company, `evaluations.offer_focus` — решение №53), `_m016_employer_contacts`
+(`employer_contacts` — решение №64), `_m017_area_path` (`vacancies.area_path` — `area.path` hh.ru «.113.225.2114.131.», бэкфилл из
+`raw_json.area`; закрытые регионы, решение №65).
 Время — TEXT ISO-8601 UTC; границы для сравнения строятся через `repo.iso_utc` (строка с `+03:00` рядом с `+00:00`
 сравнивается как текст и сдвигает окно на три часа).
 Почти весь SQL — в `src/hh_scout/pipeline/repo.py` (свои запросы держат ещё миграции `db.py`, `llm/evaluator.py`, `llm/company_research.py`, `pipeline/budget.py`, `pipeline/plant.py`, `hh/areas.py`, `health.py`); аналитика над строками (исходы, полосы, зрелость) — в `pipeline/outcomes.py`.
@@ -44,7 +46,11 @@
 Лиды выше порога, к которым ещё не написано письмо (бюджет `LETTERS_BUDGET_MIN` кончился, мост молчал), остаются `evaluated` до следующей отправки.
 
 ## `vacancies.skip_reason`
-`applied` (владелец уже откликался) · `archived` · `stopword:<слово>` · `no_engineering_title`
+`applied` (владелец уже откликался) · `archived` · `region:<регион>` (v9.23, решение №65: Крым с Севастополем, ДНР, ЛНР,
+Запорожская и Херсонская области — `config.BLOCKED_REGIONS` по id региона в `vacancies.area_path`, а не по названию города:
+«Донецк (Ростовская область)» проходит; ставится правилами на `new`, стадией описаний, если путь появился только на странице,
+и `repo.skip_blocked_regions` на каждом прогоне правил — снимает такие строки с любой стадии до письма и из пула `plant_pool`,
+а списанным по баллу `rejected` дописывает причину, чтобы дневной минимум их не поднял; `sent` не трогает) · `stopword:<слово>` · `no_engineering_title`
 (нет инженерного слова в названии — самый частый) · `triage` (ИИ: не открывать) · `invalid_ai_answer` /
 `missing_in_ai_answer` (оценка) · `no_vacancy_view` (страница без данных) · `low_priority_expired` (приоритет 3 триажа не открыт за `LOW_PRIORITY_TTL_DAYS`) · `queue_expired` (v9.1: лид простоял в очереди дольше `QUEUE_TTL_DAYS` — до него так и не дошла суточная норма) ·
 `duplicate_employer:<hh_id>` (v8: у компании уже есть лид `<hh_id>` — отправленный за последние `EMPLOYER_REPEAT_DAYS` или ждущий

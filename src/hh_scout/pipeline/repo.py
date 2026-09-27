@@ -57,13 +57,13 @@ def insert_card(conn: sqlite3.Connection, card: VacancyCard, source: str, search
     elif card.archived:
         status, reason = ("skipped", "archived")
     conn.execute(
-        """INSERT INTO vacancies(hh_id, title, employer, employer_id, url, area_name, work_format, employment,
+        """INSERT INTO vacancies(hh_id, title, employer, employer_id, url, area_name, area_path, work_format, employment,
                                  accept_temporary, civil_law_contracts,
                                  salary_from, salary_to, salary_raw, published_at, source, search_pass, lead_kind,
                                  status, skip_reason, applied, first_seen_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (card.hh_id, card.title, card.employer, card.employer_id, card.url, card.area_name, card.work_format, card.employment,
-         int(card.accept_temporary), _contracts_json(card.civil_law_contracts),
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (card.hh_id, card.title, card.employer, card.employer_id, card.url, card.area_name, card.area_path, card.work_format,
+         card.employment, int(card.accept_temporary), _contracts_json(card.civil_law_contracts),
          sal.from_net, sal.to_net, json.dumps(card.compensation, ensure_ascii=False) if card.compensation else None,
          card.published_at, source, search_pass, lead_kind, status, reason, int(card.applied), now, now),
     )
@@ -327,14 +327,14 @@ def save_details(conn: sqlite3.Connection, detail: VacancyDetail) -> str:
     conn.execute(
         """UPDATE vacancies SET raw_json = ?, title = COALESCE(NULLIF(?, ''), title), employer = COALESCE(?, employer),
                   employer_id = COALESCE(?, employer_id),
-                  area_name = COALESCE(?, area_name), work_format = ?, employment = ?,
+                  area_name = COALESCE(?, area_name), area_path = COALESCE(?, area_path), work_format = ?, employment = ?,
                   accept_temporary = MAX(accept_temporary, ?),
                   civil_law_contracts = COALESCE(?, civil_law_contracts),
                   salary_from = ?, salary_to = ?, salary_raw = COALESCE(?, salary_raw),
                   applied = MAX(applied, ?), status = ?, skip_reason = ?, updated_at = ?
            WHERE hh_id = ?""",
         (json.dumps(trim_vacancy_view(detail.raw), ensure_ascii=False), detail.title, detail.employer, detail.employer_id, detail.area_name,
-         detail.work_format, detail.employment,
+         detail.area_path, detail.work_format, detail.employment,
          int(detail.accept_temporary), _contracts_json(detail.civil_law_contracts), sal.from_net, sal.to_net,
          json.dumps(detail.compensation, ensure_ascii=False) if detail.compensation else None,
          int(detail.applied), status, reason, utcnow(), detail.hh_id),
@@ -342,6 +342,41 @@ def save_details(conn: sqlite3.Connection, detail: VacancyDetail) -> str:
     company = detail.raw.get("company") if isinstance(detail.raw.get("company"), dict) else {}
     record_contacts(conn, detail.employer_id, urls=[company.get("companySiteUrl")])
     return status
+
+
+# --- blocked regions (decision #65) ----------------------------------------------------------
+
+REGION_PREFIX = "region:"
+# Statuses a blocked-region row is withdrawn from: everything on its way to a letter, plus the plant pool.
+_REGION_LIVE_STATUSES = ("new", "triage", "to_fetch", "prefiltered", "evaluated", "evaluation_failed")
+
+
+def skip_blocked_regions(conn: sqlite3.Connection, blocked: dict[int, str]) -> dict[str, int]:
+    """Withdraw hh.ru rows lying in a blocked region — by `area_path`, never by city name.
+
+    Rows still in flight (and the plant pool, `skipped/plant_pool`) become `skipped/region:<name>`; a row already
+    written off by score (`rejected` without `skip_reason`) only gets the reason, so the daily floor and `--readmit`
+    leave it alone. `sent` rows are history and stay. Returns {region name: rows withdrawn}.
+    """
+    now = utcnow()
+    out: dict[str, int] = {}
+    placeholders = ",".join("?" * len(_REGION_LIVE_STATUSES))
+    for area_id, name in blocked.items():
+        like = f"%.{area_id}.%"
+        reason = REGION_PREFIX + name
+        cur = conn.execute(
+            f"""UPDATE vacancies SET status = 'skipped', skip_reason = ?, updated_at = ?
+                WHERE site = 'hh' AND area_path LIKE ?
+                  AND (status IN ({placeholders}) OR (status = 'skipped' AND skip_reason = ?))""",
+            (reason, now, like, *_REGION_LIVE_STATUSES, PLANT_POOL))
+        n = cur.rowcount
+        cur = conn.execute(
+            "UPDATE vacancies SET skip_reason = ?, updated_at = ? WHERE site = 'hh' AND area_path LIKE ? "
+            "AND status = 'rejected' AND skip_reason IS NULL", (reason, now, like))
+        n += cur.rowcount
+        if n:
+            out[name] = n
+    return out
 
 
 def page_loads_today(conn: sqlite3.Connection) -> int:

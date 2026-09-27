@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from hh_scout.config import KNOWN_AREA_IDS, REGION_NAMES, Settings
+from hh_scout.config import BLOCKED_REGIONS, KNOWN_AREA_IDS, REGION_NAMES, Settings
 from hh_scout.db import utcnow
 
 log = logging.getLogger(__name__)
@@ -24,6 +24,30 @@ CACHE_TTL = timedelta(days=30)
 
 class AreaResolutionError(RuntimeError):
     pass
+
+
+def path_ids(area_path: str | None) -> list[int]:
+    """hh.ru's `area.path` (".113.225.2114.131.") → [113, 225, 2114, 131]; anything unparsable → []."""
+    if not area_path or not isinstance(area_path, str):
+        return []
+    out: list[int] = []
+    for part in area_path.split("."):
+        if part.isdigit():
+            out.append(int(part))
+    return out
+
+
+def blocked_region(area_path: str | None, blocked: dict[int, str] = BLOCKED_REGIONS) -> str | None:
+    """The name of the blocked region the area lies in (decision #65), or None.
+
+    Matched by region id anywhere in the path, not by position: Луганск's path has no federal district
+    (".113.2173.123."), Симферополь's has one (".113.225.2114.131."). No path (an old row, a page without
+    `area`) → None: the rule never guesses by city name.
+    """
+    for area_id in path_ids(area_path):
+        if area_id in blocked:
+            return blocked[area_id]
+    return None
 
 
 def _fetch_russia_regions(user_agent: str) -> list[dict]:

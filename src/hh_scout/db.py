@@ -407,6 +407,20 @@ def _m016_employer_contacts(conn: sqlite3.Connection) -> None:
         log.info("Контакты компаний из каталога и досье: %d ключей записано", len(found))
 
 
+def _m017_area_path(conn: sqlite3.Connection) -> None:
+    """v9.23: `vacancies.area_path` — hh.ru's `area.path` (".113.225.2114.131.": country, [federal district,] region,
+    city), so the rules stage can tell the region of a card without the areas dictionary (decision #65: no vacancies
+    from Crimea and the four regions annexed in 2022). Backfilled from the stored vacancy page (`raw_json.area.path`,
+    or `.regionId` when the page had no path); cards never opened stay NULL — the rule does not guess by city name.
+    """
+    conn.execute("ALTER TABLE vacancies ADD COLUMN area_path TEXT")
+    conn.execute("""UPDATE vacancies SET area_path = COALESCE(json_extract(raw_json, '$.area.path'),
+                                                            '.' || json_extract(raw_json, '$.area.regionId') || '.')
+                    WHERE site = 'hh' AND raw_json IS NOT NULL AND json_valid(raw_json)
+                      AND (json_extract(raw_json, '$.area.path') IS NOT NULL
+                           OR json_extract(raw_json, '$.area.regionId') IS NOT NULL)""")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m001_initial,
     _m002_triage_columns,
@@ -424,6 +438,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m014_floor,
     _m015_lead_kind,
     _m016_employer_contacts,
+    _m017_area_path,
 ]
 
 

@@ -142,3 +142,22 @@ def test_m016_backfills_contacts_from_the_catalogue_and_the_dossiers():
                     ("108", "domain", "firm.ru"), ("108", "email", "info@mail.ru")}   # no mail.ru domain, no 109
     assert repo.linked_employer_ids(conn, "108") == ["owen:1"]
     assert {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")} >= {"idx_employer_contacts_value"}
+
+
+def test_m017_backfills_area_path_from_the_stored_vacancy_page():
+    """Decision #65: rows whose page was opened get `area_path` from `raw_json.area` (path, else regionId);
+    cards never opened stay NULL."""
+    conn = connect(":memory:")
+    for m in MIGRATIONS[:16]:
+        m(conn)
+    conn.execute("PRAGMA user_version = 16")
+    ins = ("INSERT INTO vacancies(hh_id,title,url,raw_json,source,search_pass,status,first_seen_at,updated_at) "
+           "VALUES (?,?,'u',?,'s','regional','rejected','t','t')")
+    conn.execute(ins, ("1", "a", '{"area": {"id": 131, "name": "Симферополь", "path": ".113.225.2114.131."}}'))
+    conn.execute(ins, ("2", "b", '{"area": {"id": 123, "regionId": 2173, "name": "Луганск"}}'))
+    conn.execute(ins, ("3", "c", '{"area": {"id": 1, "name": "Москва"}}'))
+    conn.execute(ins, ("4", "d", None))
+    conn.execute(ins, ("5", "e", "not json"))
+    assert migrate(conn) == len(MIGRATIONS)
+    got = {r["hh_id"]: r["area_path"] for r in conn.execute("SELECT hh_id, area_path FROM vacancies")}
+    assert got == {"1": ".113.225.2114.131.", "2": ".2173.", "3": None, "4": None, "5": None}

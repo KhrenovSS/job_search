@@ -62,3 +62,57 @@ def test_a_company_card_passes_without_an_engineering_word_but_stop_words_still_
     assert decide(_c("Сборщик электрощитового оборудования")) == "no_engineering_title"   # a vacancy card
     assert decide(_c("Сборщик электрощитового оборудования", company=True)) is None       # the company is the lead
     assert decide(_c("Менеджер по продажам щитового оборудования", company=True)) == "stopword:менеджер по продажам"
+
+
+def test_blocked_region_beats_the_title(monkeypatch):
+    """Decision #65: a vacancy in Crimea or the annexed regions is skipped by the rules, whatever the title."""
+    assert decide(_c("Инженер-программист ПЛК", region="Республика Крым")) == "region:Республика Крым"
+    assert decide(_c("Сборщик шкафов", company=True, region="Херсонская область")) == "region:Херсонская область"
+    assert decide(_c("Инженер-программист ПЛК", region=None)) is None
+    # `applied` still wins: the owner has already answered, the row must count as such
+    assert decide(_c("Инженер-программист ПЛК", applied=True, region="Республика Крым")) == "applied"
+
+
+def test_run_skips_blocked_regions_from_the_card_path_and_withdraws_rows_already_past_the_rules():
+    from hh_scout.config import Settings
+    from hh_scout.db import connect, migrate
+    from hh_scout.pipeline import repo
+    from hh_scout.pipeline.prefilter import run
+
+    conn = connect(":memory:")
+    migrate(conn)
+    rows = [
+        # hh_id, area_name, area_path, status, skip_reason
+        ("1", "Симферополь", ".113.225.2114.131.", "new", None),           # rule: Крым
+        ("2", "Донецк", ".113.2134.2136.", "new", None),                   # rule: ДНР
+        ("3", "Донецк (Ростовская область)", ".113.226.1530.1543.", "new", None),  # passes
+        ("4", "Луганск", None, "new", None),                               # no path → not guessed by name
+        ("5", "Севастополь", ".113.225.2114.130.", "evaluated", None),     # in the queue → withdrawn
+        ("6", "Ялта", ".113.225.2114.2120.", "rejected", None),            # written off by score → reason only
+        ("7", "Мелитополь", ".113.2155.2159.", "skipped", "plant_pool"),   # plant pool → withdrawn
+        ("8", "Херсон", ".113.2209.2210.", "sent", None),                  # history stays
+        ("9", "Евпатория", ".113.225.2114.2115.", "skipped", "triage"),    # already skipped for another reason
+    ]
+    for hh_id, area, path, status, reason in rows:
+        conn.execute("INSERT INTO vacancies(hh_id,title,url,area_name,area_path,source,search_pass,status,skip_reason,"
+                     "first_seen_at,updated_at) VALUES (?,?,'u',?,?,'s','regional',?,?,'t','t')",
+                     (hh_id, "Инженер-программист ПЛК", area, path, status, reason))
+    conn.execute("INSERT INTO vacancies(hh_id,site,title,url,area_path,source,search_pass,status,first_seen_at,updated_at) "
+                 "VALUES ('owen:x','owen','Интегратор','u','.113.225.2114.131.','s','owen_si','new','t','t')")
+    outcomes = run(conn, Settings(_env_file=None))
+    assert outcomes["region"] == 2 and outcomes["passed"] == 2
+    st = {r["hh_id"]: (r["status"], r["skip_reason"]) for r in conn.execute("SELECT * FROM vacancies")}
+    assert st["1"] == ("skipped", "region:Республика Крым")
+    assert st["2"] == ("skipped", "region:Донецкая Народная Республика")
+    assert st["3"] == ("triage", None)
+    assert st["4"] == ("triage", None)
+    assert st["5"] == ("skipped", "region:Республика Крым")
+    assert st["6"] == ("rejected", "region:Республика Крым")
+    assert st["7"] == ("skipped", "region:Запорожская область")
+    assert st["8"] == ("sent", None)
+    assert st["9"] == ("skipped", "triage")
+    assert st["owen:x"] == ("new", None)      # catalogue rows are not hh.ru cards; the sweep is hh-only
+    # the floor no longer sees the Ялта row: `rejected` with a reason is "by age/rule", not "by score"
+    assert repo.floor_candidates(conn, threshold=50, min_total=40, min_role=40, lookback_days=3) == []
+    # a second pass changes nothing
+    assert repo.skip_blocked_regions(conn, {2114: "Республика Крым"}) == {}

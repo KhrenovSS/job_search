@@ -191,6 +191,7 @@ class VacancyCard:
     employer_id: str | None = None  # hh.ru company.id — stable key for "one lead per company"
     accept_temporary: bool = False  # hh filter "Оформление по ГПХ или по совместительству"
     civil_law_contracts: tuple[str, ...] = ()  # SELF_EMPLOYED / INDIVIDUAL_ENTREPRENEUR / INDIVIDUAL_PERSON
+    area_path: str | None = None  # hh `area.path` — region ids for the blocked-regions rule (decision #65)
 
 
 @dataclass
@@ -208,6 +209,20 @@ def _company_name(company: Any) -> str | None:
         return None
     name = company.get("visibleName") or company.get("name")
     return clean_text(name) or None
+
+
+def _area_path(area: Any) -> str | None:
+    """hh.ru's `area.path` (".113.225.2114.131." — country, [federal district,] region, city); the vacancy page also
+    has `regionId`, used when the path is missing. Read by `hh.areas.blocked_region` (decision #65)."""
+    if not isinstance(area, dict):
+        return None
+    path = area.get("path")
+    if isinstance(path, str) and path.strip("."):
+        return path
+    region = area.get("regionId") or area.get("@regionId")
+    if region not in (None, ""):
+        return f".{region}."
+    return None
 
 
 def _company_id(company: Any) -> str | None:
@@ -242,6 +257,7 @@ def _card_from_raw(v: dict[str, Any], user_labels_map: dict[str, Any]) -> Vacanc
         archived=bool(v.get("@isArchived") or v.get("isArchived") or v.get("archived")),
         labels=[json.dumps(x, ensure_ascii=False) if not isinstance(x, str) else x for x in labels],
         employer_id=_company_id(v.get("company")),
+        area_path=_area_path(v.get("area")),
         accept_temporary=bool(v.get("acceptTemporary")),
         civil_law_contracts=normalize_civil_law_contracts(v.get("civilLawContracts")),
     )
@@ -308,6 +324,7 @@ class VacancyDetail:
     employer_id: str | None = None
     accept_temporary: bool = False  # hh filter "Оформление по ГПХ или по совместительству"
     civil_law_contracts: tuple[str, ...] = ()  # SELF_EMPLOYED / INDIVIDUAL_ENTREPRENEUR / INDIVIDUAL_PERSON
+    area_path: str | None = None  # hh `area.path` / `regionId` — the blocked-regions rule (decision #65)
 
 
 def _accept_temporary(state: dict[str, Any], vv: dict[str, Any], hh_id: str) -> bool:
@@ -374,6 +391,7 @@ def parse_vacancy(state: dict[str, Any]) -> VacancyDetail:
         employer_id=_company_id(vv.get("company")),
         accept_temporary=_accept_temporary(state, vv, str(vv["vacancyId"])),
         civil_law_contracts=normalize_civil_law_contracts(vv.get("civilLawContracts")),
+        area_path=_area_path(vv.get("area")),
     )
 
 
