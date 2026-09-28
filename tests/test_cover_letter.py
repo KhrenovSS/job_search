@@ -240,6 +240,28 @@ def test_the_letter_speaks_for_one_person_not_a_firm():
     assert letter_checks.PLURAL_VOICE_RE.pattern in letter_checks.CODE_RULES
 
 
+def test_an_email_letter_promises_no_attachment():
+    """Decision #70: a «Работа России» letter goes by e-mail alone — no resume attached, no hh page beside it."""
+    from hh_scout.llm import letter_checks
+    from hh_scout.llm.cover_letter import check_letter
+    conn = _db()
+    conn.execute("UPDATE vacancies SET site = 'trudvsem' WHERE id = 2")
+    by_email = repo.lead_by_hh_id(conn, "2")
+    on_hh = repo.lead_by_hh_id(conn, "1")
+
+    attach = "Здравствуйте. Пишу по вакансии с «Работы России». Резюме прикладываю к письму. Работаю по ИП." + SIGNATURE
+    assert "e-mail" in check_letter(attach, by_email, None) and "«Резюме прикладываю»" in check_letter(attach, by_email, None)
+    figure = "Здравствуйте. Ориентир в резюме относится к штатной занятости, по договору считаю от объёма." + SIGNATURE
+    assert "e-mail" in check_letter(figure, by_email, None)
+    assert "e-mail" in check_letter("Здравствуйте. Подробности — во вложении." + SIGNATURE, by_email, None)
+    # an hh.ru response may still lean on the resume the company sees next to it
+    assert check_letter(attach, on_hh, None) == "" and check_letter(figure, on_hh, None) == ""
+    clean = ("Здравствуйте. Пишу по вакансии с «Работы России». Программы для КНС писал на ОВЕН. "
+             "Стоимость по договору считается от объёма, сроков и состава задач." + SIGNATURE)
+    assert check_letter(clean, by_email, None) == ""
+    assert letter_checks.ATTACHMENT_RE.pattern in letter_checks.CODE_RULES
+
+
 @respx.mock
 def test_letters_are_capped_by_time_not_by_a_daily_count(tmp_path, monkeypatch):
     """v9.14 (decision #54): the quota is gone, so what bounds a pass is its time budget — a letter costs

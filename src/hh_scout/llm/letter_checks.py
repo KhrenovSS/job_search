@@ -67,8 +67,19 @@ PLURAL_VOICE_RE = re.compile(
 
 # The stamp is the text of the rules themselves, so any edit above changes it without anyone remembering to bump it.
 # The signature rule lives in `signature_problem`, not in a regex, so its shape is stamped by hand (decision #58).
+# A letter that goes by e-mail (trudvsem, catalogue companies, tenders) goes alone: no resume is attached and there is
+# no hh.ru page beside it (decision #70). «Резюме прикладываю к письму» promises what the reader never gets, and «ориентир
+# в резюме» points at a figure they cannot see; the letter must carry its facts itself. Refused, not cut: the money
+# sentence is rebuilt as a whole, not by deleting three words.
+ATTACHMENT_RE = re.compile(
+    r"резюме\s+(?:прикладываю|прилагаю|приложено|приложил|прикрепл\w*|во\s+вложении|в\s+приложении|в\s+прикреплённом)"
+    r"|(?:прикладываю|прилагаю|прикрепляю|приложу)\s+(?:к\s+письму\s+)?резюме"
+    r"|во\s+вложении|в\s+прикреплённом\s+файле|см\.\s*резюме|в\s+приложенном\s+резюме"
+    r"|(?:ориентир\w*|сумм\w*|цифр\w*|указан\w*)\s+в\s+(?:моём\s+)?резюме|резюме\s+на\s+hh",
+    re.IGNORECASE)
+
 CODE_RULES = "\n".join((MONEY_RE.pattern, "|".join(BANNED), ROLE_ADDRESS_RE.pattern, PLURAL_VOICE_RE.pattern,
-                         "signature:4-lines/ИП/phone/email"))
+                         ATTACHMENT_RE.pattern, "signature:4-lines/ИП/phone/email"))
 
 
 def strip_role_address(text: str) -> str:
@@ -119,6 +130,15 @@ def voice_problem(text: str) -> str:
         return ""
     return (f"письмо от одного человека, а «{m.group(0)}» читается как отклик от имени организации — hh.ru отклоняет "
             "такой отклик как рекламу услуг; пиши от первого лица единственного числа: работаю, беру, приеду")
+
+
+def attachment_problem(text: str) -> str:
+    """An e-mail letter must not promise a resume or point at one (decision #70): there is none beside it."""
+    m = ATTACHMENT_RE.search(text)
+    if not m:
+        return ""
+    return (f"письмо уходит по e-mail без резюме — «{m.group(0)}» обещает то, чего читатель не получит; всё об опыте "
+            "должно быть в самом тексте, а про деньги — одна фраза без отсылки к резюме")
 
 
 def signature_problem(text: str) -> str:

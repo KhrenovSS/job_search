@@ -132,7 +132,8 @@ def letter_payload(row: sqlite3.Row, company: dict | None = None, owner_hint: st
         "verdict": row["verdict"],
         "pitch_hint": row["pitch_hint"],
         "salary_note": "вакансия просит указать зарплатные ожидания" if asks_salary else "зарплату не упоминать",
-        # v9.25: a «Работа России» vacancy is answered by e-mail, the resume attached — not as an hh.ru response
+        # v9.25: a «Работа России» vacancy is answered by e-mail, not as an hh.ru response; no resume goes with it —
+        # the letter is the whole offer (decision #70)
         "channel": "email" if row_site(row) == "trudvsem" else "hh_response",
     }
 
@@ -200,6 +201,8 @@ def check_letter(text: str, row: sqlite3.Row, company: dict | None) -> str:
         return problem
     if letter_key(row) in REVIEWED_KEYS:
         problem = letter_checks.signature_problem(text) or letter_checks.voice_problem(text)
+        if not problem and needs_email(row):
+            problem = letter_checks.attachment_problem(text)   # no resume goes by e-mail (decision #70)
         if problem:
             return problem
         if company:
