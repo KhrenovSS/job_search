@@ -130,6 +130,23 @@ q "select ушло, канал, компания, вакансия, балл, м
    order by ord, tot desc;"
 
 echo
+echo "=== Письма от первого лица (v9.27, решение №69: hh.ru отклоняет «работаем/мы» как рекламу организации) ==="
+# Журнал: сколько раз правило вернуло черновик модели, сколько писем отбраковано совсем (две попытки) и сколько
+# правок редактора отброшено из-за него. Единичные переписывания — норма; отклонено > 0 — смотреть «Журнал подхода».
+VOICE_FIX="$(jr | grep -c "правим и переписываем: письмо от одного человека")"
+VOICE_REJ="$(jr | grep -c "отклонено: письмо от одного человека")"
+VOICE_ED="$(jr | grep -c "Редактор вернул текст с ошибкой (письмо от одного человека")"
+echo "по журналу: переписано моделью $VOICE_FIX, отклонено после двух попыток $VOICE_REJ, правка редактора отброшена $VOICE_ED"
+# База: письма за сутки, где множественное число всё же осталось (должно быть 0), и старые письма с ним — те уже
+# в чате, при отправке владелец правит руками. LIKE в sqlite не знает кириллического регистра, поэтому обе формы.
+PLURAL="(c.text like '%работаем%' or c.text like '%Работаем%' or c.text like '%пишем%' or c.text like '%Пишем%'
+         or c.text like '%предлагаем%' or c.text like '%Предлагаем%' or c.text like '% мы %' or c.text like '%Мы %'
+         or c.text like '% наши %' or c.text like '%Наши %' or c.text like '% наша %' or c.text like '%Наша %')"
+q "select (select count(*) from cover_letters c where c.created_at >= $H24) 'писем за сутки',
+          (select count(*) from cover_letters c where c.created_at >= $H24 and $PLURAL) 'из них с «мы/работаем» (должно быть 0)',
+          (select count(*) from cover_letters c where $PLURAL) 'всего в базе с «мы/работаем» (старые — править руками)';"
+
+echo
 echo "=== Очередь, каналы компаний и что ждёт открытия ==="
 q "select (select count(*) from vacancies where site='owen' and status='new')             'ОВЕН ждёт',
          (select count(*) from vacancies where site='owen' and status='sent')             'ОВЕН ушло',
