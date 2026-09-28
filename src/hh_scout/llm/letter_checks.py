@@ -54,9 +54,21 @@ ROLE_ADDRESS_RE = re.compile(
 PHONE_RE = re.compile(r"\+?\d[\d\s()\-]{8,}\d")
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 
+# The letter is written by one person and must read so (decision #69): hh.ru refused a response that said
+# «Работаем по договору с ИП…» («нарушает правила сервиса») and took the same text once the owner changed it to
+# «Работаю…» — the plural reads as a firm advertising its services, which the site's rules forbid. Explicit forms,
+# not `наш\w*`: «нашёл вашу вакансию» is a perfectly good first line. A hit is refused, not cut: one verb changes the
+# agreement of the whole sentence, so the model rewrites.
+PLURAL_VOICE_RE = re.compile(
+    r"(?<![\w-])(?:мы|нас|нам|нами|наш|наша|наше|наши|нашего|нашей|нашему|нашим|наших|нашими|нашу"
+    r"|работаем|предлагаем|делаем|пишем|берём|берем|берёмся|беремся|выезжаем|можем|сделаем|напишем"
+    r"|подключимся|приедем)(?![\w-])",
+    re.IGNORECASE)
+
 # The stamp is the text of the rules themselves, so any edit above changes it without anyone remembering to bump it.
 # The signature rule lives in `signature_problem`, not in a regex, so its shape is stamped by hand (decision #58).
-CODE_RULES = "\n".join((MONEY_RE.pattern, "|".join(BANNED), ROLE_ADDRESS_RE.pattern, "signature:4-lines/ИП/phone/email"))
+CODE_RULES = "\n".join((MONEY_RE.pattern, "|".join(BANNED), ROLE_ADDRESS_RE.pattern, PLURAL_VOICE_RE.pattern,
+                         "signature:4-lines/ИП/phone/email"))
 
 
 def strip_role_address(text: str) -> str:
@@ -95,6 +107,18 @@ def cliche_problem(text: str) -> str:
         if phrase in low:
             return f"запрещённый оборот «{phrase}» — письмо должно быть деловым, без штампов и лести"
     return ""
+
+
+def voice_problem(text: str) -> str:
+    """The author speaks for himself: «мы», «работаем», «наши инженеры» make the letter a firm's advertisement.
+
+    hh.ru's moderation refused exactly such a response (decision #69), and a sole trader has no «мы» anyway.
+    """
+    m = PLURAL_VOICE_RE.search(text)
+    if not m:
+        return ""
+    return (f"письмо от одного человека, а «{m.group(0)}» читается как отклик от имени организации — hh.ru отклоняет "
+            "такой отклик как рекламу услуг; пиши от первого лица единственного числа: работаю, беру, приеду")
 
 
 def signature_problem(text: str) -> str:

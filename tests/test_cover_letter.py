@@ -218,6 +218,28 @@ def test_code_checks_catch_money_and_cliches():
     assert "сумма" in check_letter("Ориентир 2500 за смену. " + ok, row, company)
 
 
+def test_the_letter_speaks_for_one_person_not_a_firm():
+    """Decision #69: hh.ru refused «Работаем по договору с ИП…» as a firm's advertisement and took «Работаю…»."""
+    from hh_scout.llm.cover_letter import check_letter
+    from hh_scout.llm.letter_checks import voice_problem
+    conn = _db()
+    row = _row_with_company(conn)
+
+    refused = check_letter("Здравствуйте. Работаем по договору с ИП, со счётом и закрывающими документами." + SIGNATURE, row, None)
+    assert "первого лица" in refused and "«Работаем»" in refused and "hh.ru" in refused
+    assert "«мы»" in check_letter("Здравствуйте. Программную часть мы берём на подряд." + SIGNATURE, row, None)
+    assert "«наши»" in check_letter("Здравствуйте. Наши инженеры приедут на пуск." + SIGNATURE, row, None).lower()
+    # the habit of company offers — «один раз пишем и отлаживаем» (46 of 211 stored) — is the same plural
+    assert "«пишем»" in check_letter("Здравствуйте. Один раз пишем и отлаживаем шаблон." + SIGNATURE, row, None)
+    # the singular is the norm — and «нашёл», «у вас», «вы готовы» are not the plural of the author
+    assert check_letter("Здравствуйте. Нашёл вашу вакансию на hh.ru. Работаю по договору с ИП, приеду на пуск. "
+                        "Если вы готовы обсудить, напишите." + SIGNATURE, row, None) == ""
+    assert voice_problem("Готов созвониться; на объект приеду сам.") == ""
+    # the rule is stamped: a stored letter with «мы» goes stale together with the code (decision #50)
+    from hh_scout.llm import letter_checks
+    assert letter_checks.PLURAL_VOICE_RE.pattern in letter_checks.CODE_RULES
+
+
 @respx.mock
 def test_letters_are_capped_by_time_not_by_a_daily_count(tmp_path, monkeypatch):
     """v9.14 (decision #54): the quota is gone, so what bounds a pass is its time budget — a letter costs

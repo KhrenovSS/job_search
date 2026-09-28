@@ -199,7 +199,7 @@ def check_letter(text: str, row: sqlite3.Row, company: dict | None) -> str:
     if problem:
         return problem
     if letter_key(row) in REVIEWED_KEYS:
-        problem = letter_checks.signature_problem(text)
+        problem = letter_checks.signature_problem(text) or letter_checks.voice_problem(text)
         if problem:
             return problem
         if company:
