@@ -21,6 +21,7 @@ from hh_scout.config import Settings
 from hh_scout.llm import letter_checks
 from hh_scout.llm.bridge_client import BridgeClient, BridgeError
 from hh_scout.llm.company_research import CompanyResearcher
+from hh_scout.llm.evaluator import tender_block
 from hh_scout.llm.letter_checks import strip_role_address
 from hh_scout.llm.prompts import PrivatePromptMissing, load_prompt_body, read_private, render
 from hh_scout.pipeline import dedup, repo
@@ -90,6 +91,7 @@ def letter_payload(row: sqlite3.Row, company: dict | None = None, owner_hint: st
             "city": row["area_name"],
             "company": company,      # dossier from the open web; None = only what the vacancy / catalogue said
             "catalog": catalog or None,
+            "tender": tender_block(raw) if row_site(row) == "zakupki" else None,   # the contract just won (v9.26)
             "seen_through": row["title"],   # the vacancy (or catalogue line) the company was found by
             "description": desc[:MAX_DESCRIPTION_CHARS],
             "verdict": row["verdict"],

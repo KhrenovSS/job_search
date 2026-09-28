@@ -82,10 +82,10 @@
   `ip_gph_possible` = maybe; `offer_focus` — JSON-список кодов предложения (`schemas.OFFER_FOCUS`). Строки каталога входят
   `new` и допускаются в `prefiltered` по `COMPANY_LEADS_PER_DAY` в день (`repo.admit_company_leads`, порядок по статусу
   партнёра). Дедуп «одна компания — один лид» для `site='owen'` не действует (ключ уникален сам по себе).
-- `site` (v7, `_m006`): `hh` (по умолчанию) / `profi` / `owen` (v9.13) / `trudvsem` (v9.25: `hh_id='tv:<uuid>'`, `employer_id='tv:<ОГРН|ИНН>'`, `area_path` NULL — регион словами в `area_name`, `raw_json = {site, description (HTML из обязанностей/требований), keySkills, workExperience, emails, phones, contact_person, inn, ogrn, region, city, company_url, …}`, `salary_raw = {from, to, RUR, gross: null, MONTH}`, статус сразу `prefiltered` или `skipped/<правило|no_email>`, сверх `TRUDVSEM_PER_RUN` за подход — `new` до допуска `trudvsem.admit_waiting`). Заказы profi.ru: `hh_id = 'profi:<номер заказа>'` — глобальный `UNIQUE`
+- `site` (v7, `_m006`): `hh` (по умолчанию) / `profi` / `owen` (v9.13) / `trudvsem` (v9.25: `hh_id='tv:<uuid>'`, `employer_id='tv:<ОГРН|ИНН>'`, `area_path` NULL — регион словами в `area_name`, `raw_json = {site, description (HTML из обязанностей/требований), keySkills, workExperience, emails, phones, contact_person, inn, ogrn, region, city, company_url, …}`, `salary_raw = {from, to, RUR, gross: null, MONTH}`, статус сразу `prefiltered` или `skipped/<правило|no_email>`, сверх `TRUDVSEM_PER_RUN` за подход — `new` до допуска `trudvsem.admit_waiting`) / `zakupki` (v9.26: лид-компания, `hh_id='zk:<номер извещения 44-ФЗ>'`, `search_pass='tender'`, `status='new'` пока победитель не найден (`raw_json.tries` — сколько дней смотрели), затем `employer`/`employer_id='zk:<ИНН>'`/`area_name` из карточки контракта и `prefiltered`; `raw_json = {site, law, reg_number, notice_type, object, customer, price, stage, query, tries, description, winner, inn, kpp, emails, phones, address, supplier_status, contract_subject, contract_price, contract_signed, contract_deadline, contract_reestr, contract_url}`; без контракта — `skipped/tender:no_contract`). Заказы profi.ru: `hh_id = 'profi:<номер заказа>'` — глобальный `UNIQUE`
   остаётся, коллизий с hh нет; `employer` = имя клиента, `employment = project`, `raw_json = {description, budget, when, client,
   posted, work_format, city, site}`, `salary_raw = {"profi_budget": "до 5000 ₽", from, to, …}`; статус сразу `prefiltered`.
-- `source`: `search:<idx>` / `similar_to_resume` / `negotiations` / `profi` / `owen_catalog` (каталог ОВЕН) / `trudvsem:<запрос>` (v9.25); `search_pass`: regional / remote / project / **gph**
+- `source`: `search:<idx>` / `similar_to_resume` / `negotiations` / `profi` / `owen_catalog` (каталог ОВЕН) / `trudvsem:<запрос>` (v9.25) / `zakupki:<фраза>` (v9.26); `search_pass`: regional / remote / project / **gph**
   (v8.2, поиск с фильтром hh `accept_temporary=true`; с v9.15 по умолчанию идёт только regional — `SEARCH_PASSES`) / similar /
   negotiations / profi / каналы компаний panel / design / owen_si / **plant** (v9.15: строка вакансии, перекрашенная в
   лид-компанию `plant.pool`; исходный проход при этом теряется — канал важнее).
@@ -134,6 +134,7 @@
 | `sending_since` | ISO | идёт отправка лидов после подхода (`after_crawl`: автозакрытие и мгновенная отправка; дайджест 12:00 и `/digest` его не ставят); `svc.sh restart` и `/status` смотрят сюда; снимается в `finally` и при старте сервиса (v9.15) |
 | `owen_last` | `ISO\|всего\|новых` | последнее чтение каталога интеграторов ОВЕН (`Scheduler.owen_job`, воскресенье 04:00) |
 | `trudvsem_last` | `ISO\|в выдаче\|новых` | последняя удачная синхронизация «Работы России» (v9.25); следующая читает с этого момента минус 2 дня |
+| `zakupki_last` | `ISO\|извещений\|новых\|победителей` | последний удачный запуск канала `tender` (`Scheduler.zakupki_job`, v9.26) |
 | `alerts_today` | — | остаток старых версий, кодом не читается и не пишется; можно удалить |
 
 ## Инварианты

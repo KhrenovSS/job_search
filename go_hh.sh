@@ -20,7 +20,7 @@ THRESHOLD="${THRESHOLD:-50}"
 DAY="strftime('%Y-%m-%dT%H:%M:%S','now','+3 hours','start of day','-3 hours')"
 H24="strftime('%Y-%m-%dT%H:%M:%S','now','-24 hours')"
 # Канал лида человеческими словами: по нему видно, откуда пришла компания (v9.13, v9.15).
-CHANNEL="case when v.site = 'trudvsem' then 'Работа России'
+CHANNEL="case when v.site = 'trudvsem' then 'Работа России' when v.site = 'zakupki' then 'закупки (ЕИС)'
            when v.search_pass = 'panel' then 'щитовик' when v.search_pass = 'design' then 'бюро'
            when v.search_pass = 'owen_si' then 'ОВЕН' when v.search_pass = 'plant' then 'эксплуатант'
            when v.search_pass = 'profi' then 'profi' when v.search_pass = 'similar' then 'похожие'
@@ -190,7 +190,7 @@ probe() {  # $1 — номер строки (порядок вывода), $2 �
   probe 2 "opendata.trudvsem.ru" "https://opendata.trudvsem.ru/api/v1/vacancies?text=%D0%90%D0%A1%D0%A3&limit=1" "  само API (JSON, без браузера и лимита; отвечает ~9 с)" &
   probe 3 "insat.ru"             "https://insat.ru/"                                                 "2-й: каталог интеграторов MasterSCADA" &
   probe 4 "profi.ru"             "https://profi.ru/"                                                 "решение владельца: v7 готов, выключен 20.09" &
-  probe 5 "zakupki.gov.ru"       "https://zakupki.gov.ru/"                                           "тендеры: RSS поиска, robots Crawl-delay 60 с, нужен корневой сертификат Минцифры" &
+  probe 5 "zakupki.gov.ru"       "https://zakupki.gov.ru/"                                           "канал tender v9.26: RSS + страницы ЕИС, по запросу в минуту" &
   probe 6 "hh.ru"                "https://hh.ru/"                                                    "основной источник (через VPN — нероссийский IP, риск №51)" &
   probe 7 "rabota.ru"            "https://www.rabota.ru/"                                            "открыт и так; API нет" &
   wait

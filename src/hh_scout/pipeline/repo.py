@@ -481,7 +481,7 @@ def _linked_sql(alias: str, linked_ids: Sequence[str]) -> tuple[str, list[str]]:
 
 # --- one lead per company -----------------------------------------------------------
 
-NAMED_SITES = "('hh', 'trudvsem')"   # sites whose `employer` is a real company name (profi: a first name; owen: has its own ids)
+NAMED_SITES = "('hh', 'trudvsem', 'zakupki')"   # sites whose `employer` is a real company name (profi: a first name; owen: has its own ids)
 
 
 def same_employer_sql(alias: str = "v") -> str:
@@ -878,7 +878,7 @@ _OUTCOMES_SQL = f"""
     JOIN digest_items di ON di.vacancy_id = v.id
     JOIN digests d ON d.id = di.digest_id
     LEFT JOIN cover_letters c ON c.vacancy_id = v.id
-    WHERE v.site IN ('hh', 'owen', 'trudvsem') AND d.sent_at >= ?
+    WHERE v.site IN ('hh', 'owen', 'trudvsem', 'zakupki') AND d.sent_at >= ?
       AND EXISTS (SELECT 1 FROM lead_actions a WHERE a.vacancy_id = v.id
                   AND a.action IN ('responded', 'auto_responded'))
     GROUP BY v.id

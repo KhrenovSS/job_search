@@ -40,7 +40,18 @@ OFFER_RU = {"plc_hmi_per_panel": "программа ПЛК и панель по
             "subcontract_programming": "субподряд на программную часть",
             "modernization": "модернизация программ ПЛК и панелей на действующем оборудовании",
             "support": "программист по вызову без штата"}
-CHANNEL_ICON = {"panel": "🔧", "design": "📐", "owen_si": "🟡", "plant": "🏭"}
+CHANNEL_ICON = {"panel": "🔧", "design": "📐", "owen_si": "🟡", "plant": "🏭", "tender": "🏛"}
+
+
+def _tender_line(raw: dict) -> str:
+    """What the winner has just signed (v9.26): subject, customer, price, signing date."""
+    subject = raw.get("contract_subject") or raw.get("object") or ""
+    bits = [f"🏛 Контракт: {_esc(subject[:160])}" if subject else "🏛 Контракт",
+            f"заказчик {_esc(str(raw.get('customer'))[:60])}" if raw.get("customer") else None,
+            f"{_esc(str(raw.get('contract_price') or raw.get('price')))} ₽" if (raw.get("contract_price") or raw.get("price")) else None,
+            f"от {raw['contract_signed']}" if raw.get("contract_signed") else None,
+            f"до {raw['contract_deadline']}" if raw.get("contract_deadline") else None]
+    return "   " + " · ".join(x for x in bits if x)
 
 
 def format_company_card(position: int, v: sqlite3.Row, e: sqlite3.Row) -> str:
@@ -54,6 +65,7 @@ def format_company_card(position: int, v: sqlite3.Row, e: sqlite3.Row) -> str:
              f"партнёр ОВЕН: {raw['status']}" if raw.get("status") else None]
     lines = [head, "   " + " · ".join(x for x in facts if x),
              f"   👀 Найдена по: {_esc(v['title'])}" if _row_get(v, "site") != "owen" else "",
+             _tender_line(raw) if _row_get(v, "site") == "zakupki" else "",
              f"   ⭐ Лид: <b>{e['total']}/100</b> (соответствие {e['tech_score']} · лид {e['lead_score']})",
              f"   Что у них: {_esc(e['verdict'])}"]
     waited = _row_get(v, "waiting_days") or 0
@@ -74,7 +86,8 @@ def format_company_card(position: int, v: sqlite3.Row, e: sqlite3.Row) -> str:
     if email:
         # a company lead has no «Откликнуться» button: this address is where the offer goes (decision #56)
         lines.append(f"   📧 Писать на: <b>{_esc(email)}</b>")
-    others = [x for x in (raw.get("site"), *(raw.get("emails") or [])[:2], *(raw.get("phones") or [])[:1]) if x]
+    site = raw.get("site") if "." in str(raw.get("site") or "") else None   # a company site, not a source marker
+    others = [x for x in (site, *(raw.get("emails") or [])[:2], *(raw.get("phones") or [])[:1]) if x]
     if not others:
         others = _dossier_contacts(v)   # a company found through someone else's vacancy: the dossier knows where to write
     contacts = [x for x in others if x.lower() != email]

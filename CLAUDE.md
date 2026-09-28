@@ -30,8 +30,9 @@
 каталог входит по `COMPANY_LEADS_PER_DAY` в день (25), всё остальное — общая очередь.
 **Второй источник вакансий — «Работа России»** (v9.25, решение №67): открытое API портала читается в каждом подходе без
 браузера (`sources/trudvsem.py`, `TRUDVSEM_ENABLED`), строки `site='trudvsem'` оцениваются как вакансии hh, но письмо уходит
-на e-mail из карточки («📧 Писать на:»); без адреса — `skipped/no_email`. Avito закрыт (решение №66), zakupki.gov.ru разведан
-(ROADMAP), ждёт решения владельца, что считать лидом.
+на e-mail из карточки («📧 Писать на:»); без адреса — `skipped/no_email`. **Канал `tender`** (v9.26, решение №68): победитель
+завершённой закупки 44-ФЗ на автоматику с zakupki.gov.ru — лид-компания, письмо предлагает субподряд на программную часть
+выигранного контракта; ежедневный job планировщика, по запросу в минуту (`sources/zakupki.py`, `ZAKUPKI_ENABLED`). Avito закрыт (решение №66).
 Отбор — **сквозная очередь**: оценённые выше порога не сгорают за сутки, а ждут своей очереди по приоритету
 «балл + сутки ожидания» (`repo.lead_queue`). Ждут в ней теперь те, кому не успели написать письмо: карточка без
 письма не уходит и лид не закрывается. Они видны в хвосте дайджеста, письмо к ним —
@@ -112,7 +113,7 @@ README.md · .gitignore · hh-scout.service.template + hh-scout-alert.service.te
 src/hh_scout/
   config.py        Settings из .env (порог, веса, лимиты, окна, ритм, токены) + константы: SEARCH_QUERIES (5),
                    REGION_NAMES (49 — запасной путь при SEARCH_ALL_RUSSIA=false; по умолчанию ищем по всей России),
-                   TITLE_STOP/KEEP/REQUIRED_ANY, COMPANY_QUERIES (каналы panel/design), TRUDVSEM_QUERIES (v9.25);  logging_setup.py — логи в stdout/journald
+                   TITLE_STOP/KEEP/REQUIRED_ANY, COMPANY_QUERIES (каналы panel/design), TRUDVSEM_QUERIES (v9.25), ZAKUPKI_QUERIES (v9.26);  logging_setup.py — логи в stdout/journald
   db.py            SQLite (автокоммит, WAL), миграции _m001…_m015 (PRAGMA user_version), kv_get/kv_set, transaction(),
                    backup() — ночная копия в data/backups/ (7 штук)
   main.py          сервис: aiogram polling + планировщик; первый старт помечает превью как sent
@@ -125,6 +126,8 @@ src/hh_scout/
   profi/           pages.py — лента заказов profi.ru из DOM кабинета (OrderCard, parse_orders, ProfiBlocked); v7, PROFI_ENABLED
   sources/         owen.py — каталог системных интеграторов ОВЕН (JSON с owen.ru, без браузера) → лиды-компании; v9.13
                    trudvsem.py — «Работа России»: открытое API вакансий (без браузера) → строки site='trudvsem' сразу prefiltered; v9.25
+                   zakupki.py — победители закупок 44-ФЗ на автоматику (RSS + страницы ЕИС, по запросу в минуту) → лиды-компании канала tender; v9.26
+certs/    russian_trusted_root_ca.pem — корневой сертификат Минцифры для zakupki.gov.ru (проверен по отпечатку)
   llm/             bridge_client.py · prompts.py (сборка промптов) · schemas.py · triage.py (карточки → открывать?)
                    evaluator.py (лид: техника/роль/лид) · cover_letter.py (письмо на лид) · letter_checks.py (проверки текста кодом)
                    company_research.py (досье на работодателя из открытых источников → таблица `employers`;

@@ -99,6 +99,30 @@ initialState, conversationMessagesCount, hasNewMessages, archived, resumeId, cha
 - Доступ с хоста — только через прямой маршрут на роутере владельца (решение №66); без него `opendata.` уходит
   в таймаут, `trudvsem.ru` отвечает 460. Сбой — `TrudvsemUnavailable` → `report.trudvsem_error` → мягкая тревога.
 
+## 1d. zakupki.gov.ru (ЕИС) — RSS и страницы без браузера, по запросу в минуту (v9.26)
+- `robots.txt`: разрешены `/epz/main/public*`, `/*order*`, `/*search*`, `/*rss*`, `/*notice*`, `/*contract*`, `/*printForm*`;
+  запрещены `/*auth*`, `/*admin*`, `/*private*`; **`Crawl-delay: 60`** — `Fetcher` держит паузу `ZAKUPKI_REQUEST_GAP_S` (61 с)
+  между любыми двумя запросами. Бот-защиты нет (27–28.09: ни капчи, ни 403/429; только `session-cookie`).
+- TLS: сертификат `*.zakupki.gov.ru` выдан Russian Trusted Sub CA → Russian Trusted Root CA (Минцифры); системные CA его не
+  знают. Корневой PEM — `certs/russian_trusted_root_ca.pem` (скачан с gu-st.ru, SHA-256 `D2:6D:2D:02:…:CF:31` сверен с
+  живой цепочкой), `httpx.get(verify=CA_PATH)`. Истекает 27.02.2032.
+- Открытых данных больше нет: `ftp.zakupki.gov.ru` — NXDOMAIN у авторитетного DNS, `/opendata/` — 403, SOAP-шлюз
+  `int44.zakupki.gov.ru` — по токену организации и закрыт файрволом.
+- **RSS расширенного поиска извещений**: `/epz/order/extendedsearch/rss.html?searchString=<фраза>&morphology=on&fz44=on&pc=on
+  &sortBy=UPDATE_DATE&recordsPerPage=_50…` (`pc=on` — этап «Закупка завершена»; `af`/`ca` — подача заявок / работа комиссии).
+  Элемент: `<link>` `…/epz/order/notice/<тип>/view/common-info.html?regNumber=<19 цифр>` (тип `ea20`/`zk20`/`ok20`…),
+  `<description>` — «Наименование объекта закупки», «Размещение выполняется по» (44-ФЗ/223-ФЗ), «Наименование Заказчика»,
+  «Начальная цена контракта», «Этап размещения», ИКЗ. Поиск полнотекстовый по вложениям — фразы см. `ZAKUPKI_QUERIES`.
+- **Результаты определения поставщика**: `/epz/order/notice/<тип>/view/supplier-results.html?regNumber=…` — таблица
+  «Сведения о контракте из реестра контрактов» (реестровый номер, заказчик, исполнитель, цена); пока контракт не
+  заключён, таблицы нет (`parse_supplier_results` → `[]`).
+- **Карточка контракта 44-ФЗ**: `/epz/contract/contractCard/common-info.html?reestrNumber=…` — «Общие данные» (дата
+  заключения, предмет, цена, срок исполнения, заказчик) и «Информация о поставщиках» (организация с ИНН/КПП, адрес,
+  **телефон и e-mail**, статус СМП). Фикстуры — `tests/fixtures/zakupki_rss.xml`, `zakupki_supplier_results.html`,
+  `zakupki_contract_card.html` (снимки 27–28.09).
+- 223-ФЗ: карточка договора (`/epz/contractfz223/card/contract-info.html`) исполнителя не показывает; RSS реестра договоров
+  223 без описания. Не используется.
+
 ## 2. Мост Claude (`bridge/`)
 
 Собственный сервис проекта: FastAPI + systemd на хосте, порт **8766** (слушает 0.0.0.0, защита — токен), на каждый запрос запускает

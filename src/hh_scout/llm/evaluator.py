@@ -95,7 +95,17 @@ def company_payload(row: sqlite3.Row) -> dict:
     }
     if row_site(row) == "owen":
         payload.update({"catalog": {k: raw.get(k) for k in ("industries", "status", "region", "site", "projects_url")}})
+    elif row_site(row) == "zakupki":
+        payload["tender"] = tender_block(raw)   # the contract the company has just won (v9.26)
     return payload
+
+
+def tender_block(raw: dict) -> dict:
+    """The procurement facts for the prompts (v9.26, channel `tender`)."""
+    return {"law": f"{raw.get('law', '44')}-ФЗ", "object": raw.get("object"), "customer": raw.get("customer"),
+            "contract_subject": raw.get("contract_subject"), "contract_price": raw.get("contract_price") or raw.get("price"),
+            "contract_signed": raw.get("contract_signed"), "contract_deadline": raw.get("contract_deadline"),
+            "winner": raw.get("winner"), "winner_status": raw.get("supplier_status")}
 
 
 def vacancy_payload(row: sqlite3.Row, searching_days: int = 0) -> dict:

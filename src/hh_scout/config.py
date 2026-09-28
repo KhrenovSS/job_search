@@ -154,6 +154,17 @@ class Settings(BaseSettings):
     trudvsem_request_gap_s: float = 3.0     # a public API, but no need to hammer it: ~9 s per answer anyway
     trudvsem_timeout_s: float = 90.0
 
+    # zakupki.gov.ru (v9.26, decision #68) — winners of 44-ФЗ procurements for automation work as company leads
+    # (channel `tender`). Off by default. One request a minute (robots.txt Crawl-delay: 60), a daily job, no browser;
+    # the host reaches the site only through the owner's direct route and the Минцифры root CA (certs/).
+    zakupki_enabled: bool = False
+    zakupki_hour: int = 5                  # local time of the daily job (~25 min: feeds + pages, one a minute)
+    zakupki_minute: int = 20
+    zakupki_request_gap_s: float = 61.0
+    zakupki_timeout_s: float = 60.0
+    zakupki_pages_per_run: int = 16        # notice pages per job: results page + contract card = 2 per winner
+    zakupki_max_tries: int = 6             # daily looks for a contract before a completed notice is given up
+
     # AI triage of search cards before opening vacancy pages
     triage_batch_size: int = 30
 
@@ -386,6 +397,13 @@ SEARCH_QUERIES: tuple[str, ...] = (
 TRUDVSEM_QUERIES: tuple[str, ...] = (
     "АСУ ТП", "АСУТП", "ПЛК", "SCADA", "CODESYS", "MasterSCADA", "ОВЕН", "программист контроллеров",
     "промышленной автоматизации", "автоматизации технологических процессов",
+)
+
+# zakupki.gov.ru search phrases (v9.26): the notice search is full-text over attachments too, so short trade words
+# («АСУ ТП», «ПЛК») drown in road works and homonyms; `zakupki.relevant()` then filters by the object's name.
+ZAKUPKI_QUERIES: tuple[str, ...] = (
+    "SCADA", "MasterSCADA", "диспетчеризации", "автоматизированной системы управления технологическим",
+    "шкаф управления", "телемеханики",
 )
 
 COMPANY_QUERIES: dict[str, str] = {
