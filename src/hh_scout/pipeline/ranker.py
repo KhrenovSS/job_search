@@ -206,16 +206,18 @@ def format_outcome_dimensions(blocks: list[tuple[str, list[dict]]], curve: list[
     return "\n".join(lines)
 
 
-def format_letter(employer: str | None, text: str, key: str = "hh") -> str:
+def format_letter(employer: str | None, text: str, key: str = "hh", *, by_email: bool = False) -> str:
     """Cover letter (or a profi.ru bid) as a separate Telegram message; <pre> gives one-tap copy in Telegram clients.
 
     The last door before Telegram: a letter written days ago is sent from the database verbatim, so the
-    role-address label is cut here too (decision #50).
+    role-address label is cut here too (decision #50). `by_email` — the letter goes to the company's address, not
+    as an hh.ru response (a «Работа России» vacancy, v9.25): the owner pastes the header into the mail subject,
+    so it reads «Предложение партнёрства для …» like a company offer, whatever prompt wrote the text.
     """
     text = strip_role_address(text)
     if key == "profi":
         return f"✉️ Предложение для «{_esc(employer or 'заказчика')}» (profi.ru):\n<pre>{_esc(text)}</pre>"
-    if key == "company":
+    if key == "company" or by_email:
         return f"🤝 Предложение партнёрства для «{_esc(employer or 'компании')}»:\n<pre>{_esc(text)}</pre>"
     return f"✉️ Отклик для «{_esc(employer or 'компании')}»:\n<pre>{_esc(text)}</pre>"
 

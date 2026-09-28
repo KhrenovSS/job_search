@@ -30,7 +30,7 @@ from hh_scout.llm.prompts import render
 from hh_scout.llm.schemas import CompanyEvaluation, CompanyEvaluationBatch, EvaluationBatch, VacancyEvaluation
 from hh_scout.pipeline import outcomes, plant, repo
 from hh_scout.pipeline.ranker import company_total_score, total_score
-from hh_scout.pipeline.rows import letter_key, row_site
+from hh_scout.pipeline.rows import letter_key, needs_email, row_site
 
 log = logging.getLogger(__name__)
 
@@ -282,7 +282,7 @@ def build_digest_preview(conn: sqlite3.Connection, settings: Settings, checked: 
         messages.append(format_card(i, r, r))
         letter = repo.get_cover_letter(conn, r["id"])
         if letter:
-            messages.append(format_letter(r["employer"], letter, letter_key(r)))
+            messages.append(format_letter(r["employer"], letter, letter_key(r), by_email=needs_email(r)))
     if with_tail:
         below = [r for r in rows if r["total"] < settings.score_threshold]
         if below:

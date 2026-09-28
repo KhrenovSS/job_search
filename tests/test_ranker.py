@@ -77,6 +77,8 @@ def test_profi_order_card_and_bid_wording():
 
     assert format_letter("Клиент А", "текст", "profi").startswith("✉️ Предложение для «Клиент А» (profi.ru):")
     assert format_letter("ООО Ромашка", "текст").startswith("✉️ Отклик для «ООО Ромашка»:")
+    # a letter that goes by e-mail (a «Работа России» vacancy): the header is pasted into the mail subject
+    assert format_letter("ООО Ромашка", "текст", "hh", by_email=True).startswith("🤝 Предложение партнёрства для «ООО Ромашка»")
     v = _row(hh_id="profi:1", site="profi", title="Программирование овен", employer="Клиент А", area_name="Москва",
              work_format="remote", employment="project", url="https://profi.ru/backoffice/n.php?o=1",
              salary_raw='{"profi_budget": "до 5000 ₽", "to": 5000, "currencyCode": "RUR", "gross": false, "mode": "PROJECT"}')

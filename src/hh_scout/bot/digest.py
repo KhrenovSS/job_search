@@ -30,7 +30,7 @@ from hh_scout.pipeline import outcomes, repo
 from hh_scout.pipeline.digest_builder import (close_digest, daily_quota_left, open_digest, plan_digest, skip_unreachable,
                                               promote_floor, record_sent_lead)
 from hh_scout.pipeline.ranker import digest_header, format_card, format_letter, format_queue_tail
-from hh_scout.pipeline.rows import letter_key, row_site
+from hh_scout.pipeline.rows import letter_key, needs_email, row_site
 
 log = logging.getLogger(__name__)
 INVITED_DAYS = 14  # how far back the header looks for invitations
@@ -115,7 +115,7 @@ async def _deliver(bot: Bot, conn: sqlite3.Connection, settings: Settings, chat_
             letter = rules.letter(row)
             if letter:
                 await asyncio.sleep(pause)
-                letter_msg = await send_message(bot, chat_id, format_letter(row["employer"], letter, letter_key(row)),
+                letter_msg = await send_message(bot, chat_id, format_letter(row["employer"], letter, letter_key(row), by_email=needs_email(row)),
                                                 settings=settings)
                 letter_id = letter_msg.message_id
             record_sent_lead(conn, digest_id, i, row, msg.message_id, letter_id)
