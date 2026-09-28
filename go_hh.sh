@@ -143,11 +143,34 @@ q "select (select count(*) from vacancies where site='owen' and status='new')   
          (select count(*) from vacancies where skip_reason='low_priority_expired' and updated_at >= $H24) 'списано неоткрытыми за сутки';"
 
 echo
+echo "=== Источники без браузера: «Работа России» (v9.25) и закупки (v9.26) ==="
+# Строки портала: prefiltered — в оценке, new — прошли правила и ждут допуска (TRUDVSEM_PER_RUN за подход).
+# Закупки: new — извещение без контракта (ждёт ежедневного запуска), prefiltered — победитель найден, в оценке.
+q "select (select count(*) from vacancies where site='trudvsem' and status='new')         'РР ждут допуска',
+         (select count(*) from vacancies where site='trudvsem' and status='prefiltered') 'РР в оценке',
+         (select count(*) from vacancies where site='trudvsem' and status='evaluated')   'РР в очереди',
+         (select count(*) from vacancies where site='trudvsem' and status='sent')        'РР ушло',
+         (select count(*) from vacancies where site='trudvsem' and status='skipped' and skip_reason='no_email') 'РР без e-mail',
+         (select count(*) from vacancies where site='zakupki' and status='new')          'закупки ждут контракта',
+         (select count(*) from vacancies where site='zakupki' and status='prefiltered')  'победители в оценке',
+         (select count(*) from vacancies where site='zakupki' and status='evaluated')    'победители в очереди',
+         (select count(*) from vacancies where site='zakupki' and status='sent')         'победители ушло',
+         (select count(*) from vacancies where site='zakupki' and status='skipped' and skip_reason like 'tender:%') 'закупки без контракта';"
+q "select 'Работа России' источник, coalesce(substr(replace(value,'T',' '),1,16),'—') 'последняя синхронизация (UTC)',
+         coalesce(substr(value, instr(value,'|')+1),'') 'в выдаче|новых' from kv where key='trudvsem_last'
+   union all
+   select 'закупки', coalesce(substr(replace(value,'T',' '),1,16),'—'), coalesce(substr(value, instr(value,'|')+1),'')
+   from kv where key='zakupki_last';"
+q "select v.employer компания, coalesce(v.area_name,'') город, substr(coalesce(json_extract(v.raw_json,'$.contract_subject'), v.title),1,70) контракт,
+         coalesce(json_extract(v.raw_json,'$.contract_signed'),'') 'от', v.status статус
+   from vacancies v where v.site='zakupki' and v.employer is not null order by v.updated_at desc limit 8;"
+
+echo
 echo "=== Журнал подхода (стадии, письма, отправка) ==="
 # Построчные «Письмо для … — правим и переписываем» и «Редактор поправил» сюда не берутся: при шести подходах
 # по 30 писем они вытесняли из хвоста сами стадии, а длина каждого письма и так видна в таблице лидов.
 # Неудачи писем («Письмо для … отклонено») остаются.
-jr | grep -E "Прогон #|План сбора|Серия |Пауза |Отклики: синхрон|Префильтр|Триаж:|Описания:|Каталог ОВЕН|Эксплуатанты|допущено|Оценка:|Письма:|Бюджет времени|отклонено|прежним правилам|отправлено сразу|Дневной минимум|Добрано|Дайджест #|Карточка .* отозвана|Сбор завершён" \
+jr | grep -E "Прогон #|План сбора|Серия |Пауза |Отклики: синхрон|Префильтр|Триаж:|Описания:|Каталог ОВЕН|Эксплуатанты|допущено|Оценка:|Письма:|Бюджет времени|отклонено|прежним правилам|отправлено сразу|Дневной минимум|Добрано|Дайджест #|Карточка .* отозвана|Сбор завершён|Работа России:|Закупки:|Победитель закупки" \
   | cut -c1-200 | tail -60
 
 echo

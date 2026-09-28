@@ -172,3 +172,11 @@ def test_fetch_failure_is_reported_as_unavailable(monkeypatch):
     with pytest.raises(zakupki.ZakupkiUnavailable):
         zakupki.Fetcher(_settings()).get("https://zakupki.gov.ru/x")
     assert zakupki.CA_PATH.exists()
+
+
+def test_city_from_supplier_address_skips_districts():
+    assert zakupki._city("ЧУВАШСКАЯ РЕСПУБЛИКА - ЧУВАШИЯ, г.о. ГОРОД ЧЕБОКСАРЫ, Г. ЧЕБОКСАРЫ, УЛ. ТЕКСТИЛЬЩИКОВ, ЗД. 8Л") == "Чебоксары"
+    assert zakupki._city("366320, ЧЕЧЕНСКАЯ РЕСПУБЛИКА, м.р-н. КУРЧАЛОЕВСКИЙ, ЭНИКАЛИНСКОЕ, С ЭНИКАЛИ, УЛ А.А.КАДЫРОВА, Д. 17") == "Эникали"
+    assert zakupki._city("105203, Г.МОСКВА, ВН.ТЕР.Г. МУНИЦИПАЛЬНЫЙ ОКРУГ ВОСТОЧНОЕ ИЗМАЙЛОВО, УЛ. 14-Я ПАРКОВАЯ") == "Москва"
+    assert zakupki._city(None) is None
+

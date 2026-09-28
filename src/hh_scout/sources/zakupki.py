@@ -266,10 +266,17 @@ def store_notice(conn: sqlite3.Connection, n: Notice, query: str) -> bool:
 
 
 def _city(address: str | None) -> str | None:
+    """«…, Г. ЧЕБОКСАРЫ, …» / «ГОРОД МОСКВА» / «С ЭНИКАЛИ» → the settlement; «г.о.» (городской округ) and
+    «м.р-н.» are skipped — they name the district, not the town."""
     if not address:
         return None
-    m = re.search(r"(?:^|,)\s*(?:Г\.|г\.|ГОРОД|Город|г)\s*([А-ЯЁа-яё-]+)", address)
-    return m.group(1).capitalize() if m else None
+    for part in address.split(","):
+        part = part.strip()
+        m = re.match(r"(?:Г\.|ГОРОД|Г|С\.|С|СЕЛО|ПГТ\.?|П\.|ПОС\.|Д\.|ДЕРЕВНЯ|РП\.?)\s*([А-ЯЁ][А-ЯЁа-яё-]+(?:\s[А-ЯЁ][А-ЯЁа-яё-]+)?)$",
+                     part, flags=re.I)
+        if m and not re.match(r"(?:г\.о\.|м\.р-н)", part, flags=re.I):
+            return " ".join(w.capitalize() for w in m.group(1).split())
+    return None
 
 
 def resolve_row(conn: sqlite3.Connection, settings: Settings, fetcher: Fetcher, row: sqlite3.Row) -> str:
