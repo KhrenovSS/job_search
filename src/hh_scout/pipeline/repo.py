@@ -661,7 +661,7 @@ def queue_size(conn: sqlite3.Connection, threshold: int) -> int:
 
 def letters_written_today(conn: sqlite3.Connection) -> int:
     """Letters written (or rewritten) since local midnight. Until v9.14 this was the daily letter quota;
-    now nothing is capped by it and it is read for reporting only (/status, go_hh.sh).
+    now nothing is capped by it and it is read for reporting only (/status, scripts/day_report.sh).
     """
     return int(conn.execute("SELECT COUNT(*) FROM cover_letters WHERE created_at >= ?", (_today_start_utc(),)).fetchone()[0])
 
