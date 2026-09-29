@@ -30,13 +30,13 @@ def _settings(tmp_path, **kw):
     return Settings(_env_file=None, bridge_url="http://bridge.test", bridge_token="t", prompts_dir=prompts, **kw)
 
 
-def _db(*, employer_id="108082", site="hh"):
+def _db(*, employer_id="108082", site="hh", raw_json='{"description": "<p>Нужен ПЛК</p>"}', employer="ФомЛайн"):
     conn = connect(":memory:")
     migrate(conn)
     conn.execute("INSERT INTO vacancies(id,hh_id,site,title,employer,employer_id,url,area_name,source,search_pass,"
                  "status,raw_json,first_seen_at,updated_at) VALUES (1,'1',?,?,?,?,'u','Кузнецк','s','remote',"
                  "'evaluated',?,'t','t')",
-                 (site, "Инженер", "ФомЛайн", employer_id, '{"description": "<p>Нужен ПЛК</p>"}'))
+                 (site, "Инженер", employer, employer_id, raw_json))
     return conn
 
 
@@ -98,6 +98,29 @@ def test_profi_clients_and_cards_without_an_id_are_never_researched(tmp_path):
     for conn in (_db(site="profi"), _db(employer_id=None)):
         assert CompanyResearcher(s, conn, BridgeClient(s, retries=0)).for_row(_row(conn)) is None
     assert route.call_count == 0
+
+
+@respx.mock
+def test_procurement_winners_are_researched_by_name_and_inn(tmp_path):
+    """v9.30 (decision #71): a `tender` winner has no page anywhere — the search goes by name and INN, and the
+    "vacancy" the model reads is the contract it has just signed."""
+    s = _settings(tmp_path)
+    route = _reply(json.dumps(BRIEF, ensure_ascii=False))
+    raw = {"site": "zakupki", "law": "44", "object": "Выполнение работ по автоматизации котельной",
+           "customer": "МУП «Теплосеть»", "inn": "7701234567", "contract_subject": "АСУ котельной №3",
+           "contract_price": "4 200 000,00", "contract_signed": "25.09.2026", "contract_deadline": "30.11.2026",
+           "supplier_status": "СМП", "contract_url": "https://zakupki.gov.ru/epz/contract/x", "emails": ["info@x.ru"]}
+    conn = _db(site="zakupki", employer_id="zk:7701234567", employer='ООО "ГАЗОНИКА"', raw_json=json.dumps(raw))
+    brief = CompanyResearcher(s, conn, BridgeClient(s, retries=0)).for_row(_row(conn))
+    assert brief is not None and brief.found
+    assert route.call_count == 1
+    sent = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert '"source": "реестр контрактов ЕИС' in sent and '"inn": "7701234567"' in sent
+    assert '"employer_url": ""' in sent and "contract/x" in sent
+    assert "Госконтракт: АСУ котельной №3" in sent
+    assert "Заказчик: МУП «Теплосеть»" in sent and "Срок исполнения: 30.11.2026" in sent
+    assert "Победитель" not in sent          # the structured summary, not the card's HTML with the winner repeated
+    assert cached(conn, "zk:7701234567", 180) is not None      # cached under the same key as "one lead per company"
 
 
 @respx.mock

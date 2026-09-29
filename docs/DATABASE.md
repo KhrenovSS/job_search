@@ -163,7 +163,7 @@
 
 ## `employers` (v9.0, `_m009`)
 Досье на работодателя из открытых источников — одно на компанию, переиспользуется всеми её вакансиями.
-`employer_id` (PK) — hh.ru `company.id`, тот же ключ, что у «одна компания — один лид» (у строк каталога ОВЕН — `owen:<…>`, у «Работы России» — `tv:<…>`; закупки и profi не разведываются — `company_research.for_row` берёт только `site` hh / owen / trudvsem с непустым `employer_id`); `name`;
+`employer_id` (PK) — hh.ru `company.id`, тот же ключ, что у «одна компания — один лид» (у строк каталога ОВЕН — `owen:<…>`, у «Работы России» — `tv:<…>`, у победителей закупок — `zk:<ИНН>` (v9.30); profi не разведывается — `company_research.for_row` берёт `site` hh / owen / trudvsem / zakupki с непустым `employer_id`); `name`;
 `found` (0/1 — искали и не нашли тоже запоминается, чтобы не платить за пустоту дважды); `brief` — JSON
 `CompanyBrief` (`found`, `what_they_do`, `industry`, `products`, `sites`, `scale`, `automation_hooks`, `sources`, `note`; с v9.15 —
 `website`, `contact_email`, `contact_phone`: общие контакты компании с её сайта/страницы hh, для карточек компаний без своих

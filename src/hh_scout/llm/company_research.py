@@ -3,7 +3,8 @@
 The only place the bridge is allowed to use web tools (`allow_web`): the CLI reads the employer's page on hh.ru,
 the company's own site if it answers, open sources and the company's other vacancies (v9.4; up to
 `COMPANY_RESEARCH_MAX_TURNS` turns, 6 network calls by the prompt); ОВЕН catalogue rows are researched too, from
-owen.ru. This runs **outside the owner's browser**, so it costs no page loads from the daily cap and leaves no trace
+owen.ru, «Работа России» rows from the portal page and the INN, and procurement winners (`site='zakupki'`, v9.30) by
+name and INN alone — they have no page anywhere, only the contract. This runs **outside the owner's browser**, so it costs no page loads from the daily cap and leaves no trace
 on his hh session — only bridge money (opus, ~$0.2–0.3 a company).
 
 Cached in `employers` by hh.ru `company.id`, the same key as "one lead per company", so a company is researched
@@ -72,6 +73,21 @@ def save(conn: sqlite3.Connection, employer_id: str, name: str | None, brief: Co
         repo.record_contacts(conn, employer_id, emails=[brief.contact_email], urls=[brief.website])
 
 
+def contract_summary(raw: dict) -> str:
+    """The signed contract in plain lines: what the winner has to build, for whom, for how much and by when."""
+    parts = [
+        ("Предмет закупки", raw.get("object")),
+        ("Заказчик", raw.get("customer")),
+        ("Предмет контракта", raw.get("contract_subject")),
+        ("Цена контракта", raw.get("contract_price") or raw.get("price")),
+        ("Контракт подписан", raw.get("contract_signed")),
+        ("Срок исполнения", raw.get("contract_deadline")),
+        ("Статус поставщика", raw.get("supplier_status")),
+        ("Закон", f"{raw.get('law', '44')}-ФЗ"),
+    ]
+    return "\n".join(f"{k}: {v}" for k, v in parts if v)
+
+
 def payload(row: sqlite3.Row) -> dict:
     raw = json.loads(row["raw_json"]) if row["raw_json"] else {}
     if row_site(row) == "owen":
@@ -100,6 +116,21 @@ def payload(row: sqlite3.Row) -> dict:
             "vacancy_title": row["title"],
             "vacancy_summary": strip_html(raw.get("description"))[:MAX_SUMMARY_CHARS],
         }
+    if row_site(row) == "zakupki":
+        # a procurement winner (v9.30, decision #71): no page anywhere — the search goes by name and INN, and the
+        # "vacancy" is the contract it has just signed (the same facts `evaluator.tender_block` gives the letter)
+        return {
+            "employer": row["employer"],
+            "employer_id": row["employer_id"],
+            "employer_url": "",
+            "company_site": None,
+            "inn": raw.get("inn"),
+            "contract_url": raw.get("contract_url"),
+            "source": "реестр контрактов ЕИС (zakupki.gov.ru)",
+            "city": row["area_name"],
+            "vacancy_title": "Госконтракт: " + (raw.get("contract_subject") or raw.get("object") or row["title"] or ""),
+            "vacancy_summary": contract_summary(raw)[:MAX_SUMMARY_CHARS],
+        }
     return {
         "employer": row["employer"],
         "employer_id": row["employer_id"],
@@ -123,7 +154,7 @@ class CompanyResearcher:
         """The dossier for this vacancy's employer, from cache or the web. None if it cannot be had."""
         if not self.s.company_research_enabled:
             return None
-        if row_site(row) not in ("hh", "owen", "trudvsem") or not row["employer_id"]:
+        if row_site(row) not in ("hh", "owen", "trudvsem", "zakupki") or not row["employer_id"]:
             return None  # profi.ru clients are private people; cards without an id have no stable key
         if not force:
             hit = cached(self.conn, row["employer_id"], self.s.company_research_ttl_days)
