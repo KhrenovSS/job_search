@@ -7,7 +7,8 @@ from hh_scout.config import Settings
 from hh_scout.db import connect, migrate
 from hh_scout.llm.bridge_client import BridgeClient
 from hh_scout.llm import cover_letter as cover_letter_mod
-from hh_scout.llm.cover_letter import CoverLetterWriter, letter_payload, rules_hash, usable_letter
+from hh_scout.llm.cover_letter import CoverLetterWriter, dossier_for_letter, letter_payload, rules_hash, usable_letter
+from hh_scout.llm.schemas import CompanyBrief
 from hh_scout.pipeline import repo
 
 
@@ -478,3 +479,23 @@ def test_a_rewrite_of_a_sent_lead_is_never_turned_into_a_skip(tmp_path):
     w.researcher.for_row = lambda row, *, force=False: CompanyBrief(found=False)
     assert w.write_for(repo.lead_by_hh_id(conn, "3"), hint="ещё раз")          # `/letter 3 ещё раз`
     assert conn.execute("SELECT status FROM vacancies WHERE id = 3").fetchone()[0] == "sent"
+
+
+def test_a_procurement_winner_without_a_site_still_gets_its_contract_hooks():
+    """v9.31 (decision #71): `found: false` drops the dossier for everyone — except the hooks of a `tender` lead,
+    which were drawn from the contract, not from the company the web could not find."""
+    conn = _db()
+    conn.execute("UPDATE vacancies SET site = 'zakupki', search_pass = 'tender' WHERE id = 1")
+    tender = conn.execute("SELECT * FROM vacancies WHERE id = 1").fetchone()
+    hh = conn.execute("SELECT * FROM vacancies WHERE id = 2").fetchone()
+    hooks = ["опрос датчиков температуры и логика уставок в ПЛК", "архив температур с защитой от правки"]
+    unfound = CompanyBrief(found=False, automation_hooks=hooks, note="сайт — однофамилец")
+    assert dossier_for_letter(tender, unfound) == {"found": False, "automation_hooks": hooks}
+    assert dossier_for_letter(hh, unfound) is None                       # an hh vacancy: as before
+    assert dossier_for_letter(tender, CompanyBrief(found=False)) is None  # nothing to say — nothing passed
+    assert dossier_for_letter(tender, None) is None
+    found = CompanyBrief(found=True, what_they_do="Автоматизация котельных", sites=["Тверь"], automation_hooks=hooks,
+                         sources=["https://x.ru"], note="n", contact_email="info@x.ru")
+    got = dossier_for_letter(tender, found)
+    assert got["what_they_do"] == "Автоматизация котельных" and got["sites"] == ["Тверь"]
+    assert "sources" not in got and "note" not in got and "contact_email" not in got

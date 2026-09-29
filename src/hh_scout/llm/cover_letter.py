@@ -24,6 +24,7 @@ from hh_scout.llm.company_research import CompanyResearcher
 from hh_scout.llm.evaluator import tender_block
 from hh_scout.llm.letter_checks import strip_role_address
 from hh_scout.llm.prompts import PrivatePromptMissing, load_prompt_body, read_private, render
+from hh_scout.llm.schemas import CompanyBrief
 from hh_scout.pipeline import dedup, repo
 from hh_scout.pipeline.rows import contact_email, letter_key, needs_email, row_get, row_site
 
@@ -71,6 +72,23 @@ def salary_stated(row: sqlite3.Row) -> bool:
     """
     raw = json.loads(row["salary_raw"]) if row["salary_raw"] else None
     return bool(raw) and (raw.get("from") is not None or raw.get("to") is not None)
+
+
+def dossier_for_letter(row: sqlite3.Row, brief: CompanyBrief | None) -> dict | None:
+    """What of the dossier the letter may see.
+
+    A company the web knows: the facts (`DOSSIER_FIELDS`). A procurement winner the web does not know (v9.31,
+    decision #71): only `automation_hooks` — for that source they are drawn from the contract itself, not from the
+    company, and they are the part the owner asked for («чем я могу быть полезен в этом проекте»); an ИП or a trading
+    firm without a site must not lose them. Any other unfound company: nothing, as before.
+    """
+    if brief is None:
+        return None
+    if brief.found:
+        return brief.model_dump(include=set(DOSSIER_FIELDS))
+    if row_site(row) == "zakupki" and brief.automation_hooks:
+        return {"found": False, "automation_hooks": list(brief.automation_hooks)}
+    return None
 
 
 def letter_payload(row: sqlite3.Row, company: dict | None = None, owner_hint: str | None = None) -> dict:
@@ -290,7 +308,7 @@ class CoverLetterWriter:
         company = None
         if key in REVIEWED_KEYS:
             brief = self.researcher.for_row(row)
-            company = brief.model_dump(include=set(DOSSIER_FIELDS)) if brief is not None and brief.found else None
+            company = dossier_for_letter(row, brief)
             if row_get(row, "status") == "evaluated" and repo.linked_employer_ids(self.conn, row["employer_id"]):
                 with self.conn:
                     if dedup.skip_if_covered(self.conn, self.s, row) is not None:
