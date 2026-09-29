@@ -89,6 +89,23 @@ def test_a_sitting_and_its_precheck_survive_a_computer_nap():
     assert DIGEST_GRACE_SEC >= 3600
 
 
+def test_browser_free_sources_get_their_own_timers():
+    """v9.29: the daily procurement job (decision #68) is registered when the channel is on — it was not until 28.09."""
+    from hh_scout.scheduler import ZAKUPKI_GRACE_SEC
+    conn = connect(":memory:")
+    migrate(conn)
+    on = Scheduler(Settings(_env_file=None, zakupki_enabled=True, zakupki_hour=5, zakupki_minute=20,
+                            company_channels="panel,design,owen_si"), conn, _noop, _noop)
+    on._add_source_jobs()
+    job = on.aps.get_job("zakupki")
+    assert job is not None and job.misfire_grace_time == ZAKUPKI_GRACE_SEC
+    assert str(job.trigger.fields[5]) == "5" and str(job.trigger.fields[6]) == "20"     # hour, minute
+    assert on.aps.get_job("owen") is not None
+    off = Scheduler(Settings(_env_file=None, zakupki_enabled=False, company_channels="panel,design"), conn, _noop, _noop)
+    off._add_source_jobs()
+    assert off.aps.get_job("zakupki") is None and off.aps.get_job("owen") is None
+
+
 def test_restore_with_empty_kv_plans_today():
     sch, conn = _scheduler()
     sch._restore_crawl(now=_dt(6, 58))

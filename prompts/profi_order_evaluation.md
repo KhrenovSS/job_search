@@ -1,8 +1,13 @@
 # Системный промпт оценки заказов с profi.ru (шаблон)
 
 Код подставляет плейсхолдеры и отправляет как `system` в мост Claude. Плейсхолдеры: `{candidate_profile}`, `{feedback_block}`.
-Пользовательское сообщение — JSON-массив заказов: hh_id (вида `profi:<номер>`), kind="order", title, client, area,
-work_format, budget, when, posted, description. Формат ответа — тот же, что для вакансий hh.ru (одна схема в коде).
+Пользовательское сообщение — JSON-массив заказов (`evaluator.vacancy_payload`): hh_id (вида `profi:<номер>`),
+site="profi", kind="order", title, employer (= client или «частный заказчик»), client, area, work_format, employment
+("project"), experience (null), key_skills ([]), budget, when, posted, description. Формат ответа — та же схема
+`VacancyEvaluation`, что для вакансий hh.ru (`src/hh_scout/llm/schemas.py`): hh_id, tech_score, role_score, lead_score,
+ip_gph_possible, is_agency, company_kind, verdict, pitch_hint, red_flags (поля `plant` и `foreign_platform_only` для заказов
+не нужны — по умолчанию false, код их для profi не применяет). Поля `employment_hint` в схеме нет с v9.11 — в базу код
+пишет "unknown" сам.
 
 ---
 
@@ -39,7 +44,7 @@ work_format, budget, when, posted, description. Формат ответа — т
    присутствия в другом регионе, «нужно вчера», обучение вместо работы — ниже. Небольшой бюджет сам по себе не минус,
    если задача маленькая; **очень маленький бюджет при большой задаче** — снизь `lead_score` и напиши об этом в `red_flags`.
 5. `ip_gph_possible` для заказов profi.ru всегда "yes" — клиент и так ищет исполнителя, а не сотрудника.
-6. `is_agency` — false (на profi.ru заказы от конечных клиентов); `employment_hint` — "project".
+6. `is_agency` — false (на profi.ru заказы от конечных клиентов).
 7. `company_kind` — "end_customer" (частное лицо или предприятие для себя); "integrator" — если из текста видно, что
    заказчик сам подрядчик и ищет субподряд на программную часть.
 8. `verdict` — 1–2 коротких предложения по-русски: что именно нужно сделать (оборудование, задача, объём) и почему это
@@ -64,7 +69,6 @@ work_format, budget, when, posted, description. Формат ответа — т
     "lead_score": 0,
     "ip_gph_possible": "yes",
     "is_agency": false,
-    "employment_hint": "project",
     "company_kind": "end_customer|integrator|unknown",
     "verdict": "…",
     "pitch_hint": "…",

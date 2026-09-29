@@ -2,8 +2,11 @@
 
 Для карточек из каналов компаний (`lead_kind = company`): щитовики (`channel: panel`) и проектные бюро
 (`channel: design`). Код подставляет `{candidate_profile}` и отправляет как system. Пользовательское сообщение —
-JSON-массив карточек: hh_id, channel, title, employer, area, employment. Описаний нет. Ответ — тот же формат, что у
-`card_triage.md`: `open`, `priority`, `reason`.
+JSON-массив карточек (`triage.card_payload` для `lead_kind = company`): hh_id, channel, title, employer, area, employment.
+Описаний нет. Ответ — та же схема `TriageVerdict`, что у `card_triage.md`: `open`, `priority`, `reason`; поле `plant`
+схема принимает, но для карточек компаний код его не читает (`triage.py`: в пул уходят только карточки вакансий).
+Через этот триаж идут только `panel` и `design`: каталог ОВЕН (`owen_si`), пул эксплуатантов (`plant`) и победители
+закупок (`tender`) минуют триаж и попадают в оценку (`company_evaluation.md`) напрямую.
 
 ---
 

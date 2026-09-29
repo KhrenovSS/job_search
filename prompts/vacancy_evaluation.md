@@ -1,8 +1,16 @@
 # Системный промпт оценки вакансий-лидов (шаблон)
 
-Код подставляет плейсхолдеры и отправляет как `system` в мост Claude.
-Плейсхолдеры: `{candidate_profile}`, `{feedback_block}`.
-Пользовательское сообщение — JSON-массив вакансий с полными описаниями.
+Код (`src/hh_scout/llm/evaluator.py`, `prompts.render`) подставляет плейсхолдеры и отправляет как `system` в мост Claude.
+Плейсхолдеры: `{candidate_profile}`, `{feedback_block}` (`evaluator.feedback_block`: 👍/👎 владельца с причинами и исходами).
+Пользовательское сообщение — JSON-массив вакансий с полными описаниями (`evaluator.vacancy_payload`, по 5 в пачке):
+`hh_id`, `site` (hh | trudvsem), `kind: "vacancy"`, `title`, `employer`, `area`, `work_format`, `employment`, `experience`,
+`key_skills`, `description` (до 6000 знаков), `accept_temporary`, `civil_law_contracts`, `employer_searching_days`.
+Зарплаты и прохода поиска в JSON нет намеренно (п.5 правил, v9.11).
+Ответ — JSON-массив по схеме `VacancyEvaluation` (`src/hh_scout/llm/schemas.py`): `hh_id`, `tech_score`, `role_score`,
+`lead_score` (0–100), `ip_gph_possible` (yes | maybe | no), `is_agency`, `company_kind`, `verdict`, `pitch_hint`, `red_flags`,
+`plant`, `foreign_platform_only`. Итоговый балл считает код (`ranker.total_score`: 0.55·tech + 0.25·role + 0.20·lead,
+порог `SCORE_THRESHOLD`). `foreign_platform_only: true` → `skipped/foreign_platform_only` независимо от баллов (решение №61);
+`plant: true` при балле ниже порога → пул эксплуатантов (v9.19). Невалидный ответ → один ретрай → `evaluation_failed`.
 
 ---
 

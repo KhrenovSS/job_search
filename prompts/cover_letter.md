@@ -3,8 +3,20 @@
 Код подставляет `{resume}` и `{candidate_profile}`, отправляет как system. Пользовательское сообщение — JSON одной вакансии
 (title, employer, company, company_kind, city, address, work_format, description, key_skills, verdict, pitch_hint,
 employment, accept_temporary, civil_law_contracts, ip_gph_possible, salary_stated, salary_note, owner_hint, channel).
-`company` — досье на работодателя из открытых источников (`prompts/company_research.md`) или `null`.
-Ответ — только текст письма, без заголовков и пояснений.
+Payload собирает `cover_letter.letter_payload` (`src/hh_scout/llm/cover_letter.py`). `company` — досье на работодателя
+из открытых источников (`prompts/company_research.md`), только поля `found`, `what_they_do`, `industry`, `products`, `sites`,
+`scale`, `automation_hooks` (`DOSSIER_FIELDS`), или `null`. `channel` — `hh_response` (отклик на hh.ru) или `email`
+(вакансия «Работы России», `site='trudvsem'`). `salary_stated` — флаг, что в вакансии названа хоть какая-то сумма (сама сумма
+в промпт не попадает); `salary_note` — «вакансия просит указать зарплатные ожидания» или «зарплату не упоминать».
+`owner_hint` — пожелание владельца из `/letter <id> …` или `null`. `description` обрезано до 6000 знаков.
+Ответ — только текст письма, без заголовков и пояснений. Объём: промпт просит 2800–3300 знаков с потолком 3400, код
+принимает 400–3600 (`LENGTH_LIMITS["hh"]`, `MIN_CHARS`/`MAX_CHARS`: письмо чуть длиннее ориентира лучше, чем никакого).
+Текст проверяет код (`llm/letter_checks.py`): деньги (`MONEY_RE`, решения №22–24), штампы (`BANNED`), первое лицо
+единственного числа (`PLURAL_VOICE_RE`, решение №69), подпись из четырёх строк (`signature_problem`, решение №58),
+для `channel: email` — обещание резюме и «ориентир в резюме» (`ATTACHMENT_RE`, решение №70); обращение по должности
+срезается без отказа (`strip_role_address`, решение №38). Нарушение → одна попытка переписать с указанием ошибки, потом
+отказ. Затем второй проход редактора (`letter_review.md`). Отпечаток промпта с резюме и профилем, чеклиста и правил кода —
+`cover_letters.rules_hash` (решение №50): изменился любой из них — письмо в очереди переписывается.
 
 ---
 

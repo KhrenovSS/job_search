@@ -1,9 +1,20 @@
 # Системный промпт разведки по компании (шаблон)
 
 Единственный промпт, которому мост разрешает веб (`allow_web`): модель сама открывает страницу работодателя
-на hh.ru, сайт компании (если он отвечает), открытые источники и другие вакансии этой же компании. Плейсхолдеров нет. Пользовательское сообщение — JSON одной компании
-(employer, employer_id, employer_url, city, vacancy_title, vacancy_summary).
-Ответ — только JSON по схеме `CompanyBrief` (`src/hh_scout/llm/schemas.py`).
+на hh.ru, сайт компании (если он отвечает), открытые источники и другие вакансии этой же компании. Плейсхолдеров нет
+(код берёт тело через `load_prompt_body`, `src/hh_scout/llm/company_research.py`). Пользовательское сообщение — JSON одной
+компании (`company_research.payload`): для hh.ru — employer, employer_id, employer_url, city, vacancy_title, vacancy_summary
+(до 1500 знаков); для каталога ОВЕН (`site='owen'`) — те же плюс `company_site`, `industries` и
+`source: "каталог системных интеграторов ОВЕН"` (`employer_url` — страница проектов на owen.ru или сайт); для «Работы России»
+(`site='trudvsem'`) — плюс `inn`, `company_site: null`, `source: "портал «Работа России» (trudvsem.ru)"`. Строки закупок
+(`site='zakupki'`, канал `tender`) код сейчас **не разведывает** (`CompanyResearcher.for_row` пропускает всё, кроме hh, owen,
+trudvsem), поэтому вариант `source` «реестр контрактов ЕИС» ниже кодом пока не отправляется, а письмо победителю закупки
+пишется без досье.
+Ответ — только JSON по схеме `CompanyBrief` (`src/hh_scout/llm/schemas.py`); все поля необязательны (`found` по умолчанию
+false). Досье кэшируется в `employers` по `employer_id` (`COMPANY_RESEARCH_TTL_DAYS`); `website` и `contact_email` идут в
+`employer_contacts` (решение №64), `contact_email` — адрес для письма компании из каталога ОВЕН или «Работы России», если в самой строке адреса нет
+(`rows.contact_email`, решение №56). В письмо (`cover_letter.DOSSIER_FIELDS`) попадают только `found`, `what_they_do`, `industry`, `products`,
+`sites`, `scale`, `automation_hooks` — `sources`, `note` и контакты модель письма не видит.
 
 ---
 

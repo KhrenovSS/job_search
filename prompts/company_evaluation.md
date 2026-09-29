@@ -1,12 +1,18 @@
 # Системный промпт оценки компаний-партнёров (шаблон)
 
-Для лидов вида `company` (v9.13): щитовики и проектные бюро с hh.ru, интеграторы из каталога ОВЕН.
-Код подставляет `{candidate_profile}` и `{feedback_block}`, отправляет как system. Пользовательское сообщение —
+Для лидов вида `company` (`rows.letter_key == "company"`): щитовики и проектные бюро с hh.ru (`panel`, `design`, v9.13),
+интеграторы из каталога ОВЕН (`owen_si`), эксплуатанты автоматики из пула (`plant`, v9.15), победители закупок
+(`tender`, v9.26); `panel` и `design` приходят сюда через `company_triage.md` и страницу вакансии, остальные —
+минуя триаж (`repo.admit_company_leads`, `plant.admit`, `zakupki`: `new → prefiltered`). Код подставляет `{candidate_profile}` и `{feedback_block}`, отправляет как system. Пользовательское сообщение —
 JSON-массив компаний: hh_id, kind="company", channel (panel | design | owen_si | plant | tender), company, area, vacancy_title,
 description (текст вакансии или описание из каталога), catalog (для ОВЕН: industries, status, region, site, projects_url),
 tender (для канала `tender`, v9.26: law, object, customer, contract_subject, contract_price, contract_signed, contract_deadline,
 winner, winner_status — контракт на zakupki.gov.ru, который компания только что выиграла).
-Ответ — JSON по схеме `CompanyEvaluation` (`src/hh_scout/llm/schemas.py`).
+Payload собирает `evaluator.company_payload`. Досье на компанию (`company_research.md`) на этом шаге ещё нет — оно
+собирается позже, перед письмом; оценщик видит только описание, каталог и блок `tender`.
+Ответ — JSON по схеме `CompanyEvaluation` (`src/hh_scout/llm/schemas.py`): `hh_id`, `fit_score`, `lead_score` (0–100),
+`company_kind`, `verdict`, `pitch_hint`, `offer_focus` (коды из `schemas.OFFER_FOCUS`, неизвестные код молча отбрасывает),
+`red_flags`. Итоговый балл считает код (`ranker.company_total_score`); `role_score` у компаний нет.
 
 ---
 
@@ -66,7 +72,7 @@ winner, winner_status — контракт на zakupki.gov.ru, который �
    недели, и подряд снимает с него срок; 40–60 — поставка и монтаж шкафов управления, модернизация насосных или
    котельных с автоматикой (программа есть, но небольшая); 0–30 — поставка железа без наладки, техобслуживание лифтов
    и связи, лицензии, услуги связи, дорожные и строительные работы, где автоматика упомянута мимоходом. Победитель —
-   ИП или фирма без следов инженерной деятельности (по имени и `verdict` досье) — не выше 40. `lead_score` здесь —
+   ИП или фирма без следов инженерной деятельности (по `tender.winner`, `tender.winner_status` и описанию) — не выше 40. `lead_score` здесь —
    свежесть: контракт подписан в последние 1–2 месяца и срок исполнения впереди — 70–90; срок уже вышел — 20–40.
 2. `lead_score` 0–100 — насколько удобно предложить подряд именно им: прямая компания (не агентство, не «партнёр
    без имени») — выше; понятный масштаб (цех, серия, несколько объектов) — выше; стек из ядра кандидата

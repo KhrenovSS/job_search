@@ -48,6 +48,7 @@ DIGEST_GRACE_SEC = 3 * 3600      # a late digest is still the day's digest
 PRECHECK_GRACE_SEC = 10 * 60     # later than that the sitting itself is about to start
 BACKUP_GRACE_SEC = 6 * 3600
 OWEN_GRACE_SEC = 12 * 3600
+ZAKUPKI_GRACE_SEC = 12 * 3600    # a day's feeds read at noon are still that day's feeds
 
 
 def _at(d: date, t: time) -> datetime:
@@ -162,13 +163,24 @@ class Scheduler:
                          replace_existing=True, misfire_grace_time=health.WATCHDOG_INTERVAL_MIN * 60 - 60, coalesce=True)
         self.aps.add_job(self.backup_job, CronTrigger(hour=BACKUP_HOUR, minute=BACKUP_MINUTE, timezone=TZ), id="backup",
                          replace_existing=True, misfire_grace_time=BACKUP_GRACE_SEC, coalesce=True)
-        if "owen_si" in self.s.company_channels_set:
-            self.aps.add_job(self.owen_job, CronTrigger(day_of_week=OWEN_DAY, hour=OWEN_HOUR, minute=OWEN_MINUTE, timezone=TZ),
-                             id="owen", replace_existing=True, misfire_grace_time=OWEN_GRACE_SEC, coalesce=True)
+        self._add_source_jobs()
         self.aps.start()
         nxt = self.next_crawl_at()
         log.info("Планировщик запущен: дайджест ежедневно в %s, окна сбора %s, следующий подход %s",
                  self.s.digest_time, _fmt_windows(self.windows), nxt.strftime("%d.%m %H:%M") if nxt else "не назначен")
+
+    def _add_source_jobs(self) -> None:
+        """Browser-free sources on their own timers: the ОВЕН catalogue weekly, the procurement register daily.
+
+        The daily procurement job was promised by decision #68 (v9.26) but never registered — the channel ran only by
+        hand (`python -m hh_scout.sources.zakupki`) until the documentation audit of 28.09 found the gap (v9.29).
+        """
+        if "owen_si" in self.s.company_channels_set:
+            self.aps.add_job(self.owen_job, CronTrigger(day_of_week=OWEN_DAY, hour=OWEN_HOUR, minute=OWEN_MINUTE, timezone=TZ),
+                             id="owen", replace_existing=True, misfire_grace_time=OWEN_GRACE_SEC, coalesce=True)
+        if self.s.zakupki_enabled:
+            self.aps.add_job(self.zakupki_job, CronTrigger(hour=self.s.zakupki_hour, minute=self.s.zakupki_minute, timezone=TZ),
+                             id="zakupki", replace_existing=True, misfire_grace_time=ZAKUPKI_GRACE_SEC, coalesce=True)
 
     def shutdown(self) -> None:
         self.aps.shutdown(wait=False)
@@ -312,6 +324,20 @@ class Scheduler:
         except Exception as e:  # noqa: BLE001
             log.exception("Каталог ОВЕН не обновился")
             await self.alerter.send([health.Alert("owen_failed", f"⚠️ Каталог интеграторов ОВЕН не прочитался: {e}")])
+
+    async def zakupki_job(self) -> None:
+        """Daily: completed 44-ФЗ automation procurements → their winners as `tender` company leads (decision #68).
+
+        ~25 minutes at one request a minute, no browser; `run_job` writes kv `zakupki_last` itself. Runs inside the
+        04–07 sitting window, but every write is a short per-row transaction, so it does not hold the DB.
+        """
+        from hh_scout.sources import zakupki
+
+        try:
+            await asyncio.to_thread(zakupki.run_job, self.conn, self.s)
+        except Exception as e:  # noqa: BLE001
+            log.exception("Реестр закупок не прочитался")
+            await self.alerter.send([health.Alert("zakupki_failed", f"⚠️ Реестр закупок (zakupki.gov.ru) не прочитался: {e}")])
 
     async def digest_job(self) -> None:
         try:

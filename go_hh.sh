@@ -172,7 +172,7 @@ q "select (select count(*) from vacancies where site='trudvsem' and status='new'
          (select count(*) from vacancies where site='zakupki' and status='prefiltered')  'победители в оценке',
          (select count(*) from vacancies where site='zakupki' and status='evaluated')    'победители в очереди',
          (select count(*) from vacancies where site='zakupki' and status='sent')         'победители ушло',
-         (select count(*) from vacancies where site='zakupki' and status='skipped' and skip_reason like 'tender:%') 'закупки без контракта';"
+         (select count(*) from vacancies where site='zakupki' and status='skipped' and skip_reason like 'tender:%') 'закупки без контракта/поставщика';"
 q "select 'Работа России' источник, coalesce(substr(replace(value,'T',' '),1,16),'—') 'последняя синхронизация (UTC)',
          coalesce(substr(value, instr(value,'|')+1),'') 'в выдаче|новых' from kv where key='trudvsem_last'
    union all

@@ -58,7 +58,7 @@ initialState, conversationMessagesCount, hasNewMessages, archived, resumeId, cha
 ### Управление браузером
 - Firefox ESR 140 владельца запущен с `--marionette` → Marionette на `127.0.0.1:2828`
   (`scripts/setup_firefox.sh` правит пользовательский `.desktop`).
-- На каждую серию (`bursts.run_in_bursts`, 7–13 мин): `geckodriver --connect-existing --marionette-port 2828 --port <свободный>` (дочерний процесс),
+- На каждую серию (`bursts.run_in_bursts`, 7–13 мин): `geckodriver --connect-existing --marionette-host 127.0.0.1 --marionette-port 2828 --host 127.0.0.1 --port <свободный> --log warn` (дочерний процесс),
   `selenium.webdriver.Remote(...)`. Открываем **своё окно** (`switch_to.new_window("window")`), работаем в нём,
   закрываем окно, завершаем geckodriver. **`driver.quit()` не вызывать** — в режиме connect-existing это
   попросит Firefox завершиться. Проверено на headless-экземпляре: после отсоединения Firefox живёт.
@@ -88,21 +88,29 @@ initialState, conversationMessagesCount, hasNewMessages, archived, resumeId, cha
   `tests/fixtures/profi_orders.html` (обезличенный снимок 2026-09-10, имена клиентов заменены).
 
 ## 1c. «Работа России» (trudvsem.ru) — открытое API, без браузера (v9.25)
-- `GET https://opendata.trudvsem.ru/api/v1/vacancies?text=<запрос>&offset=<N>&limit=100[&modifiedFrom=YYYY-MM-DDTHH:MM:SSZ]`
+- `GET https://opendata.trudvsem.ru/api/v1/vacancies?text=<запрос>&offset=<номер страницы, с 0>&limit=100[&modifiedFrom=YYYY-MM-DDTHH:MM:SSZ]`
+  (`offset` — номер страницы, а не смещение записи: `offset=100` отвечает 500)
   → `{status, meta: {total, limit}, results: {vacancies: [{vacancy: {...}}]}}`. Поиск полнотекстовый (по требованиям
   тоже), без OR — по запросу на вызов (`config.TRUDVSEM_QUERIES`). Ответ ~9 с, `httpx` с `TRUDVSEM_TIMEOUT_S`=90.
 - Поля записи: `id` (uuid), `job-name`, `duty`, `requirements`, `skills`, `salary_min/max`, `employment`, `schedule`,
   `region.name`, `addresses.address[].location`, `company {name, inn, ogrn, companycode, email, hr-agency, url}`,
   `contact_list [{contact_type: «Эл. почта»|«Телефон», contact_value}]`, `contact_person`, `vac_url`, `date_modify`,
   `requirement {education, experience}`, `category.specialisation`. Парсер — `sources/trudvsem.parse_vacancy`; фикстура —
-  `tests/fixtures/trudvsem_vacancies.json` (три реальные записи и три синтетические: Крым, без адреса, стоп-слово).
+  `tests/fixtures/trudvsem_vacancies.json` (две реальные записи и три синтетические: Крым, без e-mail, стоп-слово).
+  Запросы идут с `User-Agent` = `HH_USER_AGENT`, с паузой `TRUDVSEM_REQUEST_GAP_S` (3 с), не больше
+  `TRUDVSEM_MAX_PAGES_PER_QUERY` (10) страниц на запрос; синхронизация — стадия 1b каждого подхода (`trudvsem.sync`),
+  отдельной задачи планировщика нет; момент последней удачной — kv `trudvsem_last`, следующая читает с него минус 2 дня; первая (ключа нет) — за
+  `TRUDVSEM_BACKFILL_DAYS` (14) назад.
 - Доступ с хоста — только через прямой маршрут на роутере владельца (решение №66); без него `opendata.` уходит
   в таймаут, `trudvsem.ru` отвечает 460. Сбой — `TrudvsemUnavailable` → `report.trudvsem_error` → мягкая тревога.
 
 ## 1d. zakupki.gov.ru (ЕИС) — RSS и страницы без браузера, по запросу в минуту (v9.26)
 - `robots.txt`: разрешены `/epz/main/public*`, `/*order*`, `/*search*`, `/*rss*`, `/*notice*`, `/*contract*`, `/*printForm*`;
   запрещены `/*auth*`, `/*admin*`, `/*private*`; **`Crawl-delay: 60`** — `Fetcher` держит паузу `ZAKUPKI_REQUEST_GAP_S` (61 с)
-  между любыми двумя запросами. Бот-защиты нет (27–28.09: ни капчи, ни 403/429; только `session-cookie`).
+  между любыми двумя запросами, `User-Agent` — строка Firefox 128 (`zakupki.USER_AGENT`). Бот-защиты нет (27–28.09: ни капчи,
+  ни 403/429; только `session-cookie`). Вся цепочка — `zakupki.run_job`: ежедневно из `Scheduler.zakupki_job`
+  (`ZAKUPKI_HOUR:ZAKUPKI_MINUTE`, по умолчанию 05:20, `misfire_grace_time` 12 ч, сбой — тревога `zakupki_failed`; v9.29 — до 28.09 задачи
+  в `scheduler.py` не было) или вручную `python -m hh_scout.sources.zakupki`; kv `zakupki_last` пишет сам `run_job`.
 - TLS: сертификат `*.zakupki.gov.ru` выдан Russian Trusted Sub CA → Russian Trusted Root CA (Минцифры); системные CA его не
   знают. Корневой PEM — `certs/russian_trusted_root_ca.pem` (скачан с gu-st.ru, SHA-256 `D2:6D:2D:02:…:CF:31` сверен с
   живой цепочкой), `httpx.get(verify=CA_PATH)`. Истекает 27.02.2032.
@@ -112,14 +120,18 @@ initialState, conversationMessagesCount, hasNewMessages, archived, resumeId, cha
   &sortBy=UPDATE_DATE&recordsPerPage=_50…` (`pc=on` — этап «Закупка завершена»; `af`/`ca` — подача заявок / работа комиссии).
   Элемент: `<link>` `…/epz/order/notice/<тип>/view/common-info.html?regNumber=<19 цифр>` (тип `ea20`/`zk20`/`ok20`…),
   `<description>` — «Наименование объекта закупки», «Размещение выполняется по» (44-ФЗ/223-ФЗ), «Наименование Заказчика»,
-  «Начальная цена контракта», «Этап размещения», ИКЗ. Поиск полнотекстовый по вложениям — фразы см. `ZAKUPKI_QUERIES`.
+  «Начальная цена контракта», «Этап размещения», ИКЗ. Поиск полнотекстовый по вложениям — фразы см. `ZAKUPKI_QUERIES`;
+  извещения 223-ФЗ и не прошедшие `zakupki.relevant()` (по предмету) в базу не попадают.
 - **Результаты определения поставщика**: `/epz/order/notice/<тип>/view/supplier-results.html?regNumber=…` — таблица
   «Сведения о контракте из реестра контрактов» (реестровый номер, заказчик, исполнитель, цена); пока контракт не
-  заключён, таблицы нет (`parse_supplier_results` → `[]`).
+  заключён, таблицы нет (`parse_supplier_results` → `[]`) — извещение ждёт следующего запуска (`raw_json.tries`), после
+  `ZAKUPKI_MAX_TRIES` (6) — `skipped/tender:no_contract`.
 - **Карточка контракта 44-ФЗ**: `/epz/contract/contractCard/common-info.html?reestrNumber=…` — «Общие данные» (дата
   заключения, предмет, цена, срок исполнения, заказчик) и «Информация о поставщиках» (организация с ИНН/КПП, адрес,
-  **телефон и e-mail**, статус СМП). Фикстуры — `tests/fixtures/zakupki_rss.xml`, `zakupki_supplier_results.html`,
-  `zakupki_contract_card.html` (снимки 27–28.09).
+  **телефон и e-mail**, статус СМП); карточка без блока поставщиков (`parse_contract_card` → `None`) лид не отменяет — победитель
+  берётся по имени из таблицы результатов, без ИНН и e-mail (дальше обычно `skipped/no_email`); `skipped/tender:no_supplier`
+  ставится только строке без имени и ИНН. Фикстуры —
+  `tests/fixtures/zakupki_rss.xml`, `zakupki_supplier_results.html`, `zakupki_contract_card.html` (снимки 27–28.09).
 - 223-ФЗ: карточка договора (`/epz/contractfz223/card/contract-info.html`) исполнителя не показывает; RSS реестра договоров
   223 без описания. Не используется.
 
@@ -152,7 +164,8 @@ Body: {
 По умолчанию CLI запускается `--max-turns 1 --tools ""` — триаж, оценка и письма обязаны быть воспроизводимыми
 и дешёвыми. `allow_web: true` даёт **только** `WebFetch,WebSearch` плюс `--permission-mode bypassPermissions`:
 файловых и командных инструментов в списке нет, cwd и так пустая песочница (`BRIDGE_WORKDIR`, без CLAUDE.md).
-Единственный клиент — `llm/company_research.py`. Сборка командной строки вынесена в `bridge/cmdline.py`,
+Единственный клиент — `llm/company_research.py` (досье для строк `site` hh / owen / trudvsem с непустым `employer_id`;
+заказы profi и победители закупок не разведываются). Сборка командной строки вынесена в `bridge/cmdline.py`,
 чтобы её можно было проверить тестом из основного venv (в нём нет FastAPI).
 Чтение страниц идёт минутами, а не секундами (замер: 5 ходов = 300 с), поэтому у веб-запросов свой таймаут
 `BRIDGE_WEB_TIMEOUT` (900 с против 150 с обычного; 420 с не хватало — шесть обращений на opus в них не влезают,
@@ -200,10 +213,9 @@ Body: {
 
 - aiogram v3, long polling. Бот отдельный, создаётся через @BotFather.
 - `TG_OWNER_CHAT_ID`: если пуст, бот на любое сообщение отвечает «Ваш chat_id: N — впишите его в .env»
-  и больше ничего не делает. Все апдейты не от владельца игнорируются без ответа.
+  и больше ничего не делает. Все апдейты не от владельца игнорируются без ответа (строка INFO в лог).
 - Клавиатура под карточкой — два ряда: `[👍] [👎]` (`fb:<vacancy_id>:up|down`) и `[✅ Написал] [⏸ Позже]`
   (`act:<vacancy_id>:responded|later`); служебный `noop`. 👍 → кнопка «👍 отмечено»; 👎 → клавиатура причины
   `fbr:<vacancy_id>:salary|format|stack|agency|text|skip` (`text` — причина своими словами ответом на вопрос бота, kv `awaiting_reason`) → карточка сворачивается в строку, письмо удаляется; ✅ → то же
   с пометкой «✅ Написал»; ⏸ → «⏸ отложено». Подробности — ARCHITECTURE «Жизненный цикл лида».
 - HTML-разметка, превью ссылок отключено; карточка + письмо (`<pre>`) на лид, пауза `TELEGRAM_PAUSE_S` (1.2 с) между сообщениями; в `QUIET_HOURS` — без звука.
-- Чужие апдейты игнорируются без ответа (строка INFO в лог). При пустом `TG_OWNER_CHAT_ID` бот отвечает chat_id.

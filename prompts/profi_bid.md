@@ -2,7 +2,10 @@
 
 Код подставляет `{resume}` и `{candidate_profile}`, отправляет как system. Пользовательское сообщение — JSON одного заказа
 (kind="order", title, client, description, budget, when, work_format, city, verdict, pitch_hint).
-Ответ — только текст предложения, без заголовков и пояснений. Ориентир 400–900 знаков (код принимает 150–1500).
+Payload собирает `cover_letter.letter_payload` (ветка `site='profi'`).
+Ответ — только текст предложения, без заголовков и пояснений. Ориентир 400–900 знаков (код принимает 150–1500,
+`LENGTH_LIMITS["profi"]`). Кодом проверяются только деньги и штампы (`letter_checks.money_problem`, `cliche_problem`);
+подпись, первое лицо и редактор (`letter_review.md`) к заявкам profi не применяются (`REVIEWED_KEYS`).
 
 ---
 

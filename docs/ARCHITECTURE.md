@@ -30,15 +30,15 @@
 | 1b | «Работа России» | `sources/trudvsem.py` | открытое API портала по `TRUDVSEM_QUERIES` с `modifiedFrom` → строки `site='trudvsem'` сразу `prefiltered` (правила карточки при вставке, регионы по названию, без e-mail — `skipped/no_email`, дубль компании — `dedup.skip_if_covered`), сверх `TRUDVSEM_PER_RUN` за подход — ждут в `new` (`admit_waiting` в начале следующей синхронизации); без браузера и лимита; сбой — `trudvsem_error`, мягкая тревога | — |
 | 1 | Сбор | `pipeline/collector.py` | страницы поиска → `vacancies(new)`; страница откликов → `applied/has_chat`/`negotiation_state` (+`suitableVacancies` как проход `similar`) | браузер |
 | 2 | Правила | `pipeline/prefilter.py` | `new → triage` или `skipped` (applied, archived, region — закрытые регионы по `area_path` карточки, решение №65; stopword, no_engineering_title); затем `repo.skip_blocked_regions` снимает строки закрытых регионов с любой стадии до письма (v9.23) | — |
-| 2b | Одна компания — один лид | `pipeline/dedup.py` | Сначала `revive_orphans`: дубли, чей «победитель» лидом так и не стал (`covering_lead` пуст — отклонён, сорвалась оценка или оценён ниже порога), а сам он уже не в пути (`new`/`triage`/`to_fetch`), возвращаются в очередь (`to_fetch`, если триаж ИИ уже пройден, иначе `triage`; строка каталога ОВЕН — в `prefiltered`). Затем `skip_covered`: `triage`, чей работодатель уже имеет лид (`sent` за `EMPLOYER_REPEAT_DAYS`, `prefiltered`, `evaluated ≥ порог`) → `skipped/duplicate_employer:<hh_id>` — без триажа ИИ. Компания, куда владелец уже откликался (`answered_employer`), закрывается как `skipped/employer_responded:<hh_id>` — здесь, в `skip_if_covered` и в `dedupe_evaluated`. Компания — hh `employer_id`, имя или общий e-mail / домен (`employer_contacts`, `repo.linked_employer_ids`, v9.22): так строка каталога ОВЕН и та же фирма на hh.ru закрывают друг друга | — |
-| 3 | Триаж ИИ | `llm/triage.py` | карточки пачками по 30 → `to_fetch` (+priority 1–3) или `skipped/triage` | мост |
-| 4 | Описания | `pipeline/details.py` | сначала `repo.expire_low_priority`: `to_fetch` с приоритетом 3 старше `LOW_PRIORITY_TTL_DAYS` (3) → `skipped/low_priority_expired`; затем `to_fetch` по приоритету → перед каждой загрузкой `dedup.skip_if_covered` (двойник уже имеющегося лида не стоит загрузки) → страница вакансии → `prefiltered` (архив/отклик → `skipped`; страница без `vacancyView` → `evaluation_failed`) | браузер; резерв `DETAILS_BUDGET_SHARE` (0.55 бюджета прогона, сбор его не трогает) плюс всё, что сбор не потратил; страницы приоритета 3 делятся между каналами по `DETAILS_CHANNEL_SHARES` (vacancy 0.45 / panel 0.20 / design 0.10 / plant 0.25, v9.17; `DetailsFetcher._pick`) |
-| 4b | Каталог ОВЕН | `pipeline/repo.py` | `admit_company_leads`: `COMPANY_LEADS_PER_DAY` (25) компаний `new` (site `owen`) → `prefiltered` без страницы — описание уже в карточке | — |
-| 4c | Эксплуатанты | `pipeline/plant.py` | `plant.admit`: `PLANT_LEADS_PER_DAY` (40) строк из пула `skipped/plant_pool` → `to_fetch` приоритета 3 (страницы — в следующем подходе, по доле канала); строка, у которой страница уже прочитана (`raw_json`, попала в пул после оценки, v9.19) — сразу `prefiltered` | — |
-| 5 | Оценка | `llm/evaluator.py` | `prefiltered` пачками по 5 → `evaluations` (tech/role/lead, verdict, pitch_hint…) → `evaluated`; total = код. Вакансия ниже порога с `plant: true` в оценке (эксплуатация на заводе с автоматикой) → `plant.pool_evaluated`: оценка удаляется, строка уходит в пул эксплуатантов вместе со страницей (v9.19; журнал «Оценка: … в пул эксплуатантов N»). Затем `dedup.dedupe_evaluated`: среди `evaluated ≥ порог` (hh и каталог ОВЕН; v9.22) остаётся лучшая вакансия каждой компании, компания с откликом владельца → `skipped/employer_responded:<hh_id>`, вакансия и предложение-компания одного работодателя — не дубли (группировка транзитивна: по `employer_id` или имени), остальные → `skipped/duplicate_employer`; компания с `sent`-лидом в окне повтора не получает нового | мост |
+| 2b | Одна компания — один лид | `pipeline/dedup.py` | Сначала `revive_orphans`: дубли, чей «победитель» лидом так и не стал (`covering_lead` пуст — отклонён, сорвалась оценка или оценён ниже порога), а сам он уже не в пути (`new`/`triage`/`to_fetch`), возвращаются в очередь (`to_fetch`, если триаж ИИ уже пройден, иначе `triage`; строка без страницы hh — каталог ОВЕН, «Работа России», закупка — сразу в `prefiltered`; `revive_orphans` смотрит `site IN (hh, owen, trudvsem, zakupki)`). Затем `skip_covered`: `triage`, чей работодатель уже имеет лид (`sent` за `EMPLOYER_REPEAT_DAYS`, `prefiltered`, `evaluated ≥ порог`) → `skipped/duplicate_employer:<hh_id>` — без триажа ИИ. Компания, куда владелец уже откликался (`answered_employer`), закрывается как `skipped/employer_responded:<hh_id>` — здесь, в `skip_if_covered` и в `dedupe_evaluated`. Компания — hh `employer_id`, имя или общий e-mail / домен (`employer_contacts`, `repo.linked_employer_ids`, v9.22): так строка каталога ОВЕН и та же фирма на hh.ru закрывают друг друга | — |
+| 3 | Триаж ИИ | `llm/triage.py` | карточки пачками по `TRIAGE_BATCH_SIZE` (30), вакансии и карточки каналов компаний в разных пачках (`card_triage.md` / `company_triage.md`) → `to_fetch` (+priority 1–3) или `skipped/triage`; пачка, дважды не прошедшая валидацию, остаётся в `triage`; закрытая карточка вакансии с `plant: true` в вердикте уходит в пул эксплуатантов (`plant.pool`, см. ниже) | мост |
+| 4 | Описания | `pipeline/details.py` | сначала `repo.expire_low_priority`: `to_fetch` с приоритетом 3 старше `LOW_PRIORITY_TTL_DAYS` (3) → `skipped/low_priority_expired`; затем `to_fetch` по приоритету → перед каждой загрузкой `dedup.skip_if_covered` (двойник уже имеющегося лида не стоит загрузки) → страница вакансии → `prefiltered` (архив/отклик → `skipped`; закрытый регион, если `area.path` появился только на странице → `skipped/region:<регион>`; страница без `vacancyView` → `evaluation_failed/no_vacancy_view`); открываются только строки `site='hh'` | браузер; резерв `DETAILS_BUDGET_SHARE` (умолчание кода 0.55 бюджета прогона, у владельца с 24.09 — 0.65, решение №60; сбор его не трогает) плюс всё, что сбор не потратил; страницы приоритета 3 делятся между каналами по `DETAILS_CHANNEL_SHARES` (vacancy 0.45 / panel 0.20 / design 0.10 / plant 0.25, v9.17; `DetailsFetcher._pick`) |
+| 4b | Каталог ОВЕН | `pipeline/repo.py` | `admit_company_leads`: `COMPANY_LEADS_PER_DAY` (25) компаний `new` (site `owen`) → `prefiltered` без страницы — описание уже в карточке; каждую допущенную сверяет `dedup.skip_if_covered` — фирма, уже достигнутая через hh.ru по общему адресу/домену, становится `skipped/duplicate_employer` (v9.22) | — |
+| 4c | Эксплуатанты | `pipeline/plant.py` | `plant.admit` (внутри — `repo.admit_plant_leads`): `PLANT_LEADS_PER_DAY` (40) строк из пула `skipped/plant_pool` → `to_fetch` приоритета 3 (страницы — в следующем подходе, по доле канала); строка, у которой страница уже прочитана (`raw_json`, попала в пул после оценки, v9.19) — сразу `prefiltered`; допущенные тоже проходят `skip_if_covered` | — |
+| 5 | Оценка | `llm/evaluator.py` | `prefiltered` пачками по 5, вакансии / заказы profi / компании в разных пачках (`rows.letter_key` → `vacancy_evaluation.md` / `profi_order_evaluation.md` / `company_evaluation.md`) → `evaluations` (tech/role/lead, verdict, pitch_hint…) → `evaluated`; total = код; невалидный ответ дважды → `evaluation_failed/invalid_ai_answer`, пропущенный `hh_id` → `evaluation_failed/missing_in_ai_answer`. Флаг `foreign_platform_only` в оценке вакансии (hh и «Работа России») → `skipped/foreign_platform_only` независимо от баллов, оценка остаётся (`evaluator._lock_out`, v9.20, решение №61). Вакансия ниже порога с `plant: true` в оценке (эксплуатация на заводе с автоматикой) → `plant.pool_evaluated`: оценка удаляется, строка уходит в пул эксплуатантов вместе со страницей (v9.19; журнал «Оценка: … в пул эксплуатантов N»). Затем `dedup.dedupe_evaluated`: среди `evaluated ≥ порог` (все сайты, кроме profi: hh, каталог ОВЕН, «Работа России», закупки; v9.22) остаётся лучшая вакансия каждой компании, компания с откликом владельца → `skipped/employer_responded:<hh_id>`, вакансия и предложение-компания одного работодателя — не дубли (группировка транзитивна: по `employer_id` или имени), остальные → `skipped/duplicate_employer`; компания с `sent`-лидом в окне повтора не получает нового | мост |
 | 5c | Очередь лидов | `pipeline/repo.py` | `evaluated ≥ порога` — это **очередь, живущая дольше суток**: приоритет = балл + 1 за каждые сутки ожидания (потолок `QUEUE_WAIT_BONUS_MAX` = 7). Что не влезло в норму — не отбрасывается, ждёт и соревнуется завтра; старше `QUEUE_TTL_DAYS` (30) → `rejected/queue_expired` | — |
-| 5b | Досье на компанию | `llm/company_research.py` | Перед письмом, для лидов hh, каталога ОВЕН, «Работы России» и победителей закупок (`row_site in (hh, owen, trudvsem, zakupki)`): CLI с веб-инструментами читает `hh.ru/employer/<id>` и сайт компании → `employers` (1 вызов на **компанию**, кэш `COMPANY_RESEARCH_TTL_DAYS`). Мимо браузера — дневной лимит загрузок не тратится. Сбой или `found: false` не мешает письму | мост (веб) |
-| 6 | Письма | `llm/cover_letter.py` | Вся очередь (`repo.lead_queue`) в пределах **бюджета времени** `LETTERS_BUDGET_MIN` (60 мин на проход; проверяется между письмами, начатое не прерывается) → `cover_letters`; второй проход редактора (`letter_review.md`) — только для hh и компаний (`REVIEWED_KEYS`), заявки profi без него. Недописанные ждут следующего подхода — в очереди они уже с бонусом ожидания. Сначала лиды без письма, затем те, чьё письмо написано по прежним правилам (`cover_letters.rules_hash` ≠ текущего, решение №50). На письмо: черновик → проверки кодом (суммы, штампы, названо ли производство) с одним повтором → **проход редактора** (`prompts/letter_review.md`). В payload — досье компании, город, площадка и `owner_hint` от `/letter` | мост (2–3 вызова на письмо) |
+| 5b | Досье на компанию | `llm/company_research.py` | Перед письмом, для лидов hh, каталога ОВЕН и «Работы России» (`CompanyResearcher.for_row`: `row_site in (hh, owen, trudvsem)` и непустой `employer_id`; победители закупок и заказы profi досье **не получают** — письму по закупке хватает блока `tender` из `raw_json`): CLI с веб-инструментами читает `hh.ru/employer/<id>` (для ОВЕН — страницу проектов на owen.ru, для портала — страницу компании на trudvsem.ru и ИНН) и сайт компании → `employers` (1 вызов на **компанию**, кэш `COMPANY_RESEARCH_TTL_DAYS`, не больше `COMPANY_RESEARCH_MAX_PER_RUN` новых компаний за проход). Мимо браузера — дневной лимит загрузок не тратится. Сбой или `found: false` не мешает письму | мост (веб) |
+| 6 | Письма | `llm/cover_letter.py` | Вся очередь (`repo.lead_queue`) в пределах **бюджета времени** `LETTERS_BUDGET_MIN` (60 мин на проход; проверяется между письмами, начатое не прерывается) → `cover_letters`; второй проход редактора (`letter_review.md`) — только для hh и компаний (`REVIEWED_KEYS`), заявки profi без него. Недописанные ждут следующего подхода — в очереди они уже с бонусом ожидания. Сначала лиды без письма, затем те, чьё письмо написано по прежним правилам (`cover_letters.rules_hash` ≠ текущего, решение №50). На письмо (`write_for`): `answered_employer` — в компанию уже откликались → письма нет → разведка (только `REVIEWED_KEYS`) → если досье связало компанию с другой (`employer_contacts`), ещё раз `dedup.skip_if_covered` — только для лида в `evaluated` (v9.22) → `unreachable`: строке, которой пишут по e-mail (`rows.needs_email`), без адреса → `skipped/no_email` → черновик → `_clean` (снятие «Отклик:», срез обращения по должности `strip_role_address`) → проверки кодом (`_problem` → `check_letter`: рамка длины `LENGTH_LIMITS`; сумма — `money_problem`; штамп — `cliche_problem`; для hh и компаний ещё подпись из четырёх строк — `signature_problem` (№58), множественное число «мы/работаем» — `voice_problem` (v9.27, №69), для писем по e-mail — обещание резюме / «ориентир в резюме» — `attachment_problem` (v9.28, №70), и названо ли производство из досье) с одним повтором (модель переписывает целиком) → **проход редактора** (`prompts/letter_review.md`), чей ответ проходит те же проверки — иначе остаётся черновик. Все правила кода входят в `letter_checks.CODE_RULES` → `rules_hash`. В payload — досье компании (`DOSSIER_FIELDS`), город и адрес, формат и занятость, `accept_temporary`/`civil_law_contracts`, `salary_stated` (флаг, не число), `channel` (`email` для «Работы России», иначе `hh_response`; v9.25), `owner_hint` от `/letter`; компаниям — `catalog` (ОВЕН), `tender` (закупки), `offer_focus` | мост (2–3 вызова на письмо) |
 
 Сбор: задачи = `SEARCH_QUERIES` × проходы `SEARCH_PASSES` (по умолчанию только regional — при поиске по всей России
 remote `work_format=REMOTE`, project `employment_form=PROJECT,PART` и gph `accept_temporary` оказались его подмножествами:
@@ -60,7 +60,8 @@ remote `work_format=REMOTE`, project `employment_form=PROJECT,PART` и gph `acce
 Итог прогона — `CrawlReport.as_text()`: ручной `/crawl` получает его всегда, плановый — только когда прогон не `ok` и ни одна тревога его не объяснила; метрики в `runs`.
 
 ## Лиды-компании (v9.13, решение №53)
-Единица лида — компания, вакансия лишь повод её увидеть. Четыре канала (`COMPANY_CHANNELS`, по умолчанию все):
+Единица лида — компания, вакансия лишь повод её увидеть. Четыре канала в `COMPANY_CHANNELS` (`panel,design,owen_si,plant`, по
+умолчанию все) плюс `tender`, который включается отдельно (`ZAKUPKI_ENABLED`, v9.26):
 - `panel` и `design` — задачи сбора по `COMPANY_QUERIES` (одна на канал, вся Россия): карточки получают
   `lead_kind='company'` (`repo.insert_card`), префильтр не требует инженерного слова, триаж идёт по
   `prompts/company_triage.md` (пачки по виду не смешиваются), страница вакансии читается как описание компании,
@@ -72,10 +73,20 @@ remote `work_format=REMOTE`, project `employment_form=PROJECT,PART` и gph `acce
   в календарный день суммарно по прогонам допускается `COMPANY_LEADS_PER_DAY` штук (`repo.admit_company_leads`, Золотой → Серебряный → остальные);
   обновление каталога — `Scheduler.owen_job` по воскресеньям 04:00 и CLI `python -m hh_scout.sources.owen [--admit N]`.
   Досье (`company_research`) для них читает страницу проектов на owen.ru и сайт компании, hh не открывает.
-- `tender` — **победители закупок 44-ФЗ** (v9.26, решение №68, `sources/zakupki.py`): ежедневный job планировщика
-  (`ZAKUPKI_HOUR`), RSS поиска извещений по фразам → фильтр по предмету → страница результатов → карточка контракта
-  (ИНН, e-mail) → лид-компания `prefiltered` с `employer_id='zk:<ИНН>'`; оценка и письмо через `tender` в payload
-  (контракт: предмет, заказчик, цена, даты). По запросу в минуту (robots.txt), сертификат Минцифры в `certs/`.
+- `tender` — **победители закупок 44-ФЗ** (v9.26, решение №68, `sources/zakupki.py`): `zakupki.run_job` — RSS поиска
+  извещений по `ZAKUPKI_QUERIES` → фильтр по предмету (`relevant`) → строка `new` (`site='zakupki'`,
+  `hh_id='zk:<номер извещения>'`, `lead_kind='company'`) → для `ZAKUPKI_PAGES_PER_RUN`/2 ждущих извещений (сначала те,
+  что смотрели реже): страница результатов → карточка контракта (ИНН, e-mail, телефон, предмет, цена, даты) → лид-компания
+  `prefiltered` с `employer` и `employer_id='zk:<ИНН>'`, адреса → `employer_contacts`, `dedup.skip_if_covered`; без
+  контракта извещение ждёт (`raw_json.tries`), после `ZAKUPKI_MAX_TRIES` — `skipped/tender:no_contract`; карточка контракта
+  без блока «Информация о поставщиках» лид не отменяет — победитель берётся по имени из таблицы результатов (без ИНН и e-mail,
+  `employer_id='zk:<имя>'`, дальше обычно `skipped/no_email`), и только строка без имени и ИНН → `skipped/tender:no_supplier`.
+  Оценка и письмо через `tender` в payload (контракт: предмет, заказчик, цена,
+  даты; `evaluator.tender_block`), досье не собирается (`company_research.for_row` пропускает `zakupki`). По запросу в
+  минуту (robots.txt, `ZAKUPKI_REQUEST_GAP_S`), сертификат Минцифры в `certs/`. Запуск — ежедневная задача планировщика
+  `Scheduler.zakupki_job` (`_add_source_jobs`, CronTrigger `ZAKUPKI_HOUR:ZAKUPKI_MINUTE`, `misfire_grace_time` 12 ч, тревога
+  `zakupki_failed`) при `ZAKUPKI_ENABLED` — заведена только в v9.29: с v9.26 по 28.09 её не было, и канал шёл вручную
+  `python -m hh_scout.sources.zakupki [--query …] [--resolve N]` (CLI остаётся для ручного запуска).
 - «Работа России» (v9.25, решение №67, `sources/trudvsem.py`) — не канал компаний, а второй источник **вакансий**: та же
   оценка и письмо, что у hh.ru, `letter_key='hh'`, но письмо уходит на e-mail (`channel: email`), карточка показывает адрес.
 - `plant` — **эксплуатанты автоматики** (v9.15, решение №55, `pipeline/plant.py`): триаж карточек вакансий
@@ -89,8 +100,8 @@ remote `work_format=REMOTE`, project `employment_form=PROJECT,PART` и gph `acce
   из пула `PLANT_LEADS_PER_DAY` (40) строк в день → `to_fetch` с приоритетом 3 (страницы по доле канала `plant` в
   `DETAILS_CHANNEL_SHARES`, v9.17; страховка `low_priority_expired`). Дальше — путь v9.13: страница вакансии как описание предприятия, `company_evaluation.md`
   (канал `plant`: fit по наличию систем управления, `offer_focus` `modernization` / `support` / `commissioning_scada`),
-  письмо `company_offer.md`. Задел по уже закрытым карточкам — `python -m hh_scout.pipeline.plant --backfill [--dry-run]`
-  (по тексту заметки триажа, `plant.note_says_plant`). **Холодное предложение компании не закрывает её будущую вакансию
+  письмо `company_offer.md`. Задел по уже закрытым карточкам — `python -m hh_scout.pipeline.plant --backfill [--dry-run] [--days N]`
+  (по тексту заметки триажа, `plant.note_says_plant`); выпустить из пула сейчас — `--admit [N]`. **Холодное предложение компании не закрывает её будущую вакансию
   программиста**: `repo._kind_sql` — кандидат-вакансия покрывается только строками `lead_kind='vacancy'`, кандидат-компания —
   любыми; `dedup.same_company` не склеивает вакансию и компанию одного работодателя — в обе стороны (до 24.09 проверялась только сторона вакансии, и компания с большим баллом закрывала вакансию как дубль).
 - Контакты компании (v9.15): разведка (`company_research.md`) записывает в досье `website`, `contact_email`, `contact_phone` —
@@ -100,7 +111,7 @@ remote `work_format=REMOTE`, project `employment_form=PROJECT,PART` и gph `acce
 (`rows.letter_key(row) == 'company'`: свой промпт, отпечаток правил, рамка 400–3000, редактор с оговоркой про
 партнёрство), карточка — `ranker.format_company_card` (канал, «Найдена по», соответствие/лид, «Предложить: …»,
 контакты из каталога), в Telegram — «🤝 Предложение партнёрства». `/stats` — разрезы «Тип лида» и «Канал»; для
-каталога исход `blind`. Недоступные с хоста источники (InSAT, тендеры) — в ROADMAP.
+каталога, «Работы России» и закупок исход `blind`. Недоступный с хоста источник (InSAT) — в ROADMAP.
 
 ## Второй источник — profi.ru (`profi/pages.py`, `pipeline/profi_collector.py`, v7)
 Заказы клиентов из кабинета специалиста (`PROFI_ORDERS_URL`, по умолчанию `profi.ru/backoffice/n.php`; нужен вход на
@@ -119,6 +130,12 @@ profi.ru в том же Firefox). Кабинет — JS-приложение б�
 тревога `profi_blocked` не чаще раза в три дня (ключ `profi_blocked:<день года // 3>`). Снимок ленты для парсера/фикстур — `scripts/profi_snapshot.py` (читает уже открытые вкладки).
 
 ## Расписание (`scheduler.py`)
+Задачи APScheduler: `digest` (cron), `crawl` (одноразовый `DateTrigger`), `precheck` (за 30 мин до подхода), `watchdog`
+(каждые `health.WATCHDOG_INTERVAL_MIN` = 30 мин), `backup` (03:40), `owen` (вс 04:00, только при канале `owen_si`),
+`zakupki` (ежедневно `ZAKUPKI_HOUR:ZAKUPKI_MINUTE`, по умолчанию 05:20 — внутри окна 04–07, но без браузера; только при `ZAKUPKI_ENABLED`; v9.29 — `_add_source_jobs`).
+У всех задан `misfire_grace_time` и `coalesce=True` (v9.20, решение №62 — сон компьютера сдвигает таймеры): подход — до
+конца его окна + 30 мин, предпроверка 10 мин, дайджест 3 ч, копия 6 ч, каталог и закупки 12 ч, сторож 29 мин. Задачи для
+«Работы России» нет — синхронизация идёт стадией 1b каждого подхода.
 - **digest** — cron `DIGEST_TIME` (12:00): `send_digest()` (внутри — сначала `_evaluate_pending`: дооценить всё
   `prefiltered` и дописать письма на отдельном соединении, чтобы только что закончившийся подход попал в
   дайджест хотя бы частично; то же при ручном `/digest`; пока подход идёт, `crawl_lock` занят и дооценка пропускается — подход пришлёт лиды сам). Сборы дайджест **не планирует**.
@@ -158,7 +175,8 @@ profi.ru в том же Firefox). Кабинет — JS-приложение б�
 при повторе id и по `paging`; каждая смена состояния пишется в `negotiation_events`.
 Аналитика — `pipeline/outcomes.py`: `outcome_of` (invited / refused / answered / silent / blind), `outcome_stats` по
 полосам `SCORE_BANDS`, `outcome_by` по признакам из `DIMENSIONS`, `maturing`, `reply_delay_curve`. **Обе** таблицы
-`/stats` считаются по одной выборке (`repo.outcome_rows`), по одной зрелости `OUTCOME_MATURE_DAYS` и с одним
+`/stats` считаются по одной выборке (`repo.outcome_rows`: только лиды, по которым владелец нажал «✅ Написал» или
+откликнулся на hh.ru сам — `lead_actions.responded/auto_responded`; сайты hh, owen, trudvsem, zakupki), по одной зрелости `OUTCOME_MATURE_DAYS` и с одним
 значением «ответ = написали и не отказали» (приглашения отдельно; доля — ответы и приглашения вместе); долю в ячейках
 меньше `MIN_CELL` заменяет «мало данных» (решения №48, №49). Возраст письма — от первой доставки (`digests.sent_at`).
 `evaluator.feedback_block` подмешивает исход к тем 👍/👎, по которым владелец откликнулся, через `outcomes.outcome_note` — с той же зрелостью,
@@ -196,9 +214,9 @@ profi.ru в том же Firefox). Кабинет — JS-приложение б�
   до срыва.
 - **Разбор отчёта** (`health.analyze_report` после каждого прогона): капча/вход (`HHBlocked`), браузер недоступен, hh.ru не видит
   соискателя, поиск без карточек, ≥3 страниц вакансий без `vacancyView` и не меньше половины, мост недоступен, лента profi без кабинета (`profi_blocked`,
-  не чаще раза в три дня) — каждая со своей подсказкой.
-- **Задачи планировщика** тоже дают тревоги: `backup_failed` (копия БД не сделалась) и `owen_failed` (каталог ОВЕН не прочитался,
-  воскресенье 04:00); сторож раз в день чистит kv `awaiting_reason`.
+  не чаще раза в три дня), API «Работы России» не ответил (`trudvsem_down`, тот же ритм раз в три дня, v9.25) — каждая со своей подсказкой.
+- **Задачи планировщика** тоже дают тревоги: `backup_failed` (копия БД не сделалась), `owen_failed` (каталог ОВЕН не прочитался,
+  воскресенье 04:00) и `zakupki_failed` («⚠️ Реестр закупок (zakupki.gov.ru) не прочитался», ежедневный `zakupki_job`, v9.29); сторож раз в день чистит kv `awaiting_reason`.
 - **Дедупликация**: `health.Alerter` шлёт ключ один раз в день (kv `alert:<key>:<дата>`), старые ключи чистятся; `/status`
   показывает время последней проверки и число тревог за день.
 - **Падение процесса** — вне Python: `Restart=on-failure` перезапускает бота (молча, только журнал); 5 падений за 10 мин →
@@ -206,7 +224,7 @@ profi.ru в том же Firefox). Кабинет — JS-приложение б�
 
 ## Дайджест (`pipeline/digest_builder.py`, `bot/digest.py`)
 `plan_digest` в `DIGEST_TIME` (12:00) — после `expire_queue` (`QUEUE_TTL_DAYS`; внутри `plan_digest`, то есть и по ручному `/digest`, но не при мгновенной отправке) и `skip_unreachable`
-(компания из каталога ОВЕН без e-mail → `skipped/no_email`, решение №56; то же перед мгновенной отправкой и в писателе писем после разведки) — берёт всю очередь по приоритету (с v9.14 нормы нет; `DIGEST_MAX_ITEMS` > 0 возвращает потолок). Лид без готового письма не уходит и остаётся `evaluated`
+(строка, которой пишут по e-mail — компания из каталога ОВЕН, вакансия «Работы России», победитель закупки (`rows.needs_email`) — без адреса → `skipped/no_email`, решение №56; то же перед мгновенной отправкой и в писателе писем после разведки) — берёт всю очередь по приоритету (с v9.14 нормы нет; `DIGEST_MAX_ITEMS` > 0 возвращает потолок). Лид без готового письма не уходит и остаётся `evaluated`
 до следующего раза. Письма (недостающие и устаревшие) пишет **только** дооценка перед дайджестом (`_evaluate_pending`,
 своё соединение); пока идёт подход, дооценка пропускается — подход пришлёт лиды сам. Лид без годного письма не уходит
 (`held`), а ждёт в хвосте: дайджест называет `DIGEST_TAIL_ITEMS` (8) ожидающих по имени. Сообщения: заголовок «Лиды за <дата> — N

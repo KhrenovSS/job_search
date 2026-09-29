@@ -1,6 +1,12 @@
 # Системный промпт триажа карточек (шаблон)
 
-Код подставляет `{candidate_profile}` и отправляет как system. Пользовательское сообщение — JSON-массив карточек.
+Код (`src/hh_scout/llm/triage.py`, `prompts.render`) подставляет `{candidate_profile}` и отправляет как system.
+Пользовательское сообщение — JSON-массив карточек (`triage.card_payload`): `hh_id`, `title`, `employer`, `area`,
+`work_format`, `employment`, `accept_temporary`, `civil_law_contracts`, `employer_searching_days`. Зарплаты, даты
+публикации и прохода поиска в карточке нет намеренно (v9.11).
+Ответ — JSON-массив по схеме `TriageVerdict` (`src/hh_scout/llm/schemas.py`): `hh_id`, `open`, `priority` (1–3),
+`reason`, `plant` (по умолчанию false). `open` → `to_fetch`, иначе `skipped/triage`; закрытая карточка с `plant: true`
+уходит в пул эксплуатантов (`pipeline/plant.py`, решение №55). Невалидный ответ → один ретрай → пачка остаётся в `triage`.
 
 ---
 
