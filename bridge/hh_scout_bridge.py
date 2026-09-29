@@ -88,6 +88,27 @@ def _cli_env() -> dict[str, str]:
     return env
 
 
+def failure_reason(out: bytes, err: bytes, limit: int = 800) -> str:
+    """Why did the CLI exit non-zero? stderr first; a usage-limit or auth failure arrives as a JSON envelope with
+    `is_error` on stdout and an empty stderr (three night sittings on 28–29.09 failed with a blank reason), so
+    stdout is read next; an empty pair is said out loud rather than shown as a blank."""
+    tail = err.decode("utf-8", "replace").strip()
+    if tail:
+        return tail[-limit:]
+    text = out.decode("utf-8", "replace").strip()
+    if not text:
+        return "(stdout и stderr пусты)"
+    try:
+        envelope = json.loads(text)
+    except json.JSONDecodeError:
+        return "stdout: " + text[-limit:]
+    if isinstance(envelope, dict):
+        result = envelope.get("result") or envelope.get("error") or envelope.get("message")
+        if result:
+            return str(result)[:limit]
+    return "stdout: " + text[-limit:]
+
+
 async def run_claude(system_text: str, prompt: str, model: str, *, allow_web: bool = False,
                      max_turns: int = 1) -> dict[str, Any]:
     cmd = build_cmd(CLAUDE_BIN, system_text, model, allow_web=allow_web, max_turns=max_turns)
@@ -109,9 +130,9 @@ async def run_claude(system_text: str, prompt: str, model: str, *, allow_web: bo
         raise HTTPException(status_code=504, detail="claude CLI timeout")
 
     if proc.returncode != 0:
-        tail = err.decode("utf-8", "replace")[-800:]
-        log.error("claude CLI exit %s: %s", proc.returncode, tail)
-        raise HTTPException(status_code=502, detail=f"claude CLI exit {proc.returncode}: {tail}")
+        reason = failure_reason(out, err)
+        log.error("claude CLI exit %s: %s", proc.returncode, reason)
+        raise HTTPException(status_code=502, detail=f"claude CLI exit {proc.returncode}: {reason}")
     try:
         envelope = json.loads(out.decode("utf-8"))
     except json.JSONDecodeError:
