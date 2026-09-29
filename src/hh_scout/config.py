@@ -453,6 +453,39 @@ BLOCKED_REGIONS: dict[int, str] = {
     2209: "Херсонская область",
 }
 
+# Defence industry is off limits (decision #72, 2026-09-29): the owner does not write to military enterprises, makers
+# of weapons or defence systems, and — his choice, deliberately wide — to any structure of a holding with a defence
+# wing, even when the vacancy itself is about civil products. Matched case-insensitively (ё = е) against the employer
+# name of every source (hh.ru card, «Работа России», ОВЕН catalogue, procurement winner) and against a procurement's
+# customer; a hit is `skipped/defense:name:<entry>` before any AI or page load. Two lists, both edited by the owner:
+# `DEFENSE_EMPLOYERS` are substrings of company names (holdings, plants, agencies), `DEFENSE_EMPLOYER_WORDS` the
+# same but whole words only, `DEFENSE_WORD_STEMS` are word stems matched at the start of a word («оборон» hits
+# «Оборонэнерго» and «оборонный», not «самооборона»).
+# Abbreviations in `DEFENSE_ABBREVIATIONS` count only as a whole word in capitals: «Росконтроль» must not hit «ОСК».
+# What the name does not show — «входит в Ростех» on the company site, гособоронзаказ in the description — the
+# triage/evaluation flags and the dossier catch (`llm/schemas.py`); a wrong hit is undone with
+# `prefilter --requeue-reason 'defense%'`.
+DEFENSE_EMPLOYERS: tuple[str, ...] = (
+    "алмаз-антей", "алмаз – антей", "алмаз — антей", "алмаз антей", "концерн вко",
+    "объединенная авиастроительная", "компания сухой", "ркк миг", "рск миг", "туполев", "ильюшин", "корпорация иркут",
+    "объединенная двигателестроительная", "вертолеты россии", "радиоэлектронные технологии", "швабе", "росэлектроника",
+    "концерн техмаш", "технодинамика", "высокоточные комплексы", "тактическое ракетное вооружение", "уралвагонзавод",
+    "курганмашзавод", "концерн калашников", "тульский оружейный", "ижмаш", "мотовилихинские заводы", "нпо сплав",
+    "нпо машиностроения", "объединенная судостроительная", "севмаш", "адмиралтейские верфи", "балтийский завод",
+    "северная верфь", "цс звездочка", "амурский судостроительный", "зеленодольский завод", "средне-невский",
+    "грц макеева", "институт теплотехники", "оборонэнерго", "оборонлогистика", "военторг",
+    "военно-строительн", "росгвардия", "росгвардии", "федеральная служба безопасности", "федеральная служба охраны",
+    "войск национальной гвардии", "минобороны", "министерство обороны", "министерства обороны", "войсковая часть",
+    "в/ч ", "ракетно-артиллер", "ракетных войск", "ракетного вооружения",
+)
+# Names that are also the start of harmless words: matched as a whole word only («Ростех», not «Ростехнадзор» or
+# «РосТехЭнерго»; «Иркут», not «Иркутск»; «Спецстрой», not «СпецСтройМашина»).
+DEFENSE_EMPLOYER_WORDS: tuple[str, ...] = ("ростех", "иркут", "спецстрой", "техмаш", "калашников")
+DEFENSE_WORD_STEMS: tuple[str, ...] = (
+    "оборон", "вооруж", "боеприпас", "военн", "патронн", "спецсвяз", "гособоронзаказ", "оружейн", "бронетанк", "минобор",
+)
+DEFENSE_ABBREVIATIONS: tuple[str, ...] = ("ОАК", "ОСК", "УВЗ", "КТРВ", "ОДК", "КРЭТ", "ВПК", "ФСБ", "ФСО", "ГВСУ", "ВКО")
+
 # Conservative stop words for the local prefilter. When in doubt, let the AI decide.
 # Matched case-insensitively against the vacancy title only.
 TITLE_STOP_WORDS: tuple[str, ...] = (

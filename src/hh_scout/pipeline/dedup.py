@@ -30,7 +30,7 @@ from collections.abc import Mapping
 
 from hh_scout.config import Settings
 from hh_scout.db import transaction
-from hh_scout.pipeline import repo
+from hh_scout.pipeline import defense, repo
 from hh_scout.pipeline.rows import lead_kind as _lead_kind, row_site
 
 log = logging.getLogger(__name__)
@@ -71,10 +71,40 @@ def answered_employer(conn: sqlite3.Connection, settings: Settings, row: sqlite3
                                    linked_ids=_links(conn, row))
 
 
+def defense_row(conn: sqlite3.Connection, row: sqlite3.Row) -> sqlite3.Row | None:
+    """The row of this company already marked as a defence enterprise (any layer), or None (also None for profi.ru)."""
+    if _exempt(row):
+        return None
+    return repo.defense_employer(conn, row["employer_id"], row["employer"], exclude_id=row["id"], linked_ids=_links(conn, row))
+
+
+def skip_if_defense(conn: sqlite3.Connection, row: sqlite3.Row) -> sqlite3.Row | None:
+    """Decision #72: a defence enterprise by name (`defense.match`), or a company one of whose rows any layer already
+    marked `defense:*` — the row is skipped and returned (itself for a name hit); None otherwise. Commits nothing."""
+    if _exempt(row):
+        return None
+    hit = defense.match(row["employer"])
+    if hit:
+        repo.skip_as_defense(conn, row["id"], defense.name_reason(hit))
+        log.info("Оборонное предприятие, не лид: %s «%s» — %s (правило: %s)", row["hh_id"], (row["title"] or "")[:50],
+                 row["employer"] or "—", hit)
+        return row
+    marked = defense_row(conn, row)
+    if marked is not None:
+        repo.skip_as_defense(conn, row["id"], f"defense:employer:{marked['hh_id']}")
+        log.info("Оборонное предприятие, не лид: %s «%s» — %s (по %s, %s)%s", row["hh_id"], (row["title"] or "")[:50],
+                 row["employer"] or "—", marked["hh_id"], marked["skip_reason"], _via_contact(row, marked))
+    return marked
+
+
 def skip_if_covered(conn: sqlite3.Connection, settings: Settings, row: sqlite3.Row) -> sqlite3.Row | None:
     """Mark `row` a duplicate if its employer already has a lead — or was already answered; returns it or None.
 
+    Runs the defence-industry check first (decision #72): it holds whatever the company's leads look like.
     Commits nothing."""
+    marked = skip_if_defense(conn, row)
+    if marked is not None:
+        return marked
     answered = answered_employer(conn, settings, row)
     if answered is not None:
         repo.skip_as_responded(conn, row["id"], answered["hh_id"])

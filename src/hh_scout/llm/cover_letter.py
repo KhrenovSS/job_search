@@ -26,7 +26,7 @@ from hh_scout.llm.letter_checks import strip_role_address
 from hh_scout.llm.prompts import PrivatePromptMissing, load_prompt_body, read_private, render
 from hh_scout.llm.schemas import CompanyBrief
 from hh_scout.pipeline import dedup, repo
-from hh_scout.pipeline.rows import contact_email, letter_key, needs_email, row_get, row_site
+from hh_scout.pipeline.rows import contact_email, is_defense, letter_key, needs_email, row_get, row_site
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +62,7 @@ class LetterStats:
     bridge_calls: int = 0
     left_for_later: int = 0   # leads the time budget did not reach; they keep their place in the queue
     no_email: int = 0         # catalogue companies with no address to write to — skipped, no letter (decision #56)
+    defense: int = 0          # companies the dossier revealed as defence enterprises — skipped, no letter (decision #72)
 
 
 def salary_stated(row: sqlite3.Row) -> bool:
@@ -313,7 +314,8 @@ class CoverLetterWriter:
                 with self.conn:
                     if dedup.skip_if_covered(self.conn, self.s, row) is not None:
                         return None
-            if self.unreachable(row, brief.model_dump() if brief is not None else None):
+            brief_dict = brief.model_dump() if brief is not None else None
+            if self.defense(row, brief_dict) or self.unreachable(row, brief_dict):
                 return None
         payload = letter_payload(row, company, hint)
         lo, hi = LENGTH_LIMITS.get(key, LENGTH_LIMITS["hh"])
@@ -344,6 +346,19 @@ class CoverLetterWriter:
         self.stats.written += 1
         log.info("Письмо для %s «%s» (%s): %d символов", row["hh_id"], row["title"][:40], row["employer"], len(text))
         return text
+
+    def defense(self, row: sqlite3.Row, brief: dict | None = None) -> bool:
+        """The dossier just researched says «defence enterprise» (`CompanyBrief.defense`, decision #72): the lead leaves
+        the queue as `skipped/defense:dossier` and no letter is written. Only for a lead still waiting — a `/letter`
+        rewrite of a sent lead must never turn it into a skip."""
+        if row_get(row, "status", "evaluated") != "evaluated" or not is_defense(row, brief):
+            return False
+        with self.conn:
+            repo.set_status(self.conn, row["hh_id"], "skipped", "defense:dossier")
+        self.stats.defense += 1
+        log.info("Письмо для %s («%s») не пишу: по досье компания — оборонное предприятие, лид пропущен",
+                 row["hh_id"], row["employer"] or "—")
+        return True
 
     def unreachable(self, row: sqlite3.Row, brief: dict | None = None) -> bool:
         """A catalogue company with no e-mail — in the catalogue or in the dossier just researched — is skipped
@@ -404,9 +419,9 @@ class CoverLetterWriter:
                 log.warning("Письмо для %s осталось по прежним правилам — лид подождёт следующего подхода",
                             row["hh_id"])
         self.stats.bridge_calls = self.bridge.calls + self._research_bridge.calls  # research has its own client
-        log.info("Письма: написано %d (правил редактор %d), отклонено %d, без e-mail %d, вызовов моста %d, cost $%.3f",
-                 self.stats.written, self.stats.reviewed, self.stats.failed, self.stats.no_email, self.stats.bridge_calls,
-                 self.bridge.cost_usd + self._research_bridge.cost_usd)
+        log.info("Письма: написано %d (правил редактор %d), отклонено %d, без e-mail %d, оборонка %d, вызовов моста %d, "
+                 "cost $%.3f", self.stats.written, self.stats.reviewed, self.stats.failed, self.stats.no_email,
+                 self.stats.defense, self.stats.bridge_calls, self.bridge.cost_usd + self._research_bridge.cost_usd)
         return self.stats
 
     def _review(self, text: str, payload: dict, row: sqlite3.Row, company: dict | None) -> str | None:

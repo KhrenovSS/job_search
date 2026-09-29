@@ -55,6 +55,22 @@ def needs_email(row: sqlite3.Row | dict) -> bool:
     return (row_site(row) == "owen" and lead_kind(row) == "company") or row_site(row) in ("trudvsem", "zakupki")
 
 
+def is_defense(row: sqlite3.Row | dict, brief: dict | None = None) -> bool:
+    """Whether the company's dossier says «defence enterprise» (`employers.brief.defense`, decision #72). `brief` is a
+    dossier fresher than the row's own `company_brief` column — the letter writer has just researched it."""
+    for source in (brief, row_get(row, "company_brief")):
+        if not source:
+            continue
+        if isinstance(source, str):
+            try:
+                source = json.loads(source)
+            except (TypeError, ValueError):
+                continue
+        if isinstance(source, dict) and source.get("defense"):
+            return True
+    return False
+
+
 def contact_email(row: sqlite3.Row | dict, brief: dict | None = None) -> str | None:
     """Where to e-mail a company lead: the catalogue's first valid address (`raw_json.emails`), else the general
     address the dossier read on the company's site (`employers.brief.contact_email`, v9.15). `brief` is a dossier

@@ -38,7 +38,7 @@ import httpx
 
 from hh_scout.config import PROJECT_ROOT, ZAKUPKI_QUERIES, Settings
 from hh_scout.db import kv_set, transaction, utcnow
-from hh_scout.pipeline import dedup, repo
+from hh_scout.pipeline import dedup, defense, repo
 from hh_scout.pipeline.contacts import normalize_email
 
 log = logging.getLogger(__name__)
@@ -254,14 +254,19 @@ def store_notice(conn: sqlite3.Connection, n: Notice, query: str) -> bool:
     raw = {"site": SITE, "law": n.law, "reg_number": n.reg_number, "notice_type": n.notice_type, "object": n.title,
            "customer": n.customer, "price": n.price, "stage": n.stage, "ikz": n.ikz, "query": query, "tries": 0,
            "description": _description(n)}
+    # Decision #72: a contract for Минобороны, Росгвардия, ФСБ, ФСО or a defence plant is work for a military customer —
+    # the notice is remembered (so the feed does not offer it again) but its winner is never looked up.
+    status, reason = ("skipped", defense.CUSTOMER_REASON) if defense.match(n.customer) else ("new", None)
     conn.execute(
         """INSERT INTO vacancies(hh_id, site, title, employer, employer_id, url, area_name, work_format, employment,
-                                 published_at, source, search_pass, lead_kind, raw_json, status, applied,
+                                 published_at, source, search_pass, lead_kind, raw_json, status, skip_reason, applied,
                                  first_seen_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (n.ext_id, SITE, f"Закупка: {n.title}"[:300], None, None, n.url, None, "unknown", "project",
-         n.published or now, f"zakupki:{query}", PASS, "company", json.dumps(raw, ensure_ascii=False), "new", 0, now, now),
+         n.published or now, f"zakupki:{query}", PASS, "company", json.dumps(raw, ensure_ascii=False), status, reason, 0, now, now),
     )
+    if reason:
+        log.info("Закупка %s для оборонного заказчика (%s) — не лид", n.reg_number, (n.customer or "—")[:60])
     return True
 
 
@@ -285,6 +290,9 @@ def resolve_row(conn: sqlite3.Connection, settings: Settings, fetcher: Fetcher, 
     n = Notice(reg_number=raw.get("reg_number") or row["hh_id"][len(ID_PREFIX):], law=raw.get("law", "44"),
                url=row["url"], notice_type=raw.get("notice_type", "ea20"), title=raw.get("object") or row["title"],
                customer=raw.get("customer", ""), price=raw.get("price", ""), stage=raw.get("stage", ""), published=None)
+    if defense.match(n.customer):   # a notice stored before decision #72 — no request spent on its winner
+        repo.set_status(conn, row["hh_id"], "skipped", defense.CUSTOMER_REASON)
+        return "skipped"
     contracts = parse_supplier_results(fetcher.get(n.results_url()))
     raw["tries"] = int(raw.get("tries") or 0) + 1
     if not contracts:
@@ -305,6 +313,12 @@ def resolve_row(conn: sqlite3.Connection, settings: Settings, fetcher: Fetcher, 
         return "skipped"
     employer = supplier.short_name or supplier.name
     employer_id = ID_PREFIX + (supplier.inn or re.sub(r"\W+", "", employer.casefold())[:40])
+    hit = defense.match(supplier.name) or defense.match(supplier.short_name)
+    if hit:   # the winner itself is a defence enterprise (decision #72); the name is kept for the record
+        conn.execute("UPDATE vacancies SET employer = ?, employer_id = ?, status = 'skipped', skip_reason = ?, updated_at = ? "
+                     "WHERE id = ?", (employer, employer_id, defense.name_reason(hit), utcnow(), row["id"]))
+        log.info("Победитель закупки %s — оборонное предприятие (%s), не лид", employer, hit)
+        return "skipped"
     raw.update({"winner": supplier.name, "winner_short": supplier.short_name, "inn": supplier.inn, "kpp": supplier.kpp,
                 "emails": supplier.emails, "phones": supplier.phones, "address": supplier.address,
                 "supplier_status": supplier.status, "contract_subject": supplier.subject, "contract_price": supplier.price,

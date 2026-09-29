@@ -13,6 +13,9 @@ class TriageVerdict(BaseModel):
     # v9.15 (decision #55): a closed card whose company runs automation itself (КИПиА, operations, electrical on a
     # production site) — the company becomes a `plant` lead even though the vacancy is not for a programmer.
     plant: bool = False
+    # v9.33 (decision #72): the company is a defence enterprise or part of a holding with a defence wing — the card
+    # is closed as `skipped/defense:triage` whatever `open` says, and the company's other rows follow.
+    defense: bool = False
 
     @field_validator("hh_id", mode="before")
     @classmethod
@@ -44,6 +47,9 @@ class VacancyEvaluation(BaseModel):
     # Allen-Bradley Studio 5000, Omron, Mitsubishi, B&R …) — the company wants a specialist in it, not a contractor.
     # The code turns this into `skipped/foreign_platform_only` whatever the scores say; a list of brands is not this.
     foreign_platform_only: bool = False
+    # v9.33 (decision #72): a defence enterprise, a structure of a holding with a defence wing, military products or
+    # гособоронзаказ in the text — `skipped/defense:evaluation` whatever the scores say.
+    defense_enterprise: bool = False
 
     @field_validator("hh_id", mode="before")
     @classmethod
@@ -78,6 +84,7 @@ class CompanyEvaluation(BaseModel):
     pitch_hint: str = ""
     offer_focus: list[str] = Field(default_factory=list)
     red_flags: list[str] = Field(default_factory=list)
+    defense_enterprise: bool = False   # v9.33 (decision #72), same meaning as in VacancyEvaluation
 
     @field_validator("hh_id", mode="before")
     @classmethod
@@ -115,5 +122,8 @@ class CompanyBrief(BaseModel):
     # when the company was found through someone else's vacancy. General addresses only, never a person's.
     website: str = ""
     contact_email: str = ""
+    # v9.33 (decision #72): the open web says the company is a defence enterprise, belongs to a holding with a defence
+    # wing or works on гособоронзаказ — the letter is not written (`skipped/defense:dossier`). A fact from a page read.
+    defense: bool = False
     contact_phone: str = ""
 

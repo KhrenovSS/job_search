@@ -5,7 +5,7 @@ Applies to vacancies in status `new`. Every rejection records a `skip_reason`; s
 Rules are deliberately conservative: when in doubt, let the AI decide. Salary is not a rule —
 vacancies are leads for the owner's contracting work, a low salary says nothing about the lead.
 
-CLI:  python -m hh_scout.pipeline.prefilter [--dry-run] [--show-skipped] [--requeue-reason REASON --days N]
+CLI:  python -m hh_scout.pipeline.prefilter [--dry-run] [--show-skipped] [--requeue-reason REASON --days N] [--defense-sweep]
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from hh_scout.config import BLOCKED_REGIONS, TITLE_KEEP_WORDS, TITLE_REQUIRED_ANY, TITLE_STOP_WORDS, Settings
 from hh_scout.db import transaction
 from hh_scout.hh.areas import blocked_region
-from hh_scout.pipeline import repo
+from hh_scout.pipeline import defense, repo
 from hh_scout.pipeline.rows import lead_kind
 
 log = logging.getLogger(__name__)
@@ -34,6 +34,7 @@ class CardFacts:
     archived: bool
     company: bool = False   # a company-channel card (v9.13): the title names the company's trade, not a programmer
     region: str | None = None  # the blocked region the card lies in (`hh.areas.blocked_region`), decision #65
+    employer: str | None = None  # the company name — the defence-industry rule reads it (`pipeline.defense`), decision #72
 
 
 # Stop words match only at the start of a word: "водитель" must not hit "руководитель".
@@ -48,6 +49,9 @@ def decide(card: CardFacts) -> str | None:
         return "archived"
     if card.region:
         return repo.REGION_PREFIX + card.region   # the owner does not work there — whatever the title says
+    hit = defense.match(card.employer)
+    if hit:
+        return defense.name_reason(hit)   # a defence enterprise gets no letter, whatever the title says (decision #72)
     title = card.title.casefold()
     keep = any(k in title for k in TITLE_KEEP_WORDS)
     if not keep:
@@ -66,7 +70,7 @@ def decide(card: CardFacts) -> str | None:
 def _facts(row: sqlite3.Row) -> CardFacts:
     return CardFacts(hh_id=row["hh_id"], title=row["title"] or "", applied=bool(row["applied"]),
                      archived=(row["skip_reason"] == "archived"), company=(lead_kind(row) == "company"),
-                     region=blocked_region(row["area_path"]))
+                     region=blocked_region(row["area_path"]), employer=row["employer"])
 
 
 def run(conn: sqlite3.Connection, settings: Settings, *, dry_run: bool = False) -> Counter:
@@ -92,6 +96,11 @@ def run(conn: sqlite3.Connection, settings: Settings, *, dry_run: bool = False) 
             withdrawn = repo.skip_blocked_regions(conn, BLOCKED_REGIONS)
             if withdrawn:
                 log.info("Закрытые регионы: снято с очереди %s", ", ".join(f"{k} — {v}" for k, v in withdrawn.items()))
+            # Same for the defence industry (decision #72): rows of every source and stage whose employer the rule now
+            # names, and the other rows of a company one of whose rows the triage, the evaluator or the dossier marked.
+            swept = repo.skip_defense_employers(conn)
+            if swept:
+                log.info("Оборонка: снято с очереди %s", ", ".join(f"{k} — {v}" for k, v in swept.items()))
     log.info("Префильтр: %d карточек → %s", len(rows), dict(outcomes))
     return outcomes
 
@@ -107,6 +116,8 @@ def main() -> int:
     ap.add_argument("--requeue-reason", metavar="REASON",
                     help="one-off after a rules change: cards skipped with this reason go back to triage")
     ap.add_argument("--days", type=int, default=14, help="--requeue-reason: only cards first seen within N days")
+    ap.add_argument("--defense-sweep", action="store_true",
+                    help="only the defence-industry sweep over rows already past the rules (decision #72); no other change")
     args = ap.parse_args()
     settings = load_settings()
     setup_logging(settings.log_level)
@@ -115,6 +126,11 @@ def main() -> int:
         with conn:
             n = repo.requeue_skipped(conn, args.requeue_reason, args.days)
         print(f"Возвращено в triage: {n} (skipped/{args.requeue_reason}, не старше {args.days} дн.)")
+        return 0
+    if args.defense_sweep:
+        with conn:
+            swept = repo.skip_defense_employers(conn)
+        print("Оборонка: снято", sum(swept.values()), dict(swept))
         return 0
 
     outcomes = run(conn, settings, dry_run=args.dry_run)

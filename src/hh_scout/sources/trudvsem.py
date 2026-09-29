@@ -258,7 +258,7 @@ def store_vacancy(conn: sqlite3.Connection, settings: Settings, v: TvVacancy, qu
     if repo.vacancy_exists(conn, v.ext_id):
         return None
     facts = prefilter.CardFacts(hh_id=v.ext_id, title=v.title, applied=False, archived=False,
-                                region=blocked_region_name(v.region))
+                                region=blocked_region_name(v.region), employer=v.employer)
     reason = prefilter.decide(facts)
     if reason is None and not v.emails:
         reason = "no_email"   # nothing to answer on hh.ru and nowhere to write — no lead (decision #56)

@@ -11,6 +11,7 @@ from typing import Any
 from hh_scout.browser.hh_pages import VacancyCard, VacancyDetail
 from hh_scout.config import TZ
 from hh_scout.db import utcnow
+from hh_scout.pipeline import defense
 from hh_scout.pipeline.contacts import contact_keys
 from hh_scout.hh.salary import normalize
 
@@ -86,13 +87,15 @@ def insert_integrator(conn: sqlite3.Connection, card: "IntegratorCard") -> bool:
     raw = {"description": card.description, "industries": list(card.industries), "status": card.status,
            "projects_url": card.projects_url, "site": card.site, "emails": list(card.emails), "phones": list(card.phones),
            "address": card.address, "region": card.region}
+    hit = defense.match(card.name)   # a defence enterprise in the catalogue is stored, but never admitted (decision #72)
+    status, reason = ("skipped", defense.name_reason(hit)) if hit else ("new", None)
     conn.execute(
         """INSERT INTO vacancies(hh_id, site, lead_kind, title, employer, employer_id, url, area_name, work_format, employment,
-                                 published_at, source, search_pass, raw_json, status, applied, first_seen_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                 published_at, source, search_pass, raw_json, status, skip_reason, applied, first_seen_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (card.ext_id, "owen", "company", f"Системный интегратор ОВЕН ({card.status})", card.name, card.ext_id,
          card.site or card.projects_url or "https://owen.ru/spisok_sistemnih_integratorov", card.city, "unknown", "unknown",
-         now, "owen_catalog", OWEN_PASS, json.dumps(raw, ensure_ascii=False), "new", 0, now, now),
+         now, "owen_catalog", OWEN_PASS, json.dumps(raw, ensure_ascii=False), status, reason, 0, now, now),
     )
     record_contacts(conn, card.ext_id, emails=card.emails, urls=[card.site])
     return True
@@ -379,6 +382,78 @@ def skip_blocked_regions(conn: sqlite3.Connection, blocked: dict[int, str]) -> d
     return out
 
 
+# --- defence industry (decision #72) --------------------------------------------------------
+
+def skip_defense_employers(conn: sqlite3.Connection) -> dict[str, int]:
+    """Withdraw the rows of defence enterprises from every stage on the way to a letter (all sources but profi.ru).
+
+    Two passes. First the name rule (`defense.match`) over the distinct employer names of rows in flight (and the plant
+    pool): hits become `skipped/defense:name:<entry>`. Then propagation: a row whose company already has a row marked
+    `defense:*` by any layer (rule, triage, evaluation, dossier) becomes `defense:employer:<that hh_id>` — the same
+    identity as the one-lead-per-company rule (`_SAME_EMPLOYER_AS_V`). A `rejected` row without a reason only gets the
+    reason, so the daily floor leaves it alone; `sent` rows are history and stay (the owner keeps the cards in the chat).
+    Returns {reason: rows}.
+    """
+    now = utcnow()
+    out: dict[str, int] = {}
+    placeholders = ",".join("?" * len(_REGION_LIVE_STATUSES))
+    live = f"(status IN ({placeholders}) OR (status = 'skipped' AND skip_reason = ?))"
+    names = conn.execute(
+        f"SELECT DISTINCT employer FROM vacancies WHERE employer IS NOT NULL AND site != 'profi' "
+        f"AND ({live} OR (status = 'rejected' AND skip_reason IS NULL))", (*_REGION_LIVE_STATUSES, PLANT_POOL)).fetchall()
+    for r in names:
+        hit = defense.match(r["employer"])
+        if not hit:
+            continue
+        reason = defense.name_reason(hit)
+        n = conn.execute(
+            f"UPDATE vacancies SET status = 'skipped', skip_reason = ?, updated_at = ? "
+            f"WHERE employer = ? AND site != 'profi' AND {live}",
+            (reason, now, r["employer"], *_REGION_LIVE_STATUSES, PLANT_POOL)).rowcount
+        n += conn.execute(
+            "UPDATE vacancies SET skip_reason = ?, updated_at = ? WHERE employer = ? AND site != 'profi' "
+            "AND status = 'rejected' AND skip_reason IS NULL", (reason, now, r["employer"])).rowcount
+        if n:
+            out[reason] = out.get(reason, 0) + n
+    twins = conn.execute(
+        f"""SELECT v.id, (SELECT o.hh_id FROM vacancies o
+                          WHERE o.id != v.id AND {_SAME_EMPLOYER_AS_V}
+                            AND (o.skip_reason = 'defense' OR o.skip_reason LIKE 'defense:%')
+                          ORDER BY o.id LIMIT 1) AS marked
+              FROM vacancies v
+             WHERE v.site IN {NAMED_SITES} AND (v.employer_id IS NOT NULL OR v.employer IS NOT NULL)
+               AND ({live.replace('status', 'v.status').replace('skip_reason', 'v.skip_reason')}
+                    OR (v.status = 'rejected' AND v.skip_reason IS NULL))""",
+        (*_REGION_LIVE_STATUSES, PLANT_POOL)).fetchall()
+    for t in twins:
+        if not t["marked"]:
+            continue
+        reason = f"defense:employer:{t['marked']}"
+        n = conn.execute(
+            "UPDATE vacancies SET status = CASE WHEN status = 'rejected' THEN status ELSE 'skipped' END, "
+            "skip_reason = ?, updated_at = ? WHERE id = ?", (reason, now, t["id"])).rowcount
+        if n:
+            out["defense:employer"] = out.get("defense:employer", 0) + n
+    return out
+
+
+def defense_employer(conn: sqlite3.Connection, employer_id: str | None, employer: str | None, *,
+                     exclude_id: int | None, linked_ids: Sequence[str] = ()) -> sqlite3.Row | None:
+    """A row of this company already marked `defense:*` by any layer, or None. Same identity as `employer_lead`."""
+    if employer_id is None and not employer and not linked_ids:
+        return None
+    linked_sql, linked_params = _linked_sql("v", linked_ids)
+    sql = (f"SELECT v.id, v.hh_id, v.skip_reason, v.employer_id FROM vacancies v "
+           f"WHERE (({same_employer_sql('v')}){linked_sql}) AND v.id IS NOT ? "
+           "AND (v.skip_reason = 'defense' OR v.skip_reason LIKE 'defense:%') ORDER BY v.id LIMIT 1")
+    return conn.execute(sql, same_employer_params(employer_id, employer) + linked_params + [exclude_id]).fetchone()
+
+
+def skip_as_defense(conn: sqlite3.Connection, vacancy_id: int, reason: str) -> None:
+    conn.execute("UPDATE vacancies SET status = 'skipped', skip_reason = ?, updated_at = ? WHERE id = ?",
+                 (reason, utcnow(), vacancy_id))
+
+
 def page_loads_today(conn: sqlite3.Connection) -> int:
     """Sum of page loads over all runs started today (Europe/Moscow), any status."""
     row = conn.execute("SELECT COALESCE(SUM(page_loads), 0) AS n FROM runs WHERE started_at >= ?", (_today_start_utc(),)).fetchone()
@@ -420,9 +495,10 @@ def requeue_skipped(conn: sqlite3.Connection, skip_reason: str, since_days: int)
     Only rows first seen within `since_days`: an old card is most likely a closed vacancy, and a page load
     on it would be a page load wasted.
     """
+    op = "LIKE" if "%" in skip_reason else "="   # `--requeue-reason 'defense%'` undoes a whole family (decision #72)
     cur = conn.execute(
         "UPDATE vacancies SET status = 'triage', skip_reason = NULL, updated_at = ? "
-        "WHERE status = 'skipped' AND skip_reason = ? AND first_seen_at >= ?",
+        f"WHERE status = 'skipped' AND skip_reason {op} ? AND first_seen_at >= ?",
         (utcnow(), skip_reason, _ago(since_days)))
     return cur.rowcount
 

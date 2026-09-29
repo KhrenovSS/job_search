@@ -47,6 +47,7 @@ class EvalStats:
     bridge_calls: int = 0
     pooled: int = 0   # vacancies below the threshold that became plant pool rows instead of write-offs (v9.19)
     locked_out: int = 0   # vacancies whose only mandatory environment is not the owner's — never a lead (v9.20, #61)
+    defense: int = 0      # defence enterprises — never a lead, vacancies and companies alike (v9.33, #72)
 
 
 REASON_RU = {"salary": "зарплата", "format": "формат работы", "stack": "не мой стек", "agency": "агентство"}
@@ -184,7 +185,10 @@ class Evaluator:
                     seen.add(ev.hh_id)
                     self._store(row, ev)
                     self.stats.evaluated += 1
-                    if self._lock_out(row, ev):
+                    locked = self._lock_out(row, ev)
+                    if locked == "defense":
+                        self.stats.defense += 1
+                    elif locked:
                         self.stats.locked_out += 1
                     elif self._pool_if_plant(row, ev):
                         self.stats.pooled += 1
@@ -192,23 +196,31 @@ class Evaluator:
                     repo.set_status(self.conn, hh_id, "evaluation_failed", "missing_in_ai_answer")
                     self.stats.failed += 1
         self.stats.bridge_calls = self.bridge.calls
-        log.info("Оценка: оценено %d, неудачно %d, чужая среда %d, в пул эксплуатантов %d, вызовов моста %d, cost $%.3f",
-                 self.stats.evaluated, self.stats.failed, self.stats.locked_out, self.stats.pooled, self.stats.bridge_calls,
-                 self.bridge.cost_usd)
+        log.info("Оценка: оценено %d, неудачно %d, чужая среда %d, оборонка %d, в пул эксплуатантов %d, вызовов моста %d, "
+                 "cost $%.3f", self.stats.evaluated, self.stats.failed, self.stats.locked_out, self.stats.defense,
+                 self.stats.pooled, self.stats.bridge_calls, self.bridge.cost_usd)
         return self.stats
 
-    def _lock_out(self, row: sqlite3.Row, ev: VacancyEvaluation | CompanyEvaluation) -> bool:
-        """A vacancy whose only mandatory environment is not the owner's is never a lead (v9.20, decision #61).
+    def _lock_out(self, row: sqlite3.Row, ev: VacancyEvaluation | CompanyEvaluation) -> str | None:
+        """Rows that are never a lead whatever the scores: returns the reason ("defense", "foreign") or None.
 
-        The owner: a company that wants a Siemens (Allen-Bradley, Omron …) specialist gets no letter, however good the
-        role and the company look — so the scores stay in `evaluations` for the record, but the row leaves the queue as
-        `skipped/foreign_platform_only`. Neither the daily floor nor `--requeue-rejected` take `skipped` rows back."""
+        Decision #72 (v9.33): a defence enterprise — or a structure of a holding with a defence wing — gets no letter,
+        vacancy or company alike (`skipped/defense:evaluation`); the company's other rows follow through `dedup`.
+        Decision #61 (v9.20): a vacancy whose only mandatory environment is not the owner's — a company that wants a
+        Siemens (Allen-Bradley, Omron …) specialist — leaves the queue as `skipped/foreign_platform_only`.
+        The scores stay in `evaluations` for the record; neither the daily floor nor `--requeue-rejected` take
+        `skipped` rows back."""
+        if ev.defense_enterprise and letter_key(row) != "profi":
+            repo.set_status(self.conn, row["hh_id"], "skipped", "defense:evaluation")
+            log.info("Оборонное предприятие, не лид: %s «%s» — %s (оценка: %s)", row["hh_id"], (row["title"] or "")[:50],
+                     row["employer"] or "—", "; ".join(ev.red_flags) or "оборонное предприятие")
+            return "defense"
         if isinstance(ev, CompanyEvaluation) or not ev.foreign_platform_only or letter_key(row) != "hh":
-            return False
+            return None
         repo.set_status(self.conn, row["hh_id"], "skipped", "foreign_platform_only")
         log.info("Чужая среда, не лид: %s «%s» — %s (%s)", row["hh_id"], (row["title"] or "")[:50], row["employer"] or "—",
                  "; ".join(ev.red_flags) or "единственная обязательная среда не из ядра")
-        return True
+        return "foreign"
 
     def _pool_if_plant(self, row: sqlite3.Row, ev: VacancyEvaluation | CompanyEvaluation) -> bool:
         """A vacancy below the threshold that the evaluator flagged `plant` joins the plant pool (v9.19).

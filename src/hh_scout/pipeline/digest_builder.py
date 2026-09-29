@@ -9,8 +9,8 @@ from datetime import datetime, timedelta, timezone
 
 from hh_scout.config import Settings
 from hh_scout.db import transaction
-from hh_scout.pipeline import dedup, repo
-from hh_scout.pipeline.rows import contact_email, needs_email
+from hh_scout.pipeline import dedup, defense, repo
+from hh_scout.pipeline.rows import contact_email, is_defense, needs_email
 
 log = logging.getLogger(__name__)
 
@@ -67,6 +67,26 @@ def skip_unreachable(conn: sqlite3.Connection, settings: Settings) -> int:
     return len(rows)
 
 
+def skip_defense(conn: sqlite3.Connection, settings: Settings) -> int:
+    """Defence enterprises leave the queue right before a send (decision #72) — the send-side guard behind the name
+    rule, the model flags and the dossier: a lead evaluated before the rule existed, a dossier researched after the
+    letter, a word the owner has just added to the dictionary. Returns how many."""
+    rows = []
+    for r in repo.lead_queue(conn, settings.score_threshold, None, wait_bonus_max=settings.queue_wait_bonus_max):
+        hit = defense.match(r["employer"])
+        if hit:
+            rows.append((r, defense.name_reason(hit)))
+        elif is_defense(r):
+            rows.append((r, "defense:dossier"))
+    if rows:
+        with transaction(conn):
+            for r, reason in rows:
+                repo.set_status(conn, r["hh_id"], "skipped", reason)
+        log.info("Оборонка: из очереди перед отправкой убрано %d (%s)", len(rows),
+                 ", ".join(f"{r['hh_id']} {reason}" for r, reason in rows[:10]))
+    return len(rows)
+
+
 def daily_quota_left(settings: Settings, sent_today: int) -> int | None:
     """How many more leads may go out today. `None` means no limit — the default since v9.14 (decision #54).
 
@@ -94,6 +114,7 @@ def plan_digest(conn: sqlite3.Connection, settings: Settings) -> DigestPlan:
     """
     dedup.dedupe_evaluated(conn, settings)  # one lead per company (writes skipped/duplicate_employer; idempotent)
     skip_unreachable(conn, settings)        # a catalogue company without an e-mail is no lead (decision #56)
+    skip_defense(conn, settings)            # a defence enterprise is no lead (decision #72)
     with conn:
         gone = repo.expire_queue(conn, settings.queue_ttl_days)
     if gone:

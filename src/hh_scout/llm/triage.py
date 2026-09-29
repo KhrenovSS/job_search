@@ -38,6 +38,7 @@ class TriageStats:
     failed_batches: int = 0
     bridge_calls: int = 0
     pooled: int = 0   # closed cards whose company went into the plant pool instead (v9.15)
+    defense: int = 0  # cards closed as defence enterprises whatever the verdict (v9.33, decision #72)
     verdicts: list[tuple[str, TriageVerdict]] = field(default_factory=list)  # (title, verdict) for logs/CLI
 
 
@@ -99,6 +100,14 @@ class Triager:
                     self.stats.verdicts.append((row["title"], v))
                     if not dry_run:
                         repo.save_triage(self.conn, v.hh_id, open_it=v.open, priority=v.priority, note=v.reason)
+                        # v9.33 (decision #72): a defence enterprise is closed whatever the verdict — vacancy and
+                        # company cards alike — before its page costs a load; the plant pool does not get it either
+                        if v.defense:
+                            repo.set_status(self.conn, v.hh_id, "skipped", "defense:triage")
+                            self.stats.defense += 1
+                            log.info("Оборонное предприятие, не лид: %s «%s» — %s (триаж: %s)", v.hh_id,
+                                     (row["title"] or "")[:50], row["employer"] or "—", v.reason or "—")
+                            continue
                         # v9.15: a closed card of a company that runs automation itself is not lost — the company
                         # becomes a plant lead-in-waiting (only vacancy cards: company channels have their own triage)
                         if not v.open and v.plant and lead_kind(row) == "vacancy":
@@ -109,9 +118,9 @@ class Triager:
                 if missing:
                     log.warning("Триаж не вернул вердикты для %d карточек — останутся в triage", len(missing))
         self.stats.bridge_calls = self.bridge.calls
-        log.info("Триаж: карточек %d, открыть %d, закрыть %d (в пул эксплуатантов %d), неудачных пачек %d, "
+        log.info("Триаж: карточек %d, открыть %d, закрыть %d (в пул эксплуатантов %d, оборонка %d), неудачных пачек %d, "
                  "вызовов моста %d, cost $%.3f", self.stats.cards, self.stats.opened, self.stats.closed,
-                 self.stats.pooled, self.stats.failed_batches, self.stats.bridge_calls, self.bridge.cost_usd)
+                 self.stats.pooled, self.stats.defense, self.stats.failed_batches, self.stats.bridge_calls, self.bridge.cost_usd)
         return self.stats
 
     def _triage_batch(self, system_text: str, batch: list[sqlite3.Row]) -> list[TriageVerdict] | None:
