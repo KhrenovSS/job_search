@@ -236,3 +236,23 @@ def test_details_still_stops_on_a_captcha(monkeypatch, vacancy_state):
         f.run()
     assert repo.count_by_status(conn) == {"prefiltered": 1, "to_fetch": 2}   # the captcha row is not written off
     assert f.stats.outcomes["prefiltered"] == 1 and "hh.ru" in f.stats.stopped_reason
+
+
+def test_details_skips_a_vacancy_hh_redirects_to_another_site(monkeypatch, vacancy_state):
+    """v9.35: hh 137929021 was a «Работа России» vacancy — hh.ru sent the browser to trudvsem.ru, where no
+    `HH-Lux-InitialState` can exist. Not a block, not broken markup: the row is skipped as an external one."""
+    from hh_scout.browser import pacing
+    monkeypatch.setattr(pacing, "sleep", lambda s: None)
+    conn = _db_with([("1", 1), ("2", 1), ("3", 1)])
+    states = _three_states(vacancy_state)
+    states["2"] = HHBlocked("hh.ru вернул страницу без данных (заголовок: 'Вакансия Инженер-программист - ЗАО СК ЛЕНИНГРАДСКИЙ, работа в Краснодарский край')",
+                            title="Вакансия Инженер-программист - ЗАО СК ЛЕНИНГРАДСКИЙ, работа в Краснодарский край",
+                            url="https://trudvsem.ru/vacancy/card/1112341000100/9e45f7d8-a5e7-11f1-8d85-6f9b8d7d49f7?utm_redirect_vacancy_id=2")
+    loads = []
+    f = DetailsFetcher(Settings(_env_file=None), conn, session_factory=lambda b: FakeSession(b, states, loads), rng=random.Random(0), page_budget=10)
+    stats = f.run()
+    assert [u.rsplit("/", 1)[1] for u in loads] == ["1", "2", "3"]
+    rows = {r["hh_id"]: r for r in conn.execute("SELECT hh_id, status, skip_reason FROM vacancies")}
+    assert rows["2"]["status"] == "skipped" and rows["2"]["skip_reason"] == "redirect:trudvsem.ru"
+    assert rows["1"]["status"] == "prefiltered" and rows["3"]["status"] == "prefiltered"
+    assert stats.outcomes["redirect"] == 1 and stats.outcomes["prefiltered"] == 2 and "format_error" not in stats.outcomes

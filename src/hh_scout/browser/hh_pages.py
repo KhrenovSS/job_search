@@ -16,7 +16,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +56,27 @@ def looks_like_vacancy_page(title: str) -> bool:
     (v9.34: hh 137929021 rendered without the state template five sittings in a row and stopped each of them).
     """
     return (title or "").strip().lower().startswith("вакансия ")
+
+
+def is_hh_url(url: str) -> bool:
+    """True for hh.ru and its subdomains; also for an empty or unparsable address (unknown is not «elsewhere»)."""
+    try:
+        host = (urlsplit(url or "").hostname or "").lower()
+    except ValueError:
+        return True
+    return not host or host == "hh.ru" or host.endswith(".hh.ru")
+
+
+def redirect_host(url: str) -> str | None:
+    """The host hh.ru sent the browser to, when a vacancy page landed outside hh.ru — else None.
+
+    v9.35: hh.ru lists vacancies of «Работа России» and redirects their page to trudvsem.ru
+    (`…?utm_redirect_vacancy_id=<hh_id>`); there is no hh page to read, and the same vacancy comes in through
+    `sources/trudvsem.py` on its own.
+    """
+    if is_hh_url(url):
+        return None
+    return (urlsplit(url).hostname or "").lower()
 
 
 def user_type(state: dict[str, Any]) -> str:

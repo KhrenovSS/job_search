@@ -6,7 +6,8 @@ share with nothing to open flows to the others. Runs in bursts like the collecto
 not fit into today's page budget stays `to_fetch` for the next sitting. Priority-3 cards that wait longer than
 `LOW_PRIORITY_TTL_DAYS` are dropped (`repo.expire_low_priority`, called by the orchestrator and the CLI).
 A page without `HH-Lux-InitialState` stops the stage as a block (`HHBlocked`) unless the window title is a vacancy's:
-then it is one odd page → `evaluation_failed/no_vacancy_view`, and the stage goes on (v9.34).
+then it is one odd page → `evaluation_failed/no_vacancy_view`, and the stage goes on (v9.34). A page that landed
+outside hh.ru (a «Работа России» vacancy hh.ru redirects to trudvsem.ru) is `skipped/redirect:<host>` (v9.35).
 
 CLI:  python -m hh_scout.pipeline.details [--budget N] [--gap-scale X] [--no-gaps]
 """
@@ -24,7 +25,7 @@ from typing import Callable
 
 from hh_scout.browser import pacing
 from hh_scout.browser.bursts import run_in_bursts
-from hh_scout.browser.hh_pages import PageFormatError, looks_like_vacancy_page, parse_vacancy, vacancy_url
+from hh_scout.browser.hh_pages import PageFormatError, looks_like_vacancy_page, parse_vacancy, redirect_host, vacancy_url
 from hh_scout.browser.session import BrowserSession, BrowserUnavailable, HHBlocked, WindowRegistry
 from hh_scout.config import Settings
 from hh_scout.hh.areas import blocked_region
@@ -104,9 +105,20 @@ class DetailsFetcher:
         try:
             state = session.open(vacancy_url(hh_id))
         except HHBlocked as e:
+            # v9.35: the browser left hh.ru — an external vacancy (hh 137929021 went to trudvsem.ru, 30.09–01.10,
+            # and stopped four sittings as a «captcha»); its own source brings the same vacancy in by itself.
+            host = redirect_host(e.url)
+            if host:
+                self._done.add(hh_id)
+                self.stats.channels[self._channel(row)] += 1
+                log.warning("Вакансия %s: hh.ru перенаправил на %s — внешняя вакансия, помечаю skipped", hh_id, host)
+                with self.conn:
+                    repo.set_status(self.conn, hh_id, "skipped", f"redirect:{host}")
+                self.stats.outcomes["redirect"] += 1
+                return self._next() is not None
             # v9.34: a vacancy page rendered without the state template is that page's defect, not a captcha —
-            # a block would not carry the vacancy's title. Left as `to_fetch` it headed its channel's queue and
-            # stopped four sittings in a row (hh 137929021, 30.09–01.10).
+            # a block would not carry the vacancy's title. Left as `to_fetch` it would head its channel's queue
+            # and stop every sitting.
             if not looks_like_vacancy_page(e.title):
                 raise
             self._done.add(hh_id)

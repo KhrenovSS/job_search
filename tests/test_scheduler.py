@@ -354,6 +354,16 @@ async def test_crawl_job_is_quiet_unless_something_went_wrong(monkeypatch):
     assert len(notes) == 1 and notes[0].startswith("🦊 Браузер недоступен")  # the alert, not a second copy as a report
 
     notes.clear()
+    reports.append(CrawlReport(trigger="manual", browser_error="hh.ru вернул страницу без данных", blocked=True))
+    await sch.crawl_job("manual", manual_budget=5)
+    assert "--marionette" not in notes[-1] and "🚫 hh.ru" in notes[-1]   # a block is not a Firefox problem (v9.35)
+
+    notes.clear()
+    reports.append(CrawlReport(trigger="manual", browser_error="Marionette не отвечает"))
+    await sch.crawl_job("manual", manual_budget=5)
+    assert "--marionette" in notes[-1]
+
+    notes.clear()
     reports.append(CrawlReport(trigger="manual", page_loads=5))
     await sch.crawl_job("manual", manual_budget=5)
     assert len(notes) == 2 and notes[0].startswith("▶️ Начинаю сбор (manual, до 5 страниц, не позже 15:00)") and notes[1].startswith("✅ Сбор завершён")

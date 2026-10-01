@@ -449,7 +449,7 @@ class Scheduler:
         text = report.as_text()
         if when is not None:
             text += f"\nСледующий подход: {when.strftime('%d.%m %H:%M')}"
-        if report.browser_error:
+        if report.browser_error and not report.blocked:   # a block is hh.ru's doing, not Firefox's (v9.35)
             text += "\nПроверьте, что Firefox запущен с --marionette."
         alerts_sent = 0
         try:

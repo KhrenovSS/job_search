@@ -1,7 +1,9 @@
 import pytest
 
 from hh_scout.browser.hh_pages import (
+    is_hh_url,
     looks_like_vacancy_page,
+    redirect_host,
     PageFormatError,
     build_search_url,
     extract_initial_state,
@@ -193,3 +195,12 @@ def test_looks_like_vacancy_page():
     assert not looks_like_vacancy_page("Вход — hh.ru")
     assert not looks_like_vacancy_page("")
     assert not looks_like_vacancy_page("Вакансии в Москве")
+
+
+def test_redirect_host_tells_hh_from_elsewhere():
+    assert is_hh_url("https://hh.ru/vacancy/137929021") and redirect_host("https://hh.ru/vacancy/137929021") is None
+    assert is_hh_url("https://krasnodar.hh.ru/vacancy/1") and redirect_host("https://krasnodar.hh.ru/vacancy/1") is None
+    assert is_hh_url("") and redirect_host("") is None
+    assert not is_hh_url("https://trudvsem.ru/vacancy/card/1112341000100/9e45f7d8?utm_redirect_vacancy_id=137929021")
+    assert redirect_host("https://trudvsem.ru/vacancy/card/1112341000100/9e45f7d8?utm_redirect_vacancy_id=137929021") == "trudvsem.ru"
+    assert redirect_host("https://notahh.ru/x") == "notahh.ru"   # «hh.ru» as a suffix of another name is not hh
