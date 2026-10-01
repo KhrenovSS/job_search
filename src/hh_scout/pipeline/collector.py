@@ -21,7 +21,7 @@ from typing import Callable
 from hh_scout.browser import pacing
 from hh_scout.browser.bursts import run_in_bursts
 from hh_scout.browser.hh_pages import SearchPage, VacancyCard, build_search_url, parse_search
-from hh_scout.browser.session import BrowserSession, BrowserUnavailable, HHBlocked, WindowRegistry
+from hh_scout.browser.session import BrowserSession, BrowserUnavailable, HHBlocked, PageIncomplete, WindowRegistry
 from hh_scout.config import COMPANY_QUERIES, SEARCH_QUERIES, Settings
 from hh_scout.db import transaction
 from hh_scout.hh.areas import RUSSIA_ID, resolve_region_ids
@@ -66,10 +66,12 @@ class CollectStats:
     bursts: int = 0
     stopped_reason: str | None = None
     not_logged_in: bool = False
+    incomplete_pages: int = 0   # search pages that never came in whole (v9.39): their query waits for the next sitting
 
     def as_text(self) -> str:
         return (f"страниц {self.page_loads}, карточек {self.cards_seen}, новых {self.new_vacancies}, "
                 f"откликов синхронизировано {self.applied_synced}, серий {self.bursts}"
+                + (f", не дочитано {self.incomplete_pages}" if self.incomplete_pages else "")
                 + (f", остановка: {self.stopped_reason}" if self.stopped_reason else ""))
 
 
@@ -200,7 +202,16 @@ class Collector:
             accept_temporary=task.accept_temporary,
             period_days=self.period_days, page=task.next_page, items_on_page=self.s.items_per_page,
         )
-        state = session.open(url)  # may raise PageBudgetExceeded -> handled by run_in_bursts
+        try:
+            state = session.open(url)  # may raise PageBudgetExceeded -> handled by run_in_bursts
+        except PageIncomplete as e:
+            # v9.39: one page that never came in whole is that page's trouble, not a block (#106 stopped on the
+            # second page of a query with the state cut at 419 KB). The rest of this query waits for the next sitting.
+            log.warning("%s q%d стр.%d: %s — запрос откладываю до следующего подхода", task.search_pass, task.query_idx,
+                        task.next_page, e)
+            task.done = True
+            self.stats.incomplete_pages += 1
+            return bool(self._pending(tasks))
         page = parse_search(state)
         if page.user_type != "applicant" and not self.stats.not_logged_in:
             self.stats.not_logged_in = True

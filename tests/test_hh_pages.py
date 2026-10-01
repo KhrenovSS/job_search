@@ -204,3 +204,15 @@ def test_redirect_host_tells_hh_from_elsewhere():
     assert not is_hh_url("https://trudvsem.ru/vacancy/card/1112341000100/9e45f7d8?utm_redirect_vacancy_id=137929021")
     assert redirect_host("https://trudvsem.ru/vacancy/card/1112341000100/9e45f7d8?utm_redirect_vacancy_id=137929021") == "trudvsem.ru"
     assert redirect_host("https://notahh.ru/x") == "notahh.ru"   # «hh.ru» as a suffix of another name is not hh
+
+
+def test_has_state_template_tells_a_cut_page_from_a_captcha():
+    """v9.39: a page read mid-transfer keeps the template (the DOM serializer closes it) with the JSON cut short."""
+    from hh_scout.browser.hh_pages import has_state_template
+    from tests.conftest import FIXTURES
+    src = (FIXTURES / "search_page.html").read_text(encoding="utf-8", errors="replace")
+    start = src.index('id="HH-Lux-InitialState"')
+    cut = src[:start + 419_000] + "</template></body></html>"
+    assert has_state_template(src) and has_state_template(cut)
+    assert extract_initial_state(src) is not None and extract_initial_state(cut) is None
+    assert not has_state_template("<html><head><title>Проверка</title></head><body>captcha</body></html>")

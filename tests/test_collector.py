@@ -260,3 +260,26 @@ def test_company_pass_cards_become_company_leads_and_the_seed_uses_its_own_perio
     assert len(loads) == 1 and "search_period=30" in loads[0] and "НКУ" in unquote_plus(loads[0])   # no responses sync on a seed run
     rows = {r["hh_id"]: r for r in conn.execute("SELECT * FROM vacancies")}
     assert rows["9001"]["lead_kind"] == "company" and rows["9001"]["search_pass"] == "panel"
+
+
+def test_an_incomplete_page_closes_its_query_and_the_collection_goes_on(monkeypatch):
+    """v9.39: sitting #106 stopped on the second page of one query whose state came in cut short."""
+    from hh_scout.browser import pacing
+    from hh_scout.browser.session import PageIncomplete
+    monkeypatch.setattr(pacing, "sleep", lambda s: None)
+
+    class CutSession(FakeSession):
+        def open(self, url):
+            if "&page=1" in url and "search%3A0" not in url and self.log.count("cut") == 0:
+                self.log.append("cut")
+                raise PageIncomplete("страница hh.ru пришла не полностью", url=url)
+            return super().open(url)
+
+    conn = connect(":memory:")
+    migrate(conn)
+    loads = []
+    c = Collector(Settings(_env_file=None), conn, session_factory=lambda b: CutSession(b, loads), rng=random.Random(0), page_budget=30)
+    stats = c.run()
+    assert "cut" in loads and stats.incomplete_pages == 1
+    assert stats.stopped_reason is None and stats.new_vacancies > 0
+    assert len([u for u in loads if u != "cut"]) > loads.index("cut")     # pages were loaded after the cut one

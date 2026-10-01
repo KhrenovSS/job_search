@@ -52,6 +52,7 @@ class CrawlReport:
     cards_seen: int = 0
     not_logged_in: bool = False
     format_errors: int = 0
+    incomplete_pages: int = 0          # hh.ru pages that never came in whole (search + vacancy; v9.39) — a remark, not an error
     prefiltered_pass: int = 0
     triage_open: int = 0
     details: int = 0
@@ -98,6 +99,8 @@ class CrawlReport:
                          + (f" · ждут {self.trudvsem_waiting}" if self.trudvsem_waiting else ""))
         if self.trudvsem_error:
             lines.append(f"Работа России: {self.trudvsem_error}")
+        if self.incomplete_pages:
+            lines.append(f"⚠️ страниц не дочитано: {self.incomplete_pages}")
         if self.browser_error:
             lines.append(("🚫 hh.ru: " if self.blocked else "Браузер: ") + self.browser_error)
         if self.bridge_error:
@@ -215,6 +218,7 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
             st = c.run(run_id)
             report.new_vacancies = st.new_vacancies
             report.search_pages, report.cards_seen, report.not_logged_in = st.page_loads, st.cards_seen, st.not_logged_in
+            report.incomplete_pages += int(getattr(st, "incomplete_pages", 0) or 0)
         except BrowserUnavailable as e:
             report.browser_error = str(e)
         except HHBlocked as e:
@@ -286,6 +290,7 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
         done = stage_outcomes(d, ds)
         report.details = done.get("prefiltered", 0)
         report.format_errors = done.get("format_error", 0)
+        report.incomplete_pages += done.get("incomplete", 0)
         report.duplicate_employers += done.get("duplicate_employer", 0)
 
     # 4b. company leads from the ОВЕН catalogue enter evaluation a few per day (v9.13) — DB only

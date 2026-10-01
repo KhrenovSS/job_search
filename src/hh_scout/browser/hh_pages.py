@@ -36,6 +36,15 @@ class PageFormatError(ValueError):
 
 # --- extraction ---------------------------------------------------------------
 
+def has_state_template(page_source: str) -> bool:
+    """True when the page carries the `HH-Lux-InitialState` template at all, parsable or not.
+
+    A captcha or a login wall has no template; a page that arrived half-way has one with the JSON cut short
+    (v9.39: a search page stopped a sitting as a «captcha» with its state ending inside a string at 419 KB).
+    """
+    return _STATE_RE.search(page_source) is not None
+
+
 def extract_initial_state(page_source: str) -> dict[str, Any] | None:
     m = _STATE_RE.search(page_source)
     if not m:

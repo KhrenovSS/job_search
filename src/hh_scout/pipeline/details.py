@@ -8,6 +8,7 @@ not fit into today's page budget stays `to_fetch` for the next sitting. Priority
 A page without `HH-Lux-InitialState` stops the stage as a block (`HHBlocked`) unless the window title is a vacancy's:
 then it is one odd page → `evaluation_failed/no_vacancy_view`, and the stage goes on (v9.34). A page that landed
 outside hh.ru (a «Работа России» vacancy hh.ru redirects to trudvsem.ru) is `skipped/redirect:<host>` (v9.35).
+A page that never came in whole (`PageIncomplete`, v9.39) stays `to_fetch` for the next sitting; the stage goes on.
 
 CLI:  python -m hh_scout.pipeline.details [--budget N] [--gap-scale X] [--no-gaps]
 """
@@ -26,7 +27,7 @@ from typing import Callable
 from hh_scout.browser import pacing
 from hh_scout.browser.bursts import run_in_bursts
 from hh_scout.browser.hh_pages import PageFormatError, looks_like_vacancy_page, parse_vacancy, redirect_host, vacancy_url
-from hh_scout.browser.session import BrowserSession, BrowserUnavailable, HHBlocked, WindowRegistry
+from hh_scout.browser.session import BrowserSession, BrowserUnavailable, HHBlocked, PageIncomplete, WindowRegistry
 from hh_scout.config import Settings
 from hh_scout.hh.areas import blocked_region
 from hh_scout.pipeline import dedup, repo
@@ -104,6 +105,13 @@ class DetailsFetcher:
         hh_id = row["hh_id"]
         try:
             state = session.open(vacancy_url(hh_id))
+        except PageIncomplete as e:
+            # v9.39: the transfer was cut short — a passing thing, unlike a page without the template (v9.34);
+            # the row keeps its place in the queue and is tried again next sitting.
+            self._done.add(hh_id)
+            log.warning("Вакансия %s: %s — оставляю в очереди до следующего подхода", hh_id, e)
+            self.stats.outcomes["incomplete"] += 1
+            return self._next() is not None
         except HHBlocked as e:
             # v9.35: the browser left hh.ru — an external vacancy (hh 137929021 went to trudvsem.ru, 30.09–01.10,
             # and stopped four sittings as a «captcha»); its own source brings the same vacancy in by itself.

@@ -26,7 +26,7 @@ from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
 
 from hh_scout.browser import pacing
-from hh_scout.browser.hh_pages import HH_STATE_MARKER, extract_initial_state
+from hh_scout.browser.hh_pages import HH_STATE_MARKER, extract_initial_state, has_state_template
 from hh_scout.config import Settings
 from hh_scout.db import kv_get, kv_set
 
@@ -58,6 +58,18 @@ class HHBlocked(RuntimeError):
     def __init__(self, msg: str, *, title: str = "", url: str = "") -> None:
         super().__init__(msg)
         self.title = title
+        self.url = url
+
+
+class PageIncomplete(RuntimeError):
+    """A hh.ru page came with its state template, but the JSON inside never became whole.
+
+    The transfer was cut short or the document was read mid-parse (v9.39): not a block — the caller skips
+    this one page and goes on. `url` is where the browser was.
+    """
+
+    def __init__(self, msg: str, *, url: str = "") -> None:
+        super().__init__(msg)
         self.url = url
 
 
@@ -266,7 +278,10 @@ class BrowserSession:
         when navigation returns. This is what makes the short page-load timeout safe.
         """
         d = self.driver
-        script = ("const h = document.documentElement.innerHTML;"
+        # The marker counts only once the parser is done with the document (v9.39): `HH-Lux-InitialState` shows up
+        # with the template's opening tag, half a megabyte before its JSON ends.
+        script = ("if (document.readyState === 'loading') return false;"
+                  "const h = document.documentElement.innerHTML;"
                   "return arguments[0].some(m => h.indexOf(m) !== -1);")
         wanted = list(markers)
         deadline = time.monotonic() + MARKUP_WAIT_S
@@ -300,12 +315,17 @@ class BrowserSession:
         same_site = current.startswith(HH_HOST) and url.startswith(HH_HOST) and current != url
         if same_site:
             try:
+                # `performance.timeOrigin` is unique to a document: the move has happened only when it changed, so
+                # the old page (same URL shape, same markup) can no longer pass for the new one (v9.39).
+                origin = d.execute_script("return performance.timeOrigin;")
                 d.execute_script("location.assign(arguments[0]);", url)
                 deadline = time.monotonic() + PAGE_LOAD_TIMEOUT_S
                 while time.monotonic() < deadline:
                     time.sleep(0.25)
                     try:
-                        if d.current_url != current and d.execute_script("return document.readyState") != "loading":
+                        if (d.current_url != current
+                                and d.execute_script("return performance.timeOrigin;") != origin
+                                and d.execute_script("return document.readyState") != "loading"):
                             return
                     except WebDriverException:
                         pass
@@ -328,10 +348,14 @@ class BrowserSession:
         if self.page_loads >= self.page_budget:
             raise PageBudgetExceeded(f"лимит {self.page_budget} загрузок страниц за прогон исчерпан")
         self.open_own_window()
-        d = self.driver
         # Counted before the request leaves: a load that fails half-way still happened on hh's side.
         self.page_loads += 1
         self._navigate(url)
+        return self._settle_and_read(url, wait_for)
+
+    def _settle_and_read(self, url: str, wait_for: Sequence[str]) -> str:
+        """The part of a page view after navigation: wait for the markup, settle, scroll, read, pause."""
+        d = self.driver
         if wait_for and not self._wait_for_markers(wait_for):
             log.warning("Страница без ожидаемой разметки за %.0f с: %s", MARKUP_WAIT_S, url)
         pacing.sleep(self._rng.uniform(1.5, 3.5))  # let the SPA settle
@@ -342,13 +366,58 @@ class BrowserSession:
         pacing.sleep(delay)
         return source
 
+    def _wait_complete(self) -> bool:
+        """Poll until `document.readyState` is "complete", at most MARKUP_WAIT_S seconds."""
+        d = self.driver
+        deadline = time.monotonic() + MARKUP_WAIT_S
+        while True:
+            try:
+                if d.execute_script("return document.readyState") == "complete":
+                    return True
+            except WebDriverException:
+                pass
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.5)
+
+    def _reload(self, url: str) -> str:
+        """Press F5 on a page that came in broken, the way a person would; counts as a page load."""
+        if self.page_loads >= self.page_budget:
+            raise PageBudgetExceeded(f"лимит {self.page_budget} загрузок страниц за прогон исчерпан")
+        pacing.sleep(self._rng.uniform(2.0, 5.0))
+        self.page_loads += 1
+        d = self.driver
+        d.set_page_load_timeout(PAGE_LOAD_TIMEOUT_S)
+        try:
+            d.refresh()
+        except TimeoutException:
+            log.debug("refresh() не вернулся за %.0f с — ждём разметку: %s", PAGE_LOAD_TIMEOUT_S, url)
+        return self._settle_and_read(url, (HH_STATE_MARKER,))
+
     def open(self, url: str) -> dict[str, Any]:
         """Load a hh.ru page and return its HH-Lux initial state (see `open_raw` for the browsing part).
 
-        Raises PageBudgetExceeded / HHBlocked; the caller decides how to stop softly.
+        A page whose state template is there but cut short is read again once the document is complete, then
+        reloaded once (v9.39: a search page read mid-transfer stopped a whole sitting as a «captcha»); still broken
+        → PageIncomplete. No template at all → HHBlocked (captcha / login wall).
+        Raises PageBudgetExceeded / HHBlocked / PageIncomplete; the caller decides how to stop softly.
         """
         source = self.open_raw(url, wait_for=(HH_STATE_MARKER,))
         state = extract_initial_state(source)
+        if state is None and has_state_template(source):
+            log.warning("Состояние страницы пришло не полностью — дожидаюсь загрузки и перечитываю: %s", url)
+            self._wait_complete()
+            state = extract_initial_state(self.driver.page_source)
+            if state is None:
+                try:
+                    source = self._reload(url)
+                except PageBudgetExceeded:
+                    log.warning("Страница пришла не полностью, а бюджет на перезагрузку кончился: %s", url)
+                    raise PageIncomplete(f"страница hh.ru пришла не полностью (адрес: {url}), перезагрузить не хватило бюджета", url=url)
+                state = extract_initial_state(source)
+                if state is None and has_state_template(source):
+                    log.warning("Страница hh.ru пришла не полностью и после перезагрузки: %s", url)
+                    raise PageIncomplete(f"страница hh.ru пришла не полностью и после перезагрузки (адрес: {url})", url=url)
         if state is None:
             d = self.driver
             title = d.title

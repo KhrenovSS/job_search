@@ -133,7 +133,7 @@ src/hh_scout/
                    сторож каждые 30 мин и предпроверка перед подходом, резервная копия БД 03:40, каталог ОВЕН по воскресеньям 04:00,
                    реестр закупок ежедневно в `ZAKUPKI_HOUR:ZAKUPKI_MINUTE` при `ZAKUPKI_ENABLED` (`_add_source_jobs`, v9.29);
                    health.py — тревоги (чистые проверки + Alerter)
-  browser/         session.py (geckodriver --connect-existing, своё окно, бюджет) · hh_pages.py (URL, парсеры
+  browser/         session.py (geckodriver --connect-existing, своё окно, бюджет; недогруженную страницу дочитывает/перезагружает — `PageIncomplete`, v9.39) · hh_pages.py (URL, парсеры
                    HH-Lux-InitialState) · pacing.py (паузы, длительность серий, прокрутка) · bursts.py (серии по времени)
   hh/              areas.py (регионы из открытого api.hh.ru/areas, кэш) · salary.py (gross→net, только RUR/месяц; human_from_raw)
   profi/           pages.py — лента заказов profi.ru из DOM кабинета (OrderCard, parse_orders, ProfiBlocked); v7, PROFI_ENABLED

@@ -70,6 +70,8 @@ initialState, conversationMessagesCount, hasNewMessages, archived, resumeId, cha
   оставшимися подходами.
 - Ошибки: Marionette не отвечает / geckodriver нет → `BrowserUnavailable` → тревога владельцу; ретраев нет, следующий
   подход придёт по расписанию (за 30 мин до него `precheck_job` проверит Firefox и мост).
+  Страница с шаблоном `HH-Lux-InitialState`, но оборванным JSON (недогруженный документ, v9.39) → ждём `readyState complete`
+  и перечитываем, затем одна перезагрузка, затем `PageIncomplete` — одна страница пропускается, стадия идёт дальше.
   Страница без `HH-Lux-InitialState` (капча, редирект на логин) → warning, прогон останавливается мягко,
   владельцу: «🚫 hh.ru не отдал данные — похоже на капчу или требование войти. Откройте hh.ru в этом Firefox, пройдите проверку/войдите…» (`health.py`).
 

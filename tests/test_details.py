@@ -262,3 +262,19 @@ def test_default_channel_shares_put_panel_builders_first():
     shares = Settings(_env_file=None).details_channel_shares_map
     assert shares["panel"] > shares["plant"] and shares["panel"] + shares["design"] > 0.44   # v9.38, decision #74
     assert abs(sum(shares.values()) - 1.0) < 1e-9
+
+
+def test_details_keeps_an_incomplete_page_in_the_queue_and_goes_on(monkeypatch, vacancy_state):
+    """v9.39: a vacancy page that never came in whole is tried again next sitting, not written off."""
+    from hh_scout.browser import pacing
+    from hh_scout.browser.session import PageIncomplete
+    monkeypatch.setattr(pacing, "sleep", lambda s: None)
+    conn = _db_with([("1", 1), ("2", 1), ("3", 1)])
+    states = _three_states(vacancy_state)
+    states["2"] = PageIncomplete("страница hh.ru пришла не полностью и после перезагрузки", url="https://hh.ru/vacancy/2")
+    loads = []
+    f = DetailsFetcher(Settings(_env_file=None), conn, session_factory=lambda b: FakeSession(b, states, loads), rng=random.Random(0), page_budget=10)
+    stats = f.run()
+    assert [u.rsplit("/", 1)[1] for u in loads] == ["1", "2", "3"]
+    assert repo.count_by_status(conn) == {"prefiltered": 2, "to_fetch": 1}
+    assert stats.outcomes["incomplete"] == 1 and stats.outcomes["prefiltered"] == 2 and stats.stopped_reason is None
