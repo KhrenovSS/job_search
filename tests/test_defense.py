@@ -313,3 +313,20 @@ def test_catalogue_and_portal_rows_of_defence_companies_land_as_skipped_on_inser
                            hr_agency=False, emails=["hr@uvz.ru"])
     assert trudvsem.store_vacancy(conn, s, v, "плк") == "skipped"
     assert _state(conn)["tv:1"] == ("skipped", "defense:name:уралвагонзавод")
+
+
+def test_the_sweep_propagates_by_folded_name_when_rows_carry_no_employer_id():
+    """v9.36: propagation is driven by the marked rows (a 45 s correlated subquery locked the bot every sitting);
+    the identity stays that of `_SAME_EMPLOYER_AS_V` — hh company id when the row has one, else the folded name."""
+    conn = _conn()
+    _row(conn, "1", employer="ООО «Прибор»", status="skipped", reason="defense:triage")        # marked, no id
+    _row(conn, "2", employer="ооо «ПРИБОР»", status="evaluated")                                 # same name, other case
+    _row(conn, "3", employer="ООО «Прибор»", employer_id="77", status="to_fetch")               # has an id: id rule only
+    _row(conn, "4", employer="Другая фирма", status="to_fetch")
+    _row(conn, "tv:2", site="trudvsem", employer="ООО «Прибор»", status="prefiltered")           # named source follows
+    _row(conn, "profi:2", site="profi", employer="ООО «Прибор»", status="evaluated")             # profi never
+    assert repo.skip_defense_employers(conn) == {"defense:employer": 2}
+    st = _state(conn)
+    assert st["2"] == ("skipped", "defense:employer:1") and st["tv:2"] == ("skipped", "defense:employer:1")
+    assert st["3"] == ("to_fetch", None) and st["4"] == ("to_fetch", None) and st["profi:2"] == ("evaluated", None)
+    assert repo.skip_defense_employers(conn) == {}

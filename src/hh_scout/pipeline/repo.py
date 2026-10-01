@@ -415,23 +415,37 @@ def skip_defense_employers(conn: sqlite3.Connection) -> dict[str, int]:
             "AND status = 'rejected' AND skip_reason IS NULL", (reason, now, r["employer"])).rowcount
         if n:
             out[reason] = out.get(reason, 0) + n
-    twins = conn.execute(
-        f"""SELECT v.id, (SELECT o.hh_id FROM vacancies o
-                          WHERE o.id != v.id AND {_SAME_EMPLOYER_AS_V}
-                            AND (o.skip_reason = 'defense' OR o.skip_reason LIKE 'defense:%')
-                          ORDER BY o.id LIMIT 1) AS marked
-              FROM vacancies v
+    # Propagation is driven by the few marked rows, matched in Python (v9.36). The former correlated subquery
+    # (every live row × every row of the table through `casefold`) took ~45 s on 10k rows — inside the prefilter's
+    # write transaction, so every sitting locked the bot's buttons past their busy_timeout (01.10.2026, run #104).
+    marked = conn.execute(
+        f"SELECT id, hh_id, employer_id, casefold(employer) AS name FROM vacancies "
+        f"WHERE site IN {NAMED_SITES} AND (skip_reason = 'defense' OR skip_reason LIKE 'defense:%') ORDER BY id").fetchall()
+    if not marked:
+        return out
+    by_id: dict[str, list[sqlite3.Row]] = {}
+    by_name: dict[str, list[sqlite3.Row]] = {}
+    for m in marked:
+        if m["employer_id"] is not None:
+            by_id.setdefault(m["employer_id"], []).append(m)
+        if m["name"]:
+            by_name.setdefault(m["name"], []).append(m)
+    live_rows = conn.execute(
+        f"""SELECT v.id, v.employer_id, casefold(v.employer) AS name FROM vacancies v
              WHERE v.site IN {NAMED_SITES} AND (v.employer_id IS NOT NULL OR v.employer IS NOT NULL)
                AND ({live.replace('status', 'v.status').replace('skip_reason', 'v.skip_reason')}
                     OR (v.status = 'rejected' AND v.skip_reason IS NULL))""",
         (*_REGION_LIVE_STATUSES, PLANT_POOL)).fetchall()
-    for t in twins:
-        if not t["marked"]:
+    for v in live_rows:
+        # same identity as `_SAME_EMPLOYER_AS_V`: by hh company id when the row has one, else by folded name
+        candidates = by_id.get(v["employer_id"], []) if v["employer_id"] is not None else by_name.get(v["name"], [])
+        twin = next((m for m in candidates if m["id"] != v["id"]), None)
+        if twin is None:
             continue
-        reason = f"defense:employer:{t['marked']}"
+        reason = f"defense:employer:{twin['hh_id']}"
         n = conn.execute(
             "UPDATE vacancies SET status = CASE WHEN status = 'rejected' THEN status ELSE 'skipped' END, "
-            "skip_reason = ?, updated_at = ? WHERE id = ?", (reason, now, t["id"])).rowcount
+            "skip_reason = ?, updated_at = ? WHERE id = ?", (reason, now, v["id"])).rowcount
         if n:
             out["defense:employer"] = out.get("defense:employer", 0) + n
     return out
