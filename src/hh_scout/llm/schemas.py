@@ -36,7 +36,9 @@ class VacancyEvaluation(BaseModel):
     lead_score: int = Field(ge=0, le=100)   # direct employer, contract-friendly signals
     ip_gph_possible: str = Field(pattern="^(yes|maybe|no)$")
     is_agency: bool = False
-    company_kind: str = Field(default="unknown", pattern="^(integrator|manufacturer|end_customer|agency|unknown)$")
+    # v9.38 (decision #74): panel_builder / design_bureau are named for vacancies too — the queue puts them first
+    company_kind: str = Field(default="unknown",
+                              pattern="^(panel_builder|design_bureau|integrator|manufacturer|end_customer|agency|unknown)$")
     verdict: str
     pitch_hint: str = ""
     red_flags: list[str] = Field(default_factory=list)

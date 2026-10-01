@@ -9,7 +9,7 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
 from hh_scout.browser.hh_pages import VacancyCard, VacancyDetail
-from hh_scout.config import TZ
+from hh_scout.config import KIND_PRIORITY_BONUS, TZ
 from hh_scout.db import utcnow
 from hh_scout.pipeline import defense
 from hh_scout.pipeline.contacts import contact_keys
@@ -725,9 +725,13 @@ def _lead_select(extra: str = "") -> str:
 # waiting: a fresh strong vacancy always goes before a stale weak one, but a week of waiting is worth 7 points,
 # so the tail cannot starve forever. `evaluations` has one row per vacancy, so `created_at` is when it queued.
 # A row taken by the daily floor (`e.floor = 1`, decision #52) is in the queue whatever its score.
+# v9.38 (decision #74): a company kind the owner prefers (panel builders, design bureaus, integrators) adds
+# `config.KIND_PRIORITY_BONUS` points to the order — the score and the threshold stay as they are.
 IN_QUEUE_SQL = "v.status = 'evaluated' AND (e.total >= ? OR e.floor = 1)"
 _WAITING_DAYS_SQL = "CAST(julianday('now') - julianday(e.created_at) AS INTEGER)"
-PRIORITY_SQL = f"(e.total + MIN({_WAITING_DAYS_SQL}, {{bonus}}))"
+_KIND_BONUS_SQL = ("(CASE e.company_kind " + " ".join(f"WHEN '{k}' THEN {int(v)}" for k, v in KIND_PRIORITY_BONUS.items())
+                   + " ELSE 0 END)") if KIND_PRIORITY_BONUS else "0"
+PRIORITY_SQL = f"(e.total + MIN({_WAITING_DAYS_SQL}, {{bonus}}) + {_KIND_BONUS_SQL})"
 
 
 def lead_queue(conn: sqlite3.Connection, threshold: int, limit: int | None = None, *, wait_bonus_max: int = 7,

@@ -401,3 +401,20 @@ def test_a_digest_cut_off_with_the_process_is_settled_on_the_next_start():
     assert repo.repair_open_digests(conn) == 1
     assert repo.last_digest(conn)["items_count"] == 3
     assert repo.repair_open_digests(conn) == 0
+
+
+def test_the_queue_puts_panel_builders_before_equal_scored_plants():
+    """v9.38 (decision #74): the owner prefers panel builders and small firms; the bonus orders the queue
+    without touching the score or the threshold."""
+    conn = _empty_db()
+    _near_lead(conn, 21, 60)                                             # integrator (helper default): +5
+    _near_lead(conn, 22, 60)
+    conn.execute("UPDATE evaluations SET company_kind = 'end_customer' WHERE vacancy_id = 22")   # +0
+    _near_lead(conn, 23, 52)
+    conn.execute("UPDATE evaluations SET company_kind = 'panel_builder' WHERE vacancy_id = 23")  # +15 → 67
+    _near_lead(conn, 24, 55)
+    conn.execute("UPDATE evaluations SET company_kind = 'design_bureau' WHERE vacancy_id = 24")  # +10 → 65
+    _near_lead(conn, 25, 49)
+    conn.execute("UPDATE evaluations SET company_kind = 'panel_builder' WHERE vacancy_id = 25")  # below threshold: not in
+    assert [r["hh_id"] for r in repo.lead_queue(conn, 50)] == ["23", "21", "24", "22"]
+    assert repo.queue_size(conn, 50) == 4

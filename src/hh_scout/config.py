@@ -60,7 +60,8 @@ class Settings(BaseSettings):
     # newest card always won and a company admitted a day earlier waited until the TTL wrote it off (23.09: 120 plant
     # companies admitted, 0 opened). A share nobody uses flows to the others; triage priority 1-2 cards go first
     # regardless. Empty = the old order (priority, then newest).
-    details_channel_shares: str = "vacancy:0.45,panel:0.20,design:0.10,plant:0.25"
+    # v9.38 (decision #74): panel builders first — 0.45/0.20/0.10/0.25 → 0.35/0.30/0.15/0.20.
+    details_channel_shares: str = "vacancy:0.35,panel:0.30,design:0.15,plant:0.20"
     # A letter younger than this has not had time to be answered and is left out of every rate
     # (measured 19.09: 0-1 days old -> 0 % answered, 9-10 days -> 78-82 %). Reported separately instead.
     outcome_mature_days: int = 5
@@ -405,6 +406,12 @@ ZAKUPKI_QUERIES: tuple[str, ...] = (
     "SCADA", "MasterSCADA", "диспетчеризации", "автоматизированной системы управления технологическим",
     "шкаф управления", "телемеханики",
 )
+
+# Queue priority bonus by company kind (v9.38, decision #74): the owner prefers panel builders and small firms
+# without a programmer of their own over holdings and large plants with an АСУ ТП department. Added to
+# `evaluations.total` in `repo.PRIORITY_SQL` — it orders the queue (letters, instant sends, /next, the digest
+# tail) but does not change the score or the threshold. Kinds not listed get 0.
+KIND_PRIORITY_BONUS: dict[str, int] = {"panel_builder": 15, "design_bureau": 10, "integrator": 5}
 
 COMPANY_QUERIES: dict[str, str] = {
     "panel": '("сборщик шкафов" OR "сборщик щитов" OR "сборщик электрощитового" OR "электромонтажник шкафов" '

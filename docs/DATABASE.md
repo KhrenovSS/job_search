@@ -115,7 +115,7 @@
 `lead_score` (0–100, от ИИ); `total` (код: вакансии 0.55/0.25/0.20, компании 0.6·fit + 0.4·lead — `tech_score` хранит fit,
 `role_score` = 0); `salary_score`, `format_score` — устаревшие, всегда 0; `ip_gph_possible` yes/maybe/no; `is_agency`
 (у компаний = `company_kind == 'agency'`); `employment_hint` — с v9.13 всегда `unknown` (staff/project только в старых
-строках); `company_kind` integrator/manufacturer/end_customer/agency/unknown, у лидов-компаний ещё panel_builder/design_bureau;
+строках); `company_kind` panel_builder/design_bureau/integrator/manufacturer/end_customer/agency/unknown (с v9.38 щитовик и бюро — и у вакансий; `config.KIND_PRIORITY_BONUS` добавляет им очки в порядке очереди `repo.PRIORITY_SQL`, решение №74);
 `verdict`; `pitch_hint`; `red_flags` JSON; `model_note` (NULL); `floor` (0/1 — добран дневным минимумом, v9.12);
 `offer_focus` JSON — что предлагать компании (v9.13).
 

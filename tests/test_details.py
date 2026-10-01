@@ -170,7 +170,7 @@ def test_details_unused_share_flows_to_others(monkeypatch, vacancy_state):
 def test_channel_shares_validation():
     import pytest
     assert Settings(_env_file=None, details_channel_shares="").details_channel_shares_map == {}
-    assert Settings(_env_file=None).details_channel_shares_map["plant"] == 0.25
+    assert Settings(_env_file=None).details_channel_shares_map["plant"] == 0.20   # v9.38
     for bad in ("plant:1.5", "plant", "vacancy:0.7,plant:0.5"):
         with pytest.raises(ValueError):
             Settings(_env_file=None, details_channel_shares=bad)
@@ -256,3 +256,9 @@ def test_details_skips_a_vacancy_hh_redirects_to_another_site(monkeypatch, vacan
     assert rows["2"]["status"] == "skipped" and rows["2"]["skip_reason"] == "redirect:trudvsem.ru"
     assert rows["1"]["status"] == "prefiltered" and rows["3"]["status"] == "prefiltered"
     assert stats.outcomes["redirect"] == 1 and stats.outcomes["prefiltered"] == 2 and "format_error" not in stats.outcomes
+
+
+def test_default_channel_shares_put_panel_builders_first():
+    shares = Settings(_env_file=None).details_channel_shares_map
+    assert shares["panel"] > shares["plant"] and shares["panel"] + shares["design"] > 0.44   # v9.38, decision #74
+    assert abs(sum(shares.values()) - 1.0) < 1e-9
