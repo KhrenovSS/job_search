@@ -1,7 +1,9 @@
 import json
 import random
 
-from hh_scout.browser.session import PageBudgetExceeded
+import pytest
+
+from hh_scout.browser.session import HHBlocked, PageBudgetExceeded
 from hh_scout.config import Settings
 from hh_scout.db import connect, migrate
 from hh_scout.pipeline import repo
@@ -23,7 +25,10 @@ class FakeSession:
             raise PageBudgetExceeded("b")
         self.page_loads += 1
         self.log.append(url)
-        return self.states[url.rsplit("/", 1)[1]]
+        state = self.states[url.rsplit("/", 1)[1]]
+        if isinstance(state, Exception):   # a page the browser could not read (v9.34)
+            raise state
+        return state
 
 
 def _db_with(ids_prio):
@@ -188,3 +193,46 @@ def test_details_withdraws_a_blocked_region_seen_only_on_the_page(monkeypatch, v
     assert rows["555"]["area_path"] == ".113.225.2114.131." and rows["555"]["area_name"] == "Симферополь"
     assert rows["136519902"]["status"] == "prefiltered" and rows["136519902"]["area_path"] == ".113.232.1."
     assert stats.outcomes["skipped"] == 1 and stats.outcomes["prefiltered"] == 1
+
+
+def _three_states(vacancy_state):
+    states = {}
+    for i in ("1", "2", "3"):
+        s2 = json.loads(json.dumps(vacancy_state))
+        s2["vacancyView"]["vacancyId"] = int(i)
+        states[i] = s2
+    return states
+
+
+def test_details_parks_a_vacancy_page_without_state_and_goes_on(monkeypatch, vacancy_state):
+    """v9.34: hh 137929021 rendered a vacancy page without `HH-Lux-InitialState` five sittings in a row and each
+    sitting stopped on it as on a captcha. A vacancy title on such a page means one odd row, not a block."""
+    from hh_scout.browser import pacing
+    monkeypatch.setattr(pacing, "sleep", lambda s: None)
+    conn = _db_with([("1", 1), ("2", 1), ("3", 1)])
+    states = _three_states(vacancy_state)
+    states["2"] = HHBlocked("hh.ru вернул страницу без данных (заголовок: 'Вакансия Инженер-программист - ЗАО СК ЛЕНИНГРАДСКИЙ, работа в Краснодаре')",
+                            title="Вакансия Инженер-программист - ЗАО СК ЛЕНИНГРАДСКИЙ, работа в Краснодаре",
+                            url="https://hh.ru/vacancy/2")
+    loads = []
+    f = DetailsFetcher(Settings(_env_file=None), conn, session_factory=lambda b: FakeSession(b, states, loads), rng=random.Random(0), page_budget=10)
+    stats = f.run()
+    assert [u.rsplit("/", 1)[1] for u in loads] == ["1", "2", "3"]      # the stage went on past the odd page
+    rows = {r["hh_id"]: r for r in conn.execute("SELECT hh_id, status, skip_reason FROM vacancies")}
+    assert rows["2"]["status"] == "evaluation_failed" and rows["2"]["skip_reason"] == "no_vacancy_view"
+    assert rows["1"]["status"] == "prefiltered" and rows["3"]["status"] == "prefiltered"
+    assert stats.outcomes["format_error"] == 1 and stats.outcomes["prefiltered"] == 2 and stats.page_loads == 3
+    assert stats.stopped_reason is None or "hh.ru" not in stats.stopped_reason
+
+
+def test_details_still_stops_on_a_captcha(monkeypatch, vacancy_state):
+    from hh_scout.browser import pacing
+    monkeypatch.setattr(pacing, "sleep", lambda s: None)
+    conn = _db_with([("1", 1), ("2", 1), ("3", 1)])
+    states = _three_states(vacancy_state)
+    states["2"] = HHBlocked("hh.ru вернул страницу без данных (заголовок: 'Проверка')", title="Проверка", url="https://hh.ru/account/captcha")
+    f = DetailsFetcher(Settings(_env_file=None), conn, session_factory=lambda b: FakeSession(b, states, []), rng=random.Random(0), page_budget=10)
+    with pytest.raises(HHBlocked):
+        f.run()
+    assert repo.count_by_status(conn) == {"prefiltered": 1, "to_fetch": 2}   # the captcha row is not written off
+    assert f.stats.outcomes["prefiltered"] == 1 and "hh.ru" in f.stats.stopped_reason

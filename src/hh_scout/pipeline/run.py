@@ -148,6 +148,12 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
         stats = result if result is not None else getattr(stage, "stats", None)
         return int(getattr(stats, "page_loads", 0) or 0)
 
+    def stage_outcomes(stage, result) -> dict:
+        """What a stage did with its pages — kept even when it raised half-way (v9.34: a details stage stopped
+        by a block had opened 13 pages and the report still said «описаний: 0»)."""
+        stats = result if result is not None else getattr(stage, "stats", None)
+        return dict(getattr(stats, "outcomes", None) or {})
+
     with conn:
         repo.fail_stale_runs(conn, stale_hours)
     if repo.running_run(conn):
@@ -269,9 +275,6 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
         ds = None
         try:
             ds = d.run(run_id)
-            report.details = ds.outcomes.get("prefiltered", 0)
-            report.format_errors = ds.outcomes.get("format_error", 0)
-            report.duplicate_employers += ds.outcomes.get("duplicate_employer", 0)
         except BrowserUnavailable as e:
             report.browser_error = str(e)
         except HHBlocked as e:
@@ -280,6 +283,10 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
             log.exception("Описания упали")
             report.errors.append(f"описания: {e}")
         report.page_loads = loaded_before + loaded(d, ds)
+        done = stage_outcomes(d, ds)
+        report.details = done.get("prefiltered", 0)
+        report.format_errors = done.get("format_error", 0)
+        report.duplicate_employers += done.get("duplicate_employer", 0)
 
     # 4b. company leads from the ОВЕН catalogue enter evaluation a few per day (v9.13) — DB only
     if "owen_si" in settings.company_channels_set:

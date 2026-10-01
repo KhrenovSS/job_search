@@ -1,6 +1,7 @@
 import pytest
 
 from hh_scout.browser.hh_pages import (
+    looks_like_vacancy_page,
     PageFormatError,
     build_search_url,
     extract_initial_state,
@@ -182,3 +183,13 @@ def test_area_path_falls_back_to_region_id_and_tolerates_junk():
     assert _area_path({"id": 123, "regionId": 2173, "name": "Луганск"}) == ".2173."
     assert _area_path({"id": 123, "name": "Луганск", "path": ""}) is None
     assert _area_path({"id": 1}) is None and _area_path(None) is None and _area_path("Москва") is None
+
+
+def test_looks_like_vacancy_page():
+    assert looks_like_vacancy_page("Вакансия Инженер-программист - ЗАО СК ЛЕНИНГРАДСКИЙ, работа в Краснодаре")
+    assert looks_like_vacancy_page("  вакансия Инженер АСУ ТП в Москве, работа в компании ОВЕН")
+    assert not looks_like_vacancy_page("Проверка")
+    assert not looks_like_vacancy_page("Доступ ограничен")
+    assert not looks_like_vacancy_page("Вход — hh.ru")
+    assert not looks_like_vacancy_page("")
+    assert not looks_like_vacancy_page("Вакансии в Москве")

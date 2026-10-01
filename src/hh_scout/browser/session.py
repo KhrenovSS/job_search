@@ -49,7 +49,16 @@ class PageBudgetExceeded(RuntimeError):
 
 
 class HHBlocked(RuntimeError):
-    """hh.ru answered with a captcha / login page / something without the initial state."""
+    """hh.ru answered with a captcha / login page / something without the initial state.
+
+    `title` and `url` are what the browser showed at that moment, so the caller can tell a vacancy page
+    that merely lacks the state template (one broken row, v9.34) from a captcha or a login wall (a block).
+    """
+
+    def __init__(self, msg: str, *, title: str = "", url: str = "") -> None:
+        super().__init__(msg)
+        self.title = title
+        self.url = url
 
 
 @dataclass
@@ -345,5 +354,6 @@ class BrowserSession:
             title = d.title
             cur = d.current_url
             log.warning("Нет HH-Lux-InitialState: title=%r url=%s", title, cur)
-            raise HHBlocked(f"hh.ru вернул страницу без данных (заголовок: {title!r}, адрес: {cur}) — возможно капча или требуется вход")
+            raise HHBlocked(f"hh.ru вернул страницу без данных (заголовок: {title!r}, адрес: {cur}) — возможно капча или требуется вход",
+                            title=title, url=cur)
         return state

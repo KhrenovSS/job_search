@@ -48,6 +48,16 @@ def extract_initial_state(page_source: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def looks_like_vacancy_page(title: str) -> bool:
+    """True when the browser's window title is the one hh.ru renders for a vacancy («Вакансия <name> …»).
+
+    A captcha, an access-denied page or a login wall carry other titles («Проверка», «Доступ ограничен», «Вход»…),
+    so a vacancy title on a page without `HH-Lux-InitialState` means that one page is odd, not that we are blocked
+    (v9.34: hh 137929021 rendered without the state template five sittings in a row and stopped each of them).
+    """
+    return (title or "").strip().lower().startswith("вакансия ")
+
+
 def user_type(state: dict[str, Any]) -> str:
     """'anonymous' when not logged in; 'applicant' for the owner's session."""
     return str(state.get("userType") or "unknown")

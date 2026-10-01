@@ -5,6 +5,8 @@ Order: triage priority 1-2 first; the priority-3 rest is shared between channels
 share with nothing to open flows to the others. Runs in bursts like the collector; whatever does
 not fit into today's page budget stays `to_fetch` for the next sitting. Priority-3 cards that wait longer than
 `LOW_PRIORITY_TTL_DAYS` are dropped (`repo.expire_low_priority`, called by the orchestrator and the CLI).
+A page without `HH-Lux-InitialState` stops the stage as a block (`HHBlocked`) unless the window title is a vacancy's:
+then it is one odd page → `evaluation_failed/no_vacancy_view`, and the stage goes on (v9.34).
 
 CLI:  python -m hh_scout.pipeline.details [--budget N] [--gap-scale X] [--no-gaps]
 """
@@ -22,7 +24,7 @@ from typing import Callable
 
 from hh_scout.browser import pacing
 from hh_scout.browser.bursts import run_in_bursts
-from hh_scout.browser.hh_pages import PageFormatError, parse_vacancy, vacancy_url
+from hh_scout.browser.hh_pages import PageFormatError, looks_like_vacancy_page, parse_vacancy, vacancy_url
 from hh_scout.browser.session import BrowserSession, BrowserUnavailable, HHBlocked, WindowRegistry
 from hh_scout.config import Settings
 from hh_scout.hh.areas import blocked_region
@@ -99,17 +101,25 @@ class DetailsFetcher:
         if row is None:
             return False
         hh_id = row["hh_id"]
-        state = session.open(vacancy_url(hh_id))
+        try:
+            state = session.open(vacancy_url(hh_id))
+        except HHBlocked as e:
+            # v9.34: a vacancy page rendered without the state template is that page's defect, not a captcha —
+            # a block would not carry the vacancy's title. Left as `to_fetch` it headed its channel's queue and
+            # stopped four sittings in a row (hh 137929021, 30.09–01.10).
+            if not looks_like_vacancy_page(e.title):
+                raise
+            self._done.add(hh_id)
+            self.stats.channels[self._channel(row)] += 1
+            log.warning("Вакансия %s: страница без HH-Lux-InitialState (заголовок %r) — помечаю evaluation_failed", hh_id, e.title)
+            return self._fail_format(hh_id)
         self._done.add(hh_id)
         self.stats.channels[self._channel(row)] += 1
         try:
             detail = parse_vacancy(state)
         except PageFormatError as e:
             log.warning("Вакансия %s: %s — помечаю evaluation_failed", hh_id, e)
-            with self.conn:
-                repo.set_status(self.conn, hh_id, "evaluation_failed", "no_vacancy_view")
-            self.stats.outcomes["format_error"] += 1
-            return self._next() is not None
+            return self._fail_format(hh_id)
         with self.conn:
             status = repo.save_details(self.conn, detail)
             region = blocked_region(detail.area_path) if status == "prefiltered" else None
@@ -119,6 +129,13 @@ class DetailsFetcher:
         self.stats.outcomes[status] += 1
         log.info("Вакансия %s «%s» → %s (описание %d симв., навыков %d)", hh_id, detail.title[:50], status,
                  len(detail.description_text), len(detail.key_skills))
+        return self._next() is not None
+
+    def _fail_format(self, hh_id: str) -> bool:
+        """The page is not a usable vacancy view: park the row, count it, and say whether the queue goes on."""
+        with self.conn:
+            repo.set_status(self.conn, hh_id, "evaluation_failed", "no_vacancy_view")
+        self.stats.outcomes["format_error"] += 1
         return self._next() is not None
 
     def run(self, run_id: int | None = None) -> DetailsStats:

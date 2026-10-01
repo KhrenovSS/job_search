@@ -428,3 +428,33 @@ def test_a_blocked_search_stops_the_run_flags_it_and_keeps_the_pages_it_loaded(m
     from hh_scout.db import open_db
     last = repo.last_run(open_db(tmp_path / "t.db"))
     assert last["status"] == "failed" and last["page_loads"] == 4
+
+
+def test_a_blocked_details_stage_keeps_the_pages_it_prefiltered(monkeypatch, tmp_path):
+    """v9.34: run #101 had opened 13 vacancy pages before the block and the report said «описаний: 0»."""
+    from hh_scout.browser.session import HHBlocked
+
+    class IdleCollector:
+        def __init__(self, *a, **kw):
+            self.stats = _Stats(page_loads=0, new_vacancies=0)
+
+        def run(self, run_id):
+            return _Stats(page_loads=0, new_vacancies=0, search_pages=0, cards_seen=0, not_logged_in=False)
+
+    class BlockedDetails:
+        def __init__(self, *a, **kw):
+            self.stats = _Stats(page_loads=14, outcomes={"prefiltered": 13, "format_error": 1})
+
+        def run(self, run_id):
+            raise HHBlocked("hh.ru вернул страницу без данных (заголовок: 'Проверка')", title="Проверка")
+
+    _noop_bridge_steps(monkeypatch)
+    monkeypatch.setattr(run_mod, "Collector", IdleCollector)
+    monkeypatch.setattr(run_mod, "DetailsFetcher", BlockedDetails)
+    s = Settings(_env_file=None, prompts_dir=tmp_path, daily_page_loads_min=50, daily_page_loads_max=50)
+    report = run_mod.run_crawl(s, tmp_path / "t.db", "schedule", budget=20)
+    assert report.blocked and report.details == 13 and report.format_errors == 1 and report.page_loads == 14
+    assert "описаний: 13" in report.as_text()
+    from hh_scout.db import open_db
+    last = repo.last_run(open_db(tmp_path / "t.db"))
+    assert last["status"] == "failed" and last["prefiltered"] == 13 and last["page_loads"] == 14
