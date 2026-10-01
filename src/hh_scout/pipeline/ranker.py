@@ -61,6 +61,7 @@ def format_company_card(position: int, v: sqlite3.Row, e: sqlite3.Row) -> str:
     channel = _row_get(v, "search_pass") or ""
     head = f"<b>{position}. {_esc(v['employer'] or 'компания не указана')}</b>" + (f" ({kind})" if kind else "")
     facts = [f"{CHANNEL_ICON.get(channel, '🏭')} {CHANNEL_RU.get(channel, channel)}",
+             "🇷🇺 Работа России" if _row_get(v, "site") == "trudvsem" else None,   # a panel builder off the portal (v9.40)
              f"📍 {v['area_name']}" if v["area_name"] else None,
              f"партнёр ОВЕН: {raw['status']}" if raw.get("status") else None]
     lines = [head, "   " + " · ".join(x for x in facts if x),

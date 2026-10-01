@@ -103,6 +103,12 @@ initialState, conversationMessagesCount, hasNewMessages, archived, resumeId, cha
   `TRUDVSEM_MAX_PAGES_PER_QUERY` (10) страниц на запрос; синхронизация — стадия 1b каждого подхода (`trudvsem.sync`),
   отдельной задачи планировщика нет; момент последней удачной — kv `trudvsem_last`, следующая читает с него минус 2 дня; первая (ключа нет) — за
   `TRUDVSEM_BACKFILL_DAYS` (14) назад.
+- Щитовики (v9.40, решение №75): после запросов вакансий `sync` читает `config.TRUDVSEM_COMPANY_QUERIES` («сборщик щитов»,
+  «сборщик шкафов», «электромонтажник щитов», «сборщик НКУ», «электромонтажник-сборщик»); строки идут как лиды-компании канала
+  `panel` (`lead_kind='company'`, `search_pass='panel'`, `CardFacts(company=True)` — правило заголовка не режет сборщика), со своим
+  гейтом `TRUDVSEM_COMPANY_PER_RUN` (20); общий `seen_ids` — вакансия инженера, найденная и запросом сборщика, остаётся вакансией.
+  Дальше как у hh-щитовика: `company_evaluation.md` (payload `source: «портал „Работа России“»`), досье по ИНН, `company_offer.md`
+  по e-mail; карточка — 🔧 + «🇷🇺 Работа России» + «📧 Писать на:». Отчёт подхода: «· щитовиков новых N».
 - Доступ с хоста — только через прямой маршрут на роутере владельца (решение №66); без него `opendata.` уходит
   в таймаут, `trudvsem.ru` отвечает 460. Сбой — `TrudvsemUnavailable` → `report.trudvsem_error` → мягкая тревога.
 

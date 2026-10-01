@@ -54,7 +54,9 @@ USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/1
 
 # What the procurement must be about (its object name), and what only looks like it.
 _RELEVANT = re.compile(r"scada|асу\s?тп|асутп|автоматиз|диспетчер|плк\b|контроллер|телемехани|мнемосхем|hmi|"
-                       r"пусконалад|пуско-налад|шкаф[а-я]* (?:управлени|автоматик)|программ[а-я]* обеспечени", re.I)
+                       r"пусконалад|пуско-налад|шкаф[а-я]* (?:управлени|автоматик)|программ[а-я]* обеспечени|"
+                       # v9.40: cabinets and switchgear as the object itself — the winner assembles them (decision #75)
+                       r"\bнку\b|щит[а-я]* (?:управлени|автоматик)|низковольтн[а-я]* комплектн", re.I)
 # Maintenance and support contracts are the bulk of the feed («техническое обслуживание диспетчеризации», АПС/СОУЭ,
 # structured cabling, IT support): their winners are service firms, not integrators building a system now.
 _NOISE = re.compile(r"лиценз|неисключительн|продлени|подписк|сотовой|связи\b|обучени|дорог|запчаст|лифт|платформ подъ|"

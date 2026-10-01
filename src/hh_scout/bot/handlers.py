@@ -122,7 +122,8 @@ async def status_cmd(m: Message, settings: Settings, conn: sqlite3.Connection, s
         tv = (kv_get(conn, "trudvsem_last") or "").split("|")
         last = f"синхронизация {_fmt_dt(tv[0])} · в выдаче {tv[1]} · новых {tv[2]}" if len(tv) == 3 else "ещё не синхронизировался"
         lines.append(f"Работа России: ✅ включён · вакансий в базе {repo.count_site(conn, 'trudvsem')} · ждут допуска "
-                     f"{trudvsem.waiting(conn)} (по {settings.trudvsem_per_run} за подход) · {last}")
+                     f"{trudvsem.waiting(conn, 'vacancy')} (по {settings.trudvsem_per_run} за подход), щитовиков "
+                     f"{trudvsem.waiting(conn, 'company')} (по {settings.trudvsem_company_per_run}) · {last}")
     else:
         lines.append("Работа России: выключен (TRUDVSEM_ENABLED=false)")
     wd = kv_get(conn, "watchdog_last")

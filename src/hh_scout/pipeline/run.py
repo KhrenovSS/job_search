@@ -73,6 +73,7 @@ class CrawlReport:
     trudvsem_seen: int | None = None   # «Работа России» (v9.25): vacancies in the API answer (None = source disabled)
     trudvsem_new: int = 0
     trudvsem_waiting: int = 0          # passed the rules, wait for a later sync (TRUDVSEM_PER_RUN)
+    trudvsem_company_new: int = 0      # panel builders found by their assembler vacancies (v9.40, channel `panel`)
     trudvsem_error: str | None = None  # the API did not answer — hh.ru is unaffected
     duplicate_employers: int = 0       # vacancies skipped because the company already has a lead (all stages)
     revived_duplicates: int = 0        # twins put back into the queue: their covering vacancy is no lead
@@ -96,7 +97,8 @@ class CrawlReport:
             lines.append(f"profi.ru: {self.profi_error}")
         if self.trudvsem_seen is not None:
             lines.append(f"Работа России: в выдаче {self.trudvsem_seen} · новых {self.trudvsem_new}"
-                         + (f" · ждут {self.trudvsem_waiting}" if self.trudvsem_waiting else ""))
+                         + (f" · ждут {self.trudvsem_waiting}" if self.trudvsem_waiting else "")
+                         + (f" · щитовиков новых {self.trudvsem_company_new}" if self.trudvsem_company_new else ""))
         if self.trudvsem_error:
             lines.append(f"Работа России: {self.trudvsem_error}")
         if self.incomplete_pages:
@@ -197,6 +199,7 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
         try:
             ts = trudvsem.sync(conn, settings)
             report.trudvsem_seen, report.trudvsem_new = ts.seen, ts.new
+            report.trudvsem_company_new = ts.company_new
             report.trudvsem_waiting = trudvsem.waiting(conn)
         except trudvsem.TrudvsemUnavailable as e:
             report.trudvsem_error = str(e)

@@ -2,8 +2,8 @@
 
 Для лидов вида `company` (`rows.letter_key == "company"`): щитовики и проектные бюро с hh.ru (`panel`, `design`, v9.13),
 интеграторы из каталога ОВЕН (`owen_si`), эксплуатанты автоматики из пула (`plant`, v9.15), победители закупок
-(`tender`, v9.26); `panel` и `design` приходят сюда через `company_triage.md` и страницу вакансии, остальные —
-минуя триаж (`repo.admit_company_leads`, `plant.admit`, `zakupki`: `new → prefiltered`). Код подставляет `{candidate_profile}` и `{feedback_block}`, отправляет как system. Пользовательское сообщение —
+(`tender`, v9.26); `panel` и `design` с hh.ru приходят сюда через `company_triage.md` и страницу вакансии, остальные —
+минуя триаж (в т.ч. щитовики с «Работы России», v9.40: канал `panel`, `site='trudvsem'`, в payload `source: «портал „Работа России“»`, текст вакансии сборщика уже в `description`) (`repo.admit_company_leads`, `plant.admit`, `zakupki`: `new → prefiltered`). Код подставляет `{candidate_profile}` и `{feedback_block}`, отправляет как system. Пользовательское сообщение —
 JSON-массив компаний: hh_id, kind="company", channel (panel | design | owen_si | plant | tender), company, area, vacancy_title,
 description (текст вакансии или описание из каталога), catalog (для ОВЕН: industries, status, region, site, projects_url),
 tender (для канала `tender`, v9.26: law, object, customer, contract_subject, contract_price, contract_signed, contract_deadline,

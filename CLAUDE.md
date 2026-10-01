@@ -36,7 +36,9 @@
 каталог входит по `COMPANY_LEADS_PER_DAY` в день (25), всё остальное — общая очередь.
 **Второй источник вакансий — «Работа России»** (v9.25, решение №67): открытое API портала читается в каждом подходе без
 браузера (`sources/trudvsem.py`, `TRUDVSEM_ENABLED`), строки `site='trudvsem'` оцениваются как вакансии hh, но письмо уходит
-на e-mail из карточки («📧 Писать на:») **без резюме — как законченное предложение** («резюме прикладываю», «ориентир
+на e-mail из карточки («📧 Писать на:»); **с v9.40 (решение №75) портал даёт и щитовиков** — `TRUDVSEM_COMPANY_QUERIES`
+(«сборщик щитов»…) → лиды-компании канала `panel` со своим гейтом `TRUDVSEM_COMPANY_PER_RUN`, а закупки ищут и «НКУ» / «щит
+управления» / «низковольтное комплектное устройство» (`ZAKUPKI_QUERIES`, `zakupki.relevant`) **без резюме — как законченное предложение** («резюме прикладываю», «ориентир
 в резюме» отбраковывает `attachment_problem`, решение №70); без адреса — `skipped/no_email`. **Канал `tender`** (v9.26, решение №68): победитель
 завершённой закупки 44-ФЗ на автоматику с zakupki.gov.ru — лид-компания, письмо предлагает субподряд на программную часть
 выигранного контракта; по запросу в минуту, без браузера (`sources/zakupki.py`, `zakupki.run_job`); ежедневный job
@@ -125,7 +127,7 @@ README.md · .gitignore · hh-scout.service.template + hh-scout-alert.service.te
 src/hh_scout/
   config.py        Settings из .env (порог, веса, лимиты, окна, ритм, токены) + константы: SEARCH_QUERIES (5),
                    REGION_NAMES (48 — запасной путь при SEARCH_ALL_RUSSIA=false; по умолчанию ищем по всей России),
-                   TITLE_STOP/KEEP/REQUIRED_ANY, COMPANY_QUERIES (каналы panel/design), TRUDVSEM_QUERIES (v9.25), ZAKUPKI_QUERIES (v9.26);  logging_setup.py — логи в stdout/journald
+                   TITLE_STOP/KEEP/REQUIRED_ANY, COMPANY_QUERIES (каналы panel/design), TRUDVSEM_QUERIES (v9.25) + TRUDVSEM_COMPANY_QUERIES (v9.40), ZAKUPKI_QUERIES (v9.26);  logging_setup.py — логи в stdout/journald
   db.py            SQLite (автокоммит, WAL), миграции _m001…_m017 (PRAGMA user_version), kv_get/kv_set, transaction(),
                    backup() — ночная копия в data/backups/ (7 штук)
   main.py          сервис: aiogram polling + планировщик; первый старт помечает превью как sent

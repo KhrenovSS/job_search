@@ -89,8 +89,10 @@ remote `work_format=REMOTE`, project `employment_form=PROJECT,PART` и gph `acce
   `Scheduler.zakupki_job` (`_add_source_jobs`, CronTrigger `ZAKUPKI_HOUR:ZAKUPKI_MINUTE`, `misfire_grace_time` 12 ч, тревога
   `zakupki_failed`) при `ZAKUPKI_ENABLED` — заведена только в v9.29: с v9.26 по 28.09 её не было, и канал шёл вручную
   `python -m hh_scout.sources.zakupki [--query …] [--resolve N]` (CLI остаётся для ручного запуска).
-- «Работа России» (v9.25, решение №67, `sources/trudvsem.py`) — не канал компаний, а второй источник **вакансий**: та же
+- «Работа России» (v9.25, решение №67, `sources/trudvsem.py`) — второй источник **вакансий**: та же
   оценка и письмо, что у hh.ru, `letter_key='hh'`, но письмо уходит на e-mail (`channel: email`), карточка показывает адрес.
+  С v9.40 (решение №75) портал даёт и **щитовиков**: запросы `TRUDVSEM_COMPANY_QUERIES` → лиды-компании канала `panel`
+  (`lead_kind='company'`, свой гейт `TRUDVSEM_COMPANY_PER_RUN`), минуя триаж — сразу в оценку компании и предложение по e-mail.
 - `plant` — **эксплуатанты автоматики** (v9.15, решение №55, `pipeline/plant.py`): триаж карточек вакансий
   (`card_triage.md`), закрывая карточку слесаря КИПиА / электромонтёра / энергетика / электромеханика, ставит в вердикте
   `plant: true` (`TriageVerdict.plant`) — компания сама эксплуатирует оборудование с системами управления. Такая карточка

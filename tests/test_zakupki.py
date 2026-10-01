@@ -69,6 +69,11 @@ def test_relevance_filter_keeps_automation_and_drops_licences_links_and_roads():
     assert not zakupki.relevant("Модернизация диспетчеризации АПС, СОУЭ и АПТ зданий")
     assert zakupki.relevant("Оказание услуг по модернизации системы автоматизации и диспетчеризации котельной")
     assert zakupki.relevant("Модернизация программного обеспечения (Master SCADA)")
+    # v9.40: cabinets and switchgear as the object — the winner is a panel builder (decision #75)
+    assert zakupki.relevant("Поставка НКУ для реконструкции КТП")
+    assert zakupki.relevant("Поставка щита управления насосами")
+    assert zakupki.relevant("Поставка низковольтного комплектного устройства (ВРУ)")
+    assert not zakupki.relevant("Поставка щитов питания для вентиляции")
 
 
 def test_parse_supplier_results_and_contract_card():

@@ -98,6 +98,8 @@ def company_payload(row: sqlite3.Row) -> dict:
         payload.update({"catalog": {k: raw.get(k) for k in ("industries", "status", "region", "site", "projects_url")}})
     elif row_site(row) == "zakupki":
         payload["tender"] = tender_block(raw)   # the contract the company has just won (v9.26)
+    elif row_site(row) == "trudvsem":
+        payload["source"] = "портал «Работа России»"   # an assembler vacancy off the portal, not hh.ru (v9.40)
     return payload
 
 

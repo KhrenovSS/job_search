@@ -15,6 +15,11 @@ sync; the rest wait as `new` and are admitted by the next syncs (`admit_waiting`
 so the letter goes by e-mail: the card shows «📧 Писать на:», and a vacancy without any address is
 `skipped/no_email` (decision #56 applied to vacancies).
 
+Panel builders (v9.40, decision #75): `TRUDVSEM_COMPANY_QUERIES` («сборщик щитов», …) find companies that assemble
+cabinets; their rows are company leads — `lead_kind='company'`, `search_pass='panel'` — judged by the company, not the
+title (the title rule is skipped as for an hh.ru company card), with their own gate `TRUDVSEM_COMPANY_PER_RUN`. They skip
+triage like every portal row and go to `company_evaluation.md` → research → the partnership offer by e-mail.
+
 Access: the host reaches the API only through the owner's direct (non-VPN) router route (decision #66).
 """
 
@@ -31,7 +36,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from hh_scout.config import BLOCKED_REGIONS, TRUDVSEM_QUERIES, Settings
+from hh_scout.config import BLOCKED_REGIONS, TRUDVSEM_COMPANY_QUERIES, TRUDVSEM_QUERIES, Settings
 from hh_scout.db import kv_get, kv_set, transaction, utcnow
 from hh_scout.pipeline import dedup, prefilter, repo
 from hh_scout.pipeline.contacts import normalize_email
@@ -42,6 +47,7 @@ SITE = "trudvsem"
 ID_PREFIX = "tv:"
 SOURCE_PREFIX = "trudvsem:"
 SEARCH_PASS = "regional"           # a plain vacancy, like an hh.ru card from the regional pass
+COMPANY_PASS = "panel"             # a panel builder found by its assembler vacancy (v9.40) — the hh.ru channel's name
 PAGE_SIZE = 100                    # the API's maximum
 KV_LAST_SYNC = "trudvsem_last"     # "<utc iso>|<seen>|<new>" of the last successful sync
 OVERLAP = timedelta(days=2)        # re-read this much before the last sync: `date_modify` is the portal's clock, not ours
@@ -248,17 +254,20 @@ def _published_at(v: TvVacancy) -> str:
 
 
 def store_vacancy(conn: sqlite3.Connection, settings: Settings, v: TvVacancy, query: str, *,
-                  admit: bool = True) -> str | None:
+                  admit: bool = True, search_pass: str = SEARCH_PASS, lead_kind: str = "vacancy") -> str | None:
     """Insert one vacancy through the card rules; returns the row's status, or None if it was already known.
 
     Same stages as an hh.ru card, only at once: rules → `prefiltered` (no page to open, no triage to run) or
     `skipped/<reason>`; a passing row is then checked against the company's existing lead (`dedup`).
     With `admit=False` a passing row waits as `new` for `admit_waiting` (the per-sync gate).
+    `lead_kind="company"` (v9.40) stores a panel builder found by its assembler vacancy: the title rule does not
+    apply — the company is the lead, the vacancy only how it was found.
     """
     if repo.vacancy_exists(conn, v.ext_id):
         return None
     facts = prefilter.CardFacts(hh_id=v.ext_id, title=v.title, applied=False, archived=False,
-                                region=blocked_region_name(v.region), employer=v.employer)
+                                region=blocked_region_name(v.region), employer=v.employer,
+                                company=(lead_kind == "company"))
     reason = prefilter.decide(facts)
     if reason is None and not v.emails:
         reason = "no_email"   # nothing to answer on hh.ru and nowhere to write — no lead (decision #56)
@@ -273,7 +282,7 @@ def store_vacancy(conn: sqlite3.Connection, settings: Settings, v: TvVacancy, qu
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (v.ext_id, SITE, v.title, v.employer, v.employer_id, v.url, v.area_name, None, v.work_format, v.employment,
          0, None, v.salary_from, v.salary_to, json.dumps(sal, ensure_ascii=False) if sal else None, _published_at(v),
-         SOURCE_PREFIX + query, SEARCH_PASS, "vacancy", json.dumps(v.raw(), ensure_ascii=False), status, reason, 0,
+         SOURCE_PREFIX + query, search_pass, lead_kind, json.dumps(v.raw(), ensure_ascii=False), status, reason, 0,
          now, now),
     )
     if v.employer_id:
@@ -299,13 +308,13 @@ def fetch_page(settings: Settings, text: str, page: int, modified_from: datetime
         raise TrudvsemUnavailable(f"{e.__class__.__name__}: {str(e)[:160]}") from e
 
 
-def admit_waiting(conn: sqlite3.Connection, settings: Settings, limit: int) -> int:
-    """Let up to `limit` waiting rows (`new`, newest first) into evaluation; a row whose company got a lead
-    meanwhile is skipped as a duplicate instead. Returns how many are now `prefiltered`."""
+def admit_waiting(conn: sqlite3.Connection, settings: Settings, limit: int, *, lead_kind: str = "vacancy") -> int:
+    """Let up to `limit` waiting rows (`new`, newest first) of one kind into evaluation; a row whose company got
+    a lead meanwhile is skipped as a duplicate instead. Returns how many are now `prefiltered`."""
     if limit <= 0:
         return 0
-    rows = conn.execute("SELECT * FROM vacancies WHERE site = ? AND status = 'new' ORDER BY published_at DESC, id LIMIT ?",
-                        (SITE, limit)).fetchall()
+    rows = conn.execute("SELECT * FROM vacancies WHERE site = ? AND status = 'new' AND lead_kind = ? "
+                        "ORDER BY published_at DESC, id LIMIT ?", (SITE, lead_kind, limit)).fetchall()
     admitted = 0
     with transaction(conn):
         for row in rows:
@@ -314,12 +323,18 @@ def admit_waiting(conn: sqlite3.Connection, settings: Settings, limit: int) -> i
             if dedup.skip_if_covered(conn, settings, fresh) is None:
                 admitted += 1
     if rows:
-        log.info("Работа России: допущено в оценку %d из %d ждавших (по %d за подход)", admitted, len(rows), settings.trudvsem_per_run)
+        log.info("Работа России: допущено в оценку %d из %d ждавших %s (по %d за подход)", admitted, len(rows),
+                 "щитовиков" if lead_kind == "company" else "вакансий", limit)
     return admitted
 
 
-def waiting(conn: sqlite3.Connection) -> int:
-    return int(conn.execute("SELECT COUNT(*) FROM vacancies WHERE site = ? AND status = 'new'", (SITE,)).fetchone()[0])
+def waiting(conn: sqlite3.Connection, lead_kind: str | None = None) -> int:
+    sql = "SELECT COUNT(*) FROM vacancies WHERE site = ? AND status = 'new'"
+    args: tuple = (SITE,)
+    if lead_kind:
+        sql += " AND lead_kind = ?"
+        args += (lead_kind,)
+    return int(conn.execute(sql, args).fetchone()[0])
 
 
 @dataclass
@@ -328,6 +343,10 @@ class SyncResult:
     new: int = 0
     prefiltered: int = 0
     waiting: int = 0        # passed the rules but wait for a later sync (the per-sync gate)
+    company_seen: int = 0   # panel-builder queries (v9.40): company rows, their own gate
+    company_new: int = 0
+    company_prefiltered: int = 0
+    company_waiting: int = 0
     requests: int = 0
     since: datetime | None = None
 
@@ -343,9 +362,14 @@ def last_sync(conn: sqlite3.Connection) -> datetime | None:
 
 
 def sync(conn: sqlite3.Connection, settings: Settings, *, days: int | None = None,
-         queries: tuple[str, ...] = TRUDVSEM_QUERIES, sleep=time.sleep) -> SyncResult:
+         queries: tuple[str, ...] = TRUDVSEM_QUERIES, company_queries: tuple[str, ...] = TRUDVSEM_COMPANY_QUERIES,
+         sleep=time.sleep) -> SyncResult:
     """Read every query since the last sync (or `days` back) and store what is new. Raises
-    `TrudvsemUnavailable` on the first failed request; what was stored before it stays."""
+    `TrudvsemUnavailable` on the first failed request; what was stored before it stays.
+
+    Vacancy queries go first, then the panel-builder ones (v9.40): a vacancy found by both stays a vacancy
+    (`seen_ids` is shared), and each kind has its own per-sync gate.
+    """
     res = SyncResult()
     started = datetime.now(timezone.utc)
     if days is not None:
@@ -354,8 +378,12 @@ def sync(conn: sqlite3.Connection, settings: Settings, *, days: int | None = Non
         last = last_sync(conn)
         res.since = (last - OVERLAP) if last else started - timedelta(days=settings.trudvsem_backfill_days)
     seen_ids: set[str] = set()
-    res.prefiltered += admit_waiting(conn, settings, settings.trudvsem_per_run)   # yesterday's tail first
-    for q in queries:
+    # yesterday's tail first
+    res.prefiltered += admit_waiting(conn, settings, settings.trudvsem_per_run)
+    res.company_prefiltered += admit_waiting(conn, settings, settings.trudvsem_company_per_run, lead_kind="company")
+    plan = [(q, SEARCH_PASS, "vacancy") for q in queries] + [(q, COMPANY_PASS, "company") for q in company_queries]
+    for q, search_pass, lead_kind in plan:
+        company = lead_kind == "company"
         got = 0
         for page_no in range(settings.trudvsem_max_pages_per_query):
             if res.requests:
@@ -368,9 +396,20 @@ def sync(conn: sqlite3.Connection, settings: Settings, *, days: int | None = Non
                     if v.ext_id in seen_ids:
                         continue
                     seen_ids.add(v.ext_id)
-                    res.seen += 1
-                    status = store_vacancy(conn, settings, v, q, admit=res.prefiltered < settings.trudvsem_per_run)
-                    if status is not None:
+                    if company:
+                        res.company_seen += 1
+                        admit = res.company_prefiltered < settings.trudvsem_company_per_run
+                    else:
+                        res.seen += 1
+                        admit = res.prefiltered < settings.trudvsem_per_run
+                    status = store_vacancy(conn, settings, v, q, admit=admit, search_pass=search_pass, lead_kind=lead_kind)
+                    if status is None:
+                        continue
+                    if company:
+                        res.company_new += 1
+                        res.company_prefiltered += status == "prefiltered"
+                        res.company_waiting += status == "new"
+                    else:
                         res.new += 1
                         res.prefiltered += status == "prefiltered"
                         res.waiting += status == "new"
@@ -378,9 +417,11 @@ def sync(conn: sqlite3.Connection, settings: Settings, *, days: int | None = Non
             if len(vacancies) < PAGE_SIZE or got >= total:
                 break
     with conn:
-        kv_set(conn, KV_LAST_SYNC, f"{started.isoformat(timespec='seconds')}|{res.seen}|{res.new}")
-    log.info("Работа России: вакансий в выдаче %d, новых %d (в оценку %d, ждут %d), запросов %d, с %s",
-             res.seen, res.new, res.prefiltered, waiting(conn), res.requests,
+        kv_set(conn, KV_LAST_SYNC, f"{started.isoformat(timespec='seconds')}|{res.seen + res.company_seen}|{res.new + res.company_new}")
+    log.info("Работа России: вакансий в выдаче %d, новых %d (в оценку %d, ждут %d); щитовиков в выдаче %d, новых %d "
+             "(в оценку %d, ждут %d); запросов %d, с %s",
+             res.seen, res.new, res.prefiltered, waiting(conn, "vacancy"), res.company_seen, res.company_new,
+             res.company_prefiltered, waiting(conn, "company"), res.requests,
              res.since.astimezone(timezone.utc).strftime("%d.%m %H:%M") if res.since else "начала")
     return res
 
@@ -394,6 +435,8 @@ def main() -> int:
     ap.add_argument("--days", type=int, default=None, help="read this many days back instead of since the last sync")
     ap.add_argument("--file", help="parse a saved API answer instead of downloading (tests, offline)")
     ap.add_argument("--query", action="append", help="only these query texts (default: TRUDVSEM_QUERIES)")
+    ap.add_argument("--company-query", action="append",
+                    help="panel-builder query texts → company leads (default: TRUDVSEM_COMPANY_QUERIES; 'none' = skip)")
     args = ap.parse_args()
     settings = load_settings()
     setup_logging(settings.log_level)
@@ -405,12 +448,17 @@ def main() -> int:
         print(f"В файле {len(vacancies)} (на портале {total}), новых {new}")
         return 0
     try:
-        res = sync(conn, settings, days=args.days, queries=tuple(args.query) if args.query else TRUDVSEM_QUERIES)
+        cq = TRUDVSEM_COMPANY_QUERIES
+        if args.company_query:
+            cq = () if args.company_query == ["none"] else tuple(args.company_query)
+        res = sync(conn, settings, days=args.days, queries=tuple(args.query) if args.query else TRUDVSEM_QUERIES,
+                   company_queries=cq)
     except TrudvsemUnavailable as e:
         print(f"ОШИБКА: {e}")
         return 1
-    print(f"В выдаче {res.seen}, новых {res.new}, в оценку {res.prefiltered}, ждут следующих подходов {waiting(conn)}; "
-          f"запросов {res.requests}; всего в базе {repo.count_site(conn, SITE)}")
+    print(f"В выдаче {res.seen}, новых {res.new}, в оценку {res.prefiltered}, ждут следующих подходов {waiting(conn, 'vacancy')}; "
+          f"щитовиков в выдаче {res.company_seen}, новых {res.company_new}, в оценку {res.company_prefiltered}, "
+          f"ждут {waiting(conn, 'company')}; запросов {res.requests}; всего в базе {repo.count_site(conn, SITE)}")
     return 0
 
 

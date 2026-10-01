@@ -151,6 +151,7 @@ class Settings(BaseSettings):
     trudvsem_api_url: str = "https://opendata.trudvsem.ru/api/v1/vacancies"
     trudvsem_backfill_days: int = 14       # first sync: how far back; later syncs read since the last one
     trudvsem_per_run: int = 60             # rows let into evaluation per sync; the rest wait as `new` (a 30-day backfill is ~700)
+    trudvsem_company_per_run: int = 20     # same gate for panel-builder rows (TRUDVSEM_COMPANY_QUERIES, v9.40): their own budget
     trudvsem_max_pages_per_query: int = 10  # × 100 vacancies
     trudvsem_request_gap_s: float = 3.0     # a public API, but no need to hammer it: ~9 s per answer anyway
     trudvsem_timeout_s: float = 90.0
@@ -399,12 +400,20 @@ TRUDVSEM_QUERIES: tuple[str, ...] = (
     "АСУ ТП", "АСУТП", "ПЛК", "SCADA", "CODESYS", "MasterSCADA", "ОВЕН", "программист контроллеров",
     "промышленной автоматизации", "автоматизации технологических процессов",
 )
+# «Работа России» queries that find panel builders (v9.40, decision #75): a company hiring a cabinet assembler is
+# a company lead of the `panel` channel, like the hh.ru pass of COMPANY_QUERIES — the portal hands its e-mail over
+# at once. One phrase per call; the rows go in as `lead_kind='company'`, `search_pass='panel'`, skipping the title rule.
+TRUDVSEM_COMPANY_QUERIES: tuple[str, ...] = (
+    "сборщик щитов", "сборщик шкафов", "электромонтажник щитов", "сборщик НКУ", "электромонтажник-сборщик",
+)
 
 # zakupki.gov.ru search phrases (v9.26): the notice search is full-text over attachments too, so short trade words
 # («АСУ ТП», «ПЛК») drown in road works and homonyms; `zakupki.relevant()` then filters by the object's name.
 ZAKUPKI_QUERIES: tuple[str, ...] = (
     "SCADA", "MasterSCADA", "диспетчеризации", "автоматизированной системы управления технологическим",
     "шкаф управления", "телемеханики",
+    # v9.40 (decision #75): a supplier of cabinets / switchgear is a panel builder with a signed order
+    "НКУ", "щит управления", "низковольтное комплектное устройство",
 )
 
 # Queue priority bonus by company kind (v9.38, decision #74): the owner prefers panel builders and small firms
