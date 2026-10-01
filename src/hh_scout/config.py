@@ -184,6 +184,17 @@ class Settings(BaseSettings):
     # 5 → 25 in v9.14 (decision #54): the catalogue costs no page loads, only bridge time, and that is now
     # capped by letters_budget_min; at 5 a day the 167 waiting integrators would have taken until November.
     company_leads_per_day: int = 25
+    # Web discovery of panel builders through the bridge (v9.41, decision #75): one web-enabled bridge call per task
+    # (a region × a query, or a vendor's partner list), the answer's companies become `new` rows of `site='web'`,
+    # channel `discovery`. Off by default; `discovery` must also be in COMPANY_CHANNELS for the daily admission.
+    discovery_enabled: bool = False
+    discovery_tasks_per_day: int = 3          # bridge calls per daily job (~3–6 min and ~$0.3–0.8 each)
+    discovery_leads_per_day: int = 10         # rows let into evaluation per day (`repo.admit_company_leads`)
+    discovery_hour: int = 5                   # after the procurement job (05:20, ~25 min), before the 08–11 window
+    discovery_minute: int = 50
+    discovery_max_turns: int = 14             # CLI turns: searches + page reads + the answer
+    discovery_timeout_s: float = 930.0        # must exceed the bridge's BRIDGE_WEB_TIMEOUT (900)
+    discovery_model: str = ""                 # empty -> the bridge's own model
     owen_integrators_url: str = "https://owen.ru/upl_files/modules/system_integrators/client/integrators.php"
     owen_integrators_referer: str = "https://owen.ru/spisok_sistemnih_integratorov"
     # Company lead score = fit (is there programming work here that can be contracted out) + lead (direct company,
@@ -414,6 +425,23 @@ ZAKUPKI_QUERIES: tuple[str, ...] = (
     "шкаф управления", "телемеханики",
     # v9.40 (decision #75): a supplier of cabinets / switchgear is a panel builder with a signed order
     "НКУ", "щит управления", "низковольтное комплектное устройство",
+)
+
+# Web discovery of panel builders (v9.41, decision #75): a task is a region × a query, or a vendor whose partner
+# programme lists licensed panel builders. Vendors go first (a dozen tasks), then every region with the first query,
+# then the next query, round-robin over days (kv `discovery_cursor`).
+DISCOVERY_REGION_QUERIES: tuple[str, ...] = (
+    "производство шкафов автоматики", "сборка НКУ", "изготовление щитов управления", "сборка шкафов управления",
+)
+DISCOVERY_VENDORS: tuple[str, ...] = (
+    "Schneider Electric", "ABB", "Rittal", "Siemens", "IEK", "EKF", "DKC", "КЭАЗ", "Chint", "ТДМ Электрик", "ОВЕН",
+)
+DISCOVERY_VENDOR_HINT = "лицензированные / сертифицированные сборщики НКУ, партнёры-сборщики, авторизованные щитовые производства"
+DISCOVERY_EXTRA_REGIONS: tuple[str, ...] = (
+    "Свердловская область", "Челябинская область", "Тюменская область", "Ханты-Мансийский автономный округ",
+    "Ямало-Ненецкий автономный округ", "Курганская область", "Новосибирская область", "Красноярский край", "Омская область",
+    "Кемеровская область", "Иркутская область", "Томская область", "Алтайский край", "Хабаровский край", "Приморский край",
+    "Мурманская область", "Республика Дагестан", "Кабардино-Балкарская Республика", "Республика Северная Осетия",
 )
 
 # Queue priority bonus by company kind (v9.38, decision #74): the owner prefers panel builders and small firms

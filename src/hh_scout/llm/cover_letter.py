@@ -102,6 +102,12 @@ def letter_payload(row: sqlite3.Row, company: dict | None = None, owner_hint: st
     if letter_key(row) == "company":
         # a partnership offer: what we know about the company, what to offer it — and no salary anything
         catalog = {k: raw.get(k) for k in ("industries", "status", "region", "site", "projects_url") if raw.get(k)}
+        if row_site(row) == "web":
+            # found by the web search (v9.41): no vacancy and no catalogue line — the query and the page that named it
+            catalog = {}
+            seen_through = f"найдена поиском: {raw.get('query') or ''}; {raw.get('evidence_url') or raw.get('site') or ''}"
+        else:
+            seen_through = row["title"]   # the vacancy (or catalogue line) the company was found by
         return {
             "kind": "company",
             "channel": row["search_pass"],
@@ -111,7 +117,7 @@ def letter_payload(row: sqlite3.Row, company: dict | None = None, owner_hint: st
             "company": company,      # dossier from the open web; None = only what the vacancy / catalogue said
             "catalog": catalog or None,
             "tender": tender_block(raw) if row_site(row) == "zakupki" else None,   # the contract just won (v9.26)
-            "seen_through": row["title"],   # the vacancy (or catalogue line) the company was found by
+            "seen_through": seen_through,
             "description": desc[:MAX_DESCRIPTION_CHARS],
             "verdict": row["verdict"],
             "pitch_hint": row["pitch_hint"],

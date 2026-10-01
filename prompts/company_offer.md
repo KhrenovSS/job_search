@@ -3,7 +3,7 @@
 Для лидов вида `company` (`rows.letter_key == "company"`): щитовики и проектные бюро с hh.ru (`panel`, `design`, v9.13),
 интеграторы из каталога ОВЕН (`owen_si`), эксплуатанты автоматики из пула (`plant`, v9.15), победители закупок
 (`tender`, v9.26). Код подставляет `{resume}` и `{candidate_profile}`, отправляет как system. Пользовательское сообщение — JSON одной компании: kind="company",
-channel (panel | design | owen_si | plant | tender), company_name, company_kind, city, company (досье из открытых источников или null),
+channel (panel | design | owen_si | plant | tender | discovery), company_name, company_kind, city, company (досье из открытых источников или null),
 catalog (для ОВЕН: industries, status, region, site, projects_url), tender (для канала `tender`, v9.26: law, object, customer,
 contract_subject, contract_price, contract_signed, contract_deadline, winner, winner_status — контракт с zakupki.gov.ru,
 который компания только что выиграла), seen_through (вакансия или строка каталога, по которой компанию нашли), description,
@@ -14,7 +14,7 @@ verdict, pitch_hint, offer_focus, owner_hint. Payload собирает `cover_le
 (`found: false`), письмо получает только `automation_hooks` (v9.31, `cover_letter.dossier_for_letter`); `null` — досье нет вовсе.
 Ответ — только текст письма, без заголовков и пояснений. Объём: промпт просит 1800–2500 знаков с потолком 3000, код
 принимает 400–3000 (`LENGTH_LIMITS["company"]`). Текст проверяет код (`llm/letter_checks.py`): деньги, штампы, первое лицо
-единственного числа (решение №69), подпись из четырёх строк (решение №58); для `owen_si` и `tender` (письмо уходит на e-mail,
+единственного числа (решение №69), подпись из четырёх строк (решение №58); для `owen_si`, `tender` и `discovery` (v9.41, щитовик найден веб-поиском, `site='web'`; `seen_through` — запрос и страница-доказательство) (письмо уходит на e-mail,
 `rows.needs_email`) — ещё и обещание резюме / «ориентир в резюме» (`ATTACHMENT_RE`, решение №70). Обращение по должности
 срезается кодом (`strip_role_address`). Затем — редактор `letter_review.md`; отпечаток правил — `cover_letters.rules_hash`.
 
@@ -75,6 +75,10 @@ verdict, pitch_hint, offer_focus, owner_hint. Payload собирает `cover_le
 правки логики и панелей, когда меняется технология или оборудование». Не предлагай им собирать шкафы или проектировать:
 они эксплуатанты, а не подрядчики. Повод вернуться к письму позже (п.4 финала) — перенос программы на новый
 контроллер, замена панели, новая линия без своего программиста.
+
+Для канала `discovery` компания найдена не по вакансии, а поиском (`seen_through` — запрос и страница, где она названа
+щитовиком): письмо такое же, как щитовику с hh.ru, но повод — её продукция по сайту (`company.what_they_do`, `products`), а не
+вакансия; не упоминай поиск, списки партнёров и то, как её нашли.
 
 Для канала `tender` письмо строится вокруг **контракта, который компания только что выиграла** (`tender`: предмет,
 заказчик, срок исполнения — это открытые данные ЕИС, ссылаться на них можно прямо: «вижу в реестре контрактов, что вы

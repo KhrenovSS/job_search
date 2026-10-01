@@ -116,6 +116,20 @@ def payload(row: sqlite3.Row) -> dict:
             "vacancy_title": row["title"],
             "vacancy_summary": strip_html(raw.get("description"))[:MAX_SUMMARY_CHARS],
         }
+    if row_site(row) == "web":
+        # a panel builder the web search found (v9.41): its own site is the page to read; the search query and the
+        # page that named it are the only facts so far — the dossier is where the e-mail comes from
+        return {
+            "employer": row["employer"],
+            "employer_id": row["employer_id"],
+            "employer_url": raw.get("evidence_url") or raw.get("site") or row["url"],
+            "company_site": raw.get("site"),
+            "inn": raw.get("inn"),
+            "source": "поиск в интернете: " + str(raw.get("query") or ""),
+            "city": row["area_name"],
+            "vacancy_title": None,
+            "vacancy_summary": strip_html(raw.get("description"))[:MAX_SUMMARY_CHARS],
+        }
     if row_site(row) == "zakupki":
         # a procurement winner (v9.30, decision #71): no page anywhere — the search goes by name and INN, and the
         # "vacancy" is the contract it has just signed (the same facts `evaluator.tender_block` gives the letter)
@@ -154,7 +168,7 @@ class CompanyResearcher:
         """The dossier for this vacancy's employer, from cache or the web. None if it cannot be had."""
         if not self.s.company_research_enabled:
             return None
-        if row_site(row) not in ("hh", "owen", "trudvsem", "zakupki") or not row["employer_id"]:
+        if row_site(row) not in ("hh", "owen", "trudvsem", "zakupki", "web") or not row["employer_id"]:
             return None  # profi.ru clients are private people; cards without an id have no stable key
         if not force:
             hit = cached(self.conn, row["employer_id"], self.s.company_research_ttl_days)

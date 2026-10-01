@@ -129,3 +129,29 @@ class CompanyBrief(BaseModel):
     defense: bool = False
     contact_phone: str = ""
 
+
+class DiscoveredCompany(BaseModel):
+    """One panel builder the web search found (prompts/company_discovery.md, v9.41). `website` must carry a domain:
+    it becomes the row's key (`web:<domain>`) and the link to the same company seen through hh.ru."""
+
+    name: str = Field(min_length=2)
+    website: str = Field(min_length=4)
+    city: str = ""
+    region: str = ""
+    inn: str = ""
+    emails: list[str] = Field(default_factory=list)
+    what_they_do: str = ""
+    evidence_url: str = ""
+
+    @field_validator("website")
+    @classmethod
+    def _has_domain(cls, v: str) -> str:
+        from hh_scout.pipeline.contacts import domain_of
+        if domain_of(v) is None:
+            raise ValueError("website без домена компании")
+        return v.strip()
+
+
+class DiscoveryAnswer(BaseModel):
+    companies: list[DiscoveredCompany] = Field(default_factory=list)
+    note: str = ""

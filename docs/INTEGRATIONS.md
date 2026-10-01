@@ -143,6 +143,24 @@ initialState, conversationMessagesCount, hasNewMessages, archived, resumeId, cha
 - 223-ФЗ: карточка договора (`/epz/contractfz223/card/contract-info.html`) исполнителя не показывает; RSS реестра договоров
   223 без описания. Не используется.
 
+## 1e. Поиск щитовиков в интернете через мост (v9.41, решение №75)
+- Источник `sources/web_discovery.py`: не сайт, а **модель с веб-поиском** (`BridgeClient.complete(allow_web=True)`, как у досье;
+  поиск выполняется на стороне Anthropic, гео-блок хоста не мешает). Задача — регион × запрос (`config.DISCOVERY_REGION_QUERIES`,
+  регионы `REGION_NAMES` + `DISCOVERY_EXTRA_REGIONS`) или вендор (`DISCOVERY_VENDORS`: списки лицензированных сборщиков НКУ);
+  порядок `web_discovery.tasks()` — вендоры, затем все регионы с первым запросом, затем со вторым…; курсор kv `discovery_cursor`.
+- Промпт `prompts/company_discovery.md` → JSON `DiscoveryAnswer` (`llm/schemas.py`): `companies[] {name, website, city, region,
+  inn, emails, what_they_do, evidence_url}`, `note`. `parse_answer` отбрасывает запись без домена в `website`, не весь список;
+  ответ не той формы — один повтор с текстом ошибки, затем задача пропущена (`DiscoveryFailed`), курсор идёт дальше.
+- Хранение: `repo.insert_discovered` → `site='web'`, `hh_id=employer_id='web:<домен>'`, `search_pass='discovery'`, `status='new'`;
+  `record_contacts(emails, [website])`. Домен, уже известный любому источнику (`repo.domain_known`), — та же компания, не лид.
+  Допуск — `run.py` 4b′ `admit_company_leads(search_pass='discovery')` по `DISCOVERY_LEADS_PER_DAY`, строки с e-mail первыми;
+  дальше `company_evaluation.md` (канал `discovery`, блок `discovery`), досье (`company_research.payload`: `company_site`,
+  `evidence_url`, `source: «поиск в интернете: …»`), `company_offer.md` (`seen_through` — запрос и страница), письмо по e-mail
+  (`rows.needs_email`), без адреса — `skipped/no_email`. Карточка: 🌐 + «🔍 Найдена поиском: …» + страница-доказательство.
+- Расписание: `Scheduler.discovery_job` ежедневно в `DISCOVERY_HOUR:MINUTE` (05:50) при `DISCOVERY_ENABLED`; ждёт конца идущего
+  подхода (мост общий со стадией писем) до часа, затем пропускает день; `DISCOVERY_TASKS_PER_DAY` (3) задач ≈ 3–6 мин и $0.3–0.8
+  каждая; стоимость — в kv `discovery_last`, вне `runs.bridge_calls`. Сбой всего job — тревога `discovery_failed`.
+
 ## 2. Мост Claude (`bridge/`)
 
 Собственный сервис проекта: FastAPI + systemd на хосте, порт **8766** (слушает 0.0.0.0, защита — токен), на каждый запрос запускает

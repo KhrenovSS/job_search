@@ -103,9 +103,49 @@ def insert_integrator(conn: sqlite3.Connection, card: "IntegratorCard") -> bool:
 
 def owen_totals(conn: sqlite3.Connection) -> dict[str, int]:
     """Catalogue companies by stage, for /status: waiting for admission, in the pipeline, sent."""
-    rows = conn.execute("SELECT status, COUNT(*) AS n FROM vacancies WHERE site = 'owen' GROUP BY status").fetchall()
+    return site_totals(conn, "owen")
+
+
+def site_totals(conn: sqlite3.Connection, site: str) -> dict[str, int]:
+    rows = conn.execute("SELECT status, COUNT(*) AS n FROM vacancies WHERE site = ? GROUP BY status", (site,)).fetchall()
     by = {r["status"]: int(r["n"]) for r in rows}
     return {"total": sum(by.values()), "waiting": by.get("new", 0), "sent": by.get("sent", 0)}
+
+
+# --- company leads found by searching the web (v9.41, decision #75) ------------------------------
+
+DISCOVERY_PASS = "discovery"
+
+
+def domain_known(conn: sqlite3.Connection, domain: str) -> bool:
+    """Whether any employer — hh.ru, catalogue, portal, procurement — already carries this site's domain."""
+    return conn.execute("SELECT 1 FROM employer_contacts WHERE kind = 'domain' AND value = ? LIMIT 1",
+                        (domain,)).fetchone() is not None
+
+
+def insert_discovered(conn: sqlite3.Connection, card: "DiscoveredCard") -> bool:
+    """A company the web search found as a `new` lead of channel `discovery`: `site='web'`, `hh_id` and `employer_id`
+    = `web:<domain>`. No `status` key in raw_json on purpose (the card prints any as «партнёр ОВЕН»). False if known."""
+    if vacancy_exists(conn, card.ext_id):
+        return False
+    now = utcnow()
+    raw = {"description": card.what_they_do, "site": card.website, "emails": list(card.emails), "city": card.city,
+           "region": card.region, "inn": card.inn, "evidence_url": card.evidence_url, "query": card.query}
+    hit = defense.match(card.name)
+    status, reason = ("skipped", defense.name_reason(hit)) if hit else ("new", None)
+    conn.execute(
+        """INSERT INTO vacancies(hh_id, site, lead_kind, title, employer, employer_id, url, area_name, work_format, employment,
+                                 published_at, source, search_pass, raw_json, status, skip_reason, applied, first_seen_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (card.ext_id, "web", "company", "Сборка шкафов и щитов (найдена поиском)", card.name, card.ext_id, card.website,
+         card.city or card.region, "unknown", "unknown", now, SOURCE_PREFIX_DISCOVERY + card.query[:80], DISCOVERY_PASS,
+         json.dumps(raw, ensure_ascii=False), status, reason, 0, now, now),
+    )
+    record_contacts(conn, card.ext_id, emails=card.emails, urls=[card.website])
+    return True
+
+
+SOURCE_PREFIX_DISCOVERY = "discovery:"
 
 
 PLANT_PASS = "plant"          # v9.15: companies that run automation, found through a closed non-programmer card
@@ -187,7 +227,8 @@ def admit_company_leads(conn: sqlite3.Connection, per_day: int, search_pass: str
     rows = conn.execute(
         f"""SELECT id FROM vacancies WHERE search_pass = ? AND status = 'new'
              ORDER BY CASE json_extract(raw_json, '$.status') {rank} ELSE 9 END,
-                      (json_extract(raw_json, '$.site') IS NULL), id
+                      (json_extract(raw_json, '$.site') IS NULL),
+                      (json_extract(raw_json, '$.emails') IS NULL OR json_array_length(raw_json, '$.emails') = 0), id
              LIMIT ?""", (search_pass, room)).fetchall()
     now = utcnow()
     for r in rows:
@@ -972,7 +1013,7 @@ _OUTCOMES_SQL = f"""
     JOIN digest_items di ON di.vacancy_id = v.id
     JOIN digests d ON d.id = di.digest_id
     LEFT JOIN cover_letters c ON c.vacancy_id = v.id
-    WHERE v.site IN ('hh', 'owen', 'trudvsem', 'zakupki') AND d.sent_at >= ?
+    WHERE v.site IN ('hh', 'owen', 'trudvsem', 'zakupki', 'web') AND d.sent_at >= ?
       AND EXISTS (SELECT 1 FROM lead_actions a WHERE a.vacancy_id = v.id
                   AND a.action IN ('responded', 'auto_responded'))
     GROUP BY v.id

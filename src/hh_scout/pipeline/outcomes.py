@@ -29,7 +29,7 @@ COMPANY_RU = {"integrator": "интегратор", "manufacturer": "произ�
 LEAD_KIND_RU = {"vacancy": "вакансия", "company": "компания"}
 CHANNEL_RU = {"panel": "щитовики (hh)", "design": "проектные бюро (hh)", "owen_si": "каталог ОВЕН",
               "plant": "эксплуатанты автоматики (hh)", "profi": "profi.ru",
-              "tender": "победители закупок (ЕИС)"}
+              "tender": "победители закупок (ЕИС)", "discovery": "щитовики (поиск в интернете)"}
 WORK_FORMAT_RU = {"remote": "удалёнка", "hybrid": "гибрид", "office": "офис", "field": "разъездная"}
 
 

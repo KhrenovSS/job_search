@@ -40,7 +40,14 @@ OFFER_RU = {"plc_hmi_per_panel": "программа ПЛК и панель по
             "subcontract_programming": "субподряд на программную часть",
             "modernization": "модернизация программ ПЛК и панелей на действующем оборудовании",
             "support": "программист по вызову без штата"}
-CHANNEL_ICON = {"panel": "🔧", "design": "📐", "owen_si": "🟡", "plant": "🏭", "tender": "🏛"}
+CHANNEL_ICON = {"panel": "🔧", "design": "📐", "owen_si": "🟡", "plant": "🏭", "tender": "🏛", "discovery": "🌐"}
+
+
+def _discovery_line(raw: dict) -> str:
+    """How the web search found the company (v9.41): the task and the page that named it."""
+    bits = [f"🔍 Найдена поиском: {_esc(str(raw.get('query') or ''))}",
+            _esc(str(raw.get("evidence_url"))) if raw.get("evidence_url") else None]
+    return "   " + " · ".join(x for x in bits if x)
 
 
 def _tender_line(raw: dict) -> str:
@@ -65,7 +72,8 @@ def format_company_card(position: int, v: sqlite3.Row, e: sqlite3.Row) -> str:
              f"📍 {v['area_name']}" if v["area_name"] else None,
              f"партнёр ОВЕН: {raw['status']}" if raw.get("status") else None]
     lines = [head, "   " + " · ".join(x for x in facts if x),
-             f"   👀 Найдена по: {_esc(v['title'])}" if _row_get(v, "site") != "owen" else "",
+             f"   👀 Найдена по: {_esc(v['title'])}" if _row_get(v, "site") not in ("owen", "web") else "",
+             _discovery_line(raw) if _row_get(v, "site") == "web" else "",
              _tender_line(raw) if _row_get(v, "site") == "zakupki" else "",
              f"   ⭐ Лид: <b>{e['total']}/100</b> (соответствие {e['tech_score']} · лид {e['lead_score']})",
              f"   Что у них: {_esc(e['verdict'])}"]

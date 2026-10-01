@@ -100,6 +100,10 @@ def company_payload(row: sqlite3.Row) -> dict:
         payload["tender"] = tender_block(raw)   # the contract the company has just won (v9.26)
     elif row_site(row) == "trudvsem":
         payload["source"] = "портал «Работа России»"   # an assembler vacancy off the portal, not hh.ru (v9.40)
+    elif row_site(row) == "web":
+        # found by the web search (v9.41): no vacancy at all — the query, the site and the page that named it
+        payload["vacancy_title"] = None
+        payload["discovery"] = {k: raw.get(k) for k in ("query", "site", "evidence_url", "region", "inn")}
     return payload
 
 

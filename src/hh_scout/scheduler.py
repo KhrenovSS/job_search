@@ -49,6 +49,8 @@ PRECHECK_GRACE_SEC = 10 * 60     # later than that the sitting itself is about t
 BACKUP_GRACE_SEC = 6 * 3600
 OWEN_GRACE_SEC = 12 * 3600
 ZAKUPKI_GRACE_SEC = 12 * 3600    # a day's feeds read at noon are still that day's feeds
+DISCOVERY_GRACE_SEC = 12 * 3600
+DISCOVERY_WAIT_STEP_SEC, DISCOVERY_WAIT_MAX_SEC = 5 * 60, 60 * 60   # a sitting still running: wait, then skip the day
 
 
 def _at(d: date, t: time) -> datetime:
@@ -181,6 +183,9 @@ class Scheduler:
         if self.s.zakupki_enabled:
             self.aps.add_job(self.zakupki_job, CronTrigger(hour=self.s.zakupki_hour, minute=self.s.zakupki_minute, timezone=TZ),
                              id="zakupki", replace_existing=True, misfire_grace_time=ZAKUPKI_GRACE_SEC, coalesce=True)
+        if self.s.discovery_enabled:
+            self.aps.add_job(self.discovery_job, CronTrigger(hour=self.s.discovery_hour, minute=self.s.discovery_minute, timezone=TZ),
+                             id="discovery", replace_existing=True, misfire_grace_time=DISCOVERY_GRACE_SEC, coalesce=True)
 
     def shutdown(self) -> None:
         self.aps.shutdown(wait=False)
@@ -338,6 +343,27 @@ class Scheduler:
         except Exception as e:  # noqa: BLE001
             log.exception("Реестр закупок не прочитался")
             await self.alerter.send([health.Alert("zakupki_failed", f"⚠️ Реестр закупок (zakupki.gov.ru) не прочитался: {e}")])
+
+    async def discovery_job(self) -> None:
+        """Daily: a few web searches for panel builders through the bridge (v9.41, decision #75) → `new` company leads.
+
+        Minutes of bridge time per task; it waits for a running sitting to finish (the letters stage uses the same
+        bridge) and gives up on the day after an hour.
+        """
+        from hh_scout.sources import web_discovery
+
+        waited = 0
+        while (self.crawl_lock.locked() or repo.running_run(self.conn)) and waited < DISCOVERY_WAIT_MAX_SEC:
+            await asyncio.sleep(DISCOVERY_WAIT_STEP_SEC)
+            waited += DISCOVERY_WAIT_STEP_SEC
+        if self.crawl_lock.locked() or repo.running_run(self.conn):
+            log.info("Поиск щитовиков: подход всё ещё идёт — сегодня пропускаю")
+            return
+        try:
+            await asyncio.to_thread(web_discovery.run_job, self.conn, self.s)
+        except Exception as e:  # noqa: BLE001
+            log.exception("Поиск щитовиков упал")
+            await self.alerter.send([health.Alert("discovery_failed", f"⚠️ Поиск щитовиков через мост не удался: {e}")])
 
     async def digest_job(self) -> None:
         try:

@@ -112,6 +112,12 @@ async def status_cmd(m: Message, settings: Settings, conn: sqlite3.Connection, s
         t = repo.owen_totals(conn)
         lines.append(f"Каталог ОВЕН: компаний {t['total']} · ждут допуска {t['waiting']} · отправлено {t['sent']} "
                      f"(по {settings.company_leads_per_day} в день)")
+    if repo.DISCOVERY_PASS in settings.company_channels_set:
+        t = repo.site_totals(conn, "web")
+        last = (kv_get(conn, "discovery_last") or "").split("|")
+        lines.append(f"Поиск щитовиков: {'✅ включён' if settings.discovery_enabled else 'job выключен'} · компаний {t['total']} · "
+                     f"ждут допуска {t['waiting']} · отправлено {t['sent']} (по {settings.discovery_leads_per_day} в день)"
+                     + (f" · последний поиск {_fmt_dt(last[0])}, задач {last[1]}, новых {last[3]}" if len(last) >= 4 else ""))
     if repo.PLANT_PASS in settings.company_channels_set:
         t = repo.plant_totals(conn)
         lines.append(f"Эксплуатанты автоматики: в пуле {t['pool']} · ждут страницы {t['to_fetch']} · отправлено {t['sent']} "

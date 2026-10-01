@@ -310,6 +310,19 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
         except Exception as e:  # noqa: BLE001
             log.exception("Допуск компаний из каталога упал")
             report.errors.append(f"каталог: {e}")
+    # 4b′. panel builders the web search found (v9.41): the same daily gate, their own budget
+    if repo.DISCOVERY_PASS in settings.company_channels_set:
+        try:
+            with conn:
+                rows = repo.admit_company_leads(conn, settings.discovery_leads_per_day, search_pass=repo.DISCOVERY_PASS)
+                admitted = sum(1 for r in rows
+                               if dedup.skip_if_covered(conn, settings, repo.vacancy_by_id(conn, r["id"])) is None)
+            if rows:
+                log.info("Поиск щитовиков: допущено в оценку %d компаний (%d уже достигнуты другим путём)", admitted,
+                         len(rows) - admitted)
+        except Exception as e:  # noqa: BLE001
+            log.exception("Допуск найденных поиском компаний упал")
+            report.errors.append(f"поиск щитовиков: {e}")
 
     # 4c. plant companies leave the pool for the page queue a few per day (v9.15, decision #55) — DB only.
     # After details on purpose: today's admissions wait for the next sitting's pages, behind the fresh vacancies.
