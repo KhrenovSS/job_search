@@ -192,7 +192,7 @@ class Settings(BaseSettings):
     discovery_leads_per_day: int = 10         # rows let into evaluation per day (`repo.admit_company_leads`)
     discovery_hour: int = 5                   # after the procurement job (05:20, ~25 min), before the 08–11 window
     discovery_minute: int = 50
-    discovery_max_turns: int = 14             # CLI turns: searches + page reads + the answer
+    discovery_max_turns: int = 12             # CLI turns: searches + page reads + the answer; the bridge caps it at 12 (422 above)
     discovery_timeout_s: float = 930.0        # must exceed the bridge's BRIDGE_WEB_TIMEOUT (900)
     discovery_model: str = ""                 # empty -> the bridge's own model
     owen_integrators_url: str = "https://owen.ru/upl_files/modules/system_integrators/client/integrators.php"
