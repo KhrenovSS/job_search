@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from hh_scout.config import BLOCKED_REGIONS, TITLE_KEEP_WORDS, TITLE_REQUIRED_ANY, TITLE_STOP_WORDS, Settings
 from hh_scout.db import transaction
 from hh_scout.hh.areas import blocked_region
-from hh_scout.pipeline import defense, repo
+from hh_scout.pipeline import defense, home_region, repo
 from hh_scout.pipeline.rows import lead_kind
 
 log = logging.getLogger(__name__)
@@ -35,6 +35,7 @@ class CardFacts:
     company: bool = False   # a company-channel card (v9.13): the title names the company's trade, not a programmer
     region: str | None = None  # the blocked region the card lies in (`hh.areas.blocked_region`), decision #65
     employer: str | None = None  # the company name — the defence-industry rule reads it (`pipeline.defense`), decision #72
+    outside: str | None = None   # the place outside the home regions the card lies in (`pipeline.home_region`), decision #77
 
 
 # Stop words match only at the start of a word: "водитель" must not hit "руководитель".
@@ -49,6 +50,8 @@ def decide(card: CardFacts) -> str | None:
         return "archived"
     if card.region:
         return repo.REGION_PREFIX + card.region   # the owner does not work there — whatever the title says
+    if card.outside:
+        return home_region.PREFIX + card.outside  # home regions only while the owner is away (decision #77)
     hit = defense.match(card.employer)
     if hit:
         return defense.name_reason(hit)   # a defence enterprise gets no letter, whatever the title says (decision #72)
@@ -67,10 +70,11 @@ def decide(card: CardFacts) -> str | None:
     return None
 
 
-def _facts(row: sqlite3.Row) -> CardFacts:
+def _facts(row: sqlite3.Row, home: home_region.Home | None = None) -> CardFacts:
     return CardFacts(hh_id=row["hh_id"], title=row["title"] or "", applied=bool(row["applied"]),
                      archived=(row["skip_reason"] == "archived"), company=(lead_kind(row) == "company"),
-                     region=blocked_region(row["area_path"]), employer=row["employer"])
+                     region=blocked_region(row["area_path"]), employer=row["employer"],
+                     outside=home.hh_place(row["area_path"], row["area_name"]) if home else None)
 
 
 def run(conn: sqlite3.Connection, settings: Settings, *, dry_run: bool = False) -> Counter:
@@ -79,9 +83,10 @@ def run(conn: sqlite3.Connection, settings: Settings, *, dry_run: bool = False) 
     # hh.ru only: catalogue companies (site='owen') wait in `new` for their daily admission and have no vacancy
     # page to open — letting them through here sent DetailsFetcher to hh.ru/vacancy/owen:<id> (v9.14).
     rows = repo.list_vacancies(conn, "new", site="hh")
+    home = home_region.Home.load(conn, settings)
     with transaction(conn):  # one commit for the whole batch, not one disk sync per card
         for row in rows:
-            reason = decide(_facts(row))
+            reason = decide(_facts(row, home))
             key = reason or "passed"
             outcomes[key.split(":")[0]] += 1
             if dry_run:
@@ -101,6 +106,11 @@ def run(conn: sqlite3.Connection, settings: Settings, *, dry_run: bool = False) 
             swept = repo.skip_defense_employers(conn)
             if swept:
                 log.info("Оборонка: снято с очереди %s", ", ".join(f"{k} — {v}" for k, v in swept.items()))
+            # Home regions (decision #77): every source and stage, by hh.ru region id or by the words of the region.
+            if home.active:
+                gone = repo.skip_outside_home(conn, home.ids, home.stems)
+                if gone:
+                    log.info("Вне домашних регионов: снято с очереди %s", ", ".join(f"{k} — {v}" for k, v in gone.items()))
     log.info("Префильтр: %d карточек → %s", len(rows), dict(outcomes))
     return outcomes
 

@@ -423,6 +423,67 @@ def skip_blocked_regions(conn: sqlite3.Connection, blocked: dict[int, str]) -> d
     return out
 
 
+# --- home regions (decision #77) ------------------------------------------------------------
+
+HOME_PREFIX = "outside_home:"
+_HOME_TEXT_SITES = ("trudvsem", "owen", "zakupki", "web")
+
+
+def skip_outside_home(conn: sqlite3.Connection, home_ids: list[int], home_stems: tuple[str, ...]) -> dict[str, int]:
+    """Withdraw rows outside the home regions from every stage on the way to a letter (and the plant pool).
+
+    hh.ru rows by region id in `area_path` (a row without a path is left alone — the rule never guesses); the other
+    sources by the words of the region in `area_name` and in `raw_json` (`region`, `city`, `address`), in Python:
+    SQLite's lower() does not fold Cyrillic. A `rejected` row without a reason only gets the reason, so the daily floor
+    leaves it alone; `sent` rows are history. Returns {site: rows withdrawn}.
+    """
+    from hh_scout.pipeline.home_region import outside_name   # local: home_region imports Settings, repo must not
+    now = utcnow()
+    out: dict[str, int] = {}
+    placeholders = ",".join("?" * len(_REGION_LIVE_STATUSES))
+    if home_ids:
+        not_home = " AND ".join("area_path NOT LIKE ?" for _ in home_ids)
+        likes = [f"%.{i}.%" for i in home_ids]
+        reason = f"'{HOME_PREFIX}' || substr(COALESCE(NULLIF(area_name, ''), area_path), 1, 60)"
+        cur = conn.execute(
+            f"""UPDATE vacancies SET status = 'skipped', skip_reason = {reason}, updated_at = ?
+                WHERE site = 'hh' AND area_path IS NOT NULL AND area_path != '' AND {not_home}
+                  AND (status IN ({placeholders}) OR (status = 'skipped' AND skip_reason = ?))""",
+            (now, *likes, *_REGION_LIVE_STATUSES, PLANT_POOL))
+        n = cur.rowcount
+        cur = conn.execute(
+            f"""UPDATE vacancies SET skip_reason = {reason}, updated_at = ?
+                WHERE site = 'hh' AND area_path IS NOT NULL AND area_path != '' AND {not_home}
+                  AND status = 'rejected' AND skip_reason IS NULL""", (now, *likes))
+        n += cur.rowcount
+        if n:
+            out["hh"] = n
+    if home_stems:
+        rows = conn.execute(
+            f"""SELECT id, site, status, area_name, raw_json FROM vacancies
+                WHERE site IN ({",".join("?" * len(_HOME_TEXT_SITES))})
+                  AND (status IN ({placeholders}) OR (status = 'rejected' AND skip_reason IS NULL))""",
+            (*_HOME_TEXT_SITES, *_REGION_LIVE_STATUSES)).fetchall()
+        for r in rows:
+            raw = {}
+            if r["raw_json"]:
+                try:
+                    raw = json.loads(r["raw_json"]) or {}
+                except ValueError:
+                    raw = {}
+            parts = [r["area_name"]] + [raw.get(k) for k in ("region", "city", "address")]
+            place = outside_name(" ".join(str(p) for p in parts if p), home_stems)
+            if not place:
+                continue
+            if r["status"] == "rejected":
+                conn.execute("UPDATE vacancies SET skip_reason = ?, updated_at = ? WHERE id = ?", (HOME_PREFIX + place, now, r["id"]))
+            else:
+                conn.execute("UPDATE vacancies SET status = 'skipped', skip_reason = ?, updated_at = ? WHERE id = ?",
+                             (HOME_PREFIX + place, now, r["id"]))
+            out[r["site"]] = out.get(r["site"], 0) + 1
+    return out
+
+
 # --- defence industry (decision #72) --------------------------------------------------------
 
 def skip_defense_employers(conn: sqlite3.Connection) -> dict[str, int]:
@@ -551,9 +612,11 @@ def requeue_skipped(conn: sqlite3.Connection, skip_reason: str, since_days: int)
     on it would be a page load wasted.
     """
     op = "LIKE" if "%" in skip_reason else "="   # `--requeue-reason 'defense%'` undoes a whole family (decision #72)
+    # hh.ru cards go back to the triage; the other sources have no triage — their rows wait as `new` for the next
+    # sync / daily admission (`--requeue-reason 'outside_home%'` after the trip, decision #77).
     cur = conn.execute(
-        "UPDATE vacancies SET status = 'triage', skip_reason = NULL, updated_at = ? "
-        f"WHERE status = 'skipped' AND skip_reason {op} ? AND first_seen_at >= ?",
+        "UPDATE vacancies SET status = CASE WHEN site = 'hh' THEN 'triage' ELSE 'new' END, skip_reason = NULL, "
+        f"updated_at = ? WHERE status = 'skipped' AND skip_reason {op} ? AND first_seen_at >= ?",
         (utcnow(), skip_reason, _ago(since_days)))
     return cur.rowcount
 

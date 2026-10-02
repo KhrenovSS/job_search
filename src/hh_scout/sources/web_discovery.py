@@ -34,7 +34,7 @@ from hh_scout.db import kv_get, kv_set, transaction, utcnow
 from hh_scout.llm.bridge_client import BridgeClient, BridgeError, BridgeUnavailable, extract_json
 from hh_scout.llm.prompts import load_prompt_body
 from hh_scout.llm.schemas import DiscoveredCompany, DiscoveryAnswer
-from hh_scout.pipeline import defense, repo
+from hh_scout.pipeline import defense, home_region, repo
 from hh_scout.pipeline.contacts import domain_of, normalize_email
 
 log = logging.getLogger(__name__)
@@ -98,24 +98,28 @@ class JobResult:
     new: int = 0
     known: int = 0
     defense: int = 0
+    outside: int = 0   # stored skipped: outside the home regions (decision #77)
     calls: int = 0
     cost_usd: float = 0.0
     labels: list[str] = field(default_factory=list)
 
     def as_text(self) -> str:
         return (f"задач {self.tasks} (не удалось {self.failed}), найдено {self.found}, новых {self.new}, уже известны {self.known}, "
-                f"оборонка {self.defense}, вызовов моста {self.calls}, cost ${self.cost_usd:.2f}")
+                f"оборонка {self.defense}, вне региона {self.outside}, вызовов моста {self.calls}, cost ${self.cost_usd:.2f}")
 
 
-def regions() -> tuple[str, ...]:
+def regions(settings: Settings | None = None) -> tuple[str, ...]:
+    """Every region of the perimeter — or only the home regions while the owner is away (decision #77)."""
+    if settings is not None and settings.home_region_names:
+        return settings.home_region_names
     return tuple(dict.fromkeys(REGION_NAMES + DISCOVERY_EXTRA_REGIONS))
 
 
-def tasks() -> list[Task]:
+def tasks(settings: Settings | None = None) -> list[Task]:
     """Vendors first, then every region with the first query, then the next query, and so on."""
     out = [Task("vendor", v) for v in DISCOVERY_VENDORS]
     for q in DISCOVERY_REGION_QUERIES:
-        out += [Task("region", r, q) for r in regions()]
+        out += [Task("region", r, q) for r in regions(settings)]
     return out
 
 
@@ -164,8 +168,11 @@ def discover(task: Task, settings: Settings, bridge: BridgeClient) -> DiscoveryA
     raise DiscoveryFailed(f"ответ не разобрался дважды: {last}")
 
 
-def store(conn: sqlite3.Connection, answer: DiscoveryAnswer, task: Task, res: JobResult) -> None:
-    """Insert what is new; a domain already known through any source is the same company, not a lead."""
+def store(conn: sqlite3.Connection, answer: DiscoveryAnswer, task: Task, res: JobResult,
+          settings: Settings | None = None) -> None:
+    """Insert what is new; a domain already known through any source is the same company, not a lead.
+    A company the model placed outside the home regions (decision #77) is stored skipped, so it is not found twice."""
+    home_stems = home_region.stems_of(settings) if settings is not None else ()
     with transaction(conn):
         for c in answer.companies:
             card = to_card(c, task)
@@ -179,6 +186,10 @@ def store(conn: sqlite3.Connection, answer: DiscoveryAnswer, task: Task, res: Jo
                 res.new += 1
                 if defense.match(card.name):
                     res.defense += 1
+                place = home_region.outside_name(" ".join(p for p in (card.city, card.region) if p), home_stems)
+                if place:
+                    repo.set_status(conn, card.ext_id, "skipped", home_region.PREFIX + place)
+                    res.outside += 1
 
 
 def run_job(conn: sqlite3.Connection, settings: Settings, *, tasks_n: int | None = None, only: list[Task] | None = None,
@@ -190,7 +201,7 @@ def run_job(conn: sqlite3.Connection, settings: Settings, *, tasks_n: int | None
     if only is not None:
         todo = list(only)
     else:
-        allt = tasks()
+        allt = tasks(settings)
         cursor = int(kv_get(conn, KV_CURSOR) or 0) % len(allt)
         n = settings.discovery_tasks_per_day if tasks_n is None else tasks_n
         todo = [allt[(cursor + i) % len(allt)] for i in range(max(0, n))]
@@ -204,7 +215,7 @@ def run_job(conn: sqlite3.Connection, settings: Settings, *, tasks_n: int | None
             log.warning("Поиск щитовиков (%s): %s", task.label, e)
         else:
             before = (res.found, res.new)
-            store(conn, answer, task, res)
+            store(conn, answer, task, res, settings)
             log.info("Поиск щитовиков (%s): найдено %d, новых %d%s", task.label, res.found - before[0], res.new - before[1],
                      f"; заметка: {answer.note[:160]}" if answer.note else "")
         if only is None:
@@ -239,7 +250,7 @@ def main() -> int:
         only = [Task("vendor", args.vendor)]
     if args.dry_run:
         bridge = BridgeClient(settings, retries=0)
-        for task in (only or tasks()[int(kv_get(conn, KV_CURSOR) or 0):][: (args.tasks or 1)]):
+        for task in (only or tasks(settings)[int(kv_get(conn, KV_CURSOR) or 0):][: (args.tasks or 1)]):
             try:
                 answer = discover(task, settings, bridge)
             except DiscoveryFailed as e:

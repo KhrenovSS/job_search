@@ -218,6 +218,15 @@ class Settings(BaseSettings):
     weight_role: float = 0.25   # they need a programmer (not designer / maintenance / sales)
     weight_lead: float = 0.20   # direct employer, contract-friendly signals
 
+    # Home regions (v9.43, decision #77): while the owner is away he takes fewer leads of a higher grade — only from
+    # Moscow, the Moscow region and its neighbours. hh.ru region names, comma-separated (resolved through the cached
+    # /areas dictionary like REGION_NAMES); empty — the whole country. The search asks hh.ru for these areas only,
+    # the rules skip every row from elsewhere (`skipped/outside_home:<место>`, `pipeline/home_region.py`), and what was
+    # collected before is withdrawn. HOME_EXTRA_PLACES — words of towns that do not name their region («Люберцы»)
+    # but count as home when a source gives only a city (ОВЕН catalogue, procurement addresses, «Работа России»).
+    home_regions: str = ""
+    home_extra_places: str = ""
+
     # The owner is away (v9.42, decision #76): from away_lead_days before away_from through away_until every letter
     # ends with a postscript — where he is, the time difference with Moscow, the phone is probably unreachable, write
     # to e-mail. The code appends it at the Telegram door (`ranker.away_note` / `format_letter`), not the model: a
@@ -229,6 +238,14 @@ class Settings(BaseSettings):
     away_where: str = "в командировке"     # prepositional phrase: «в командировке в Китае»
     away_tz_shift_h: int = 0                # hours ahead of Moscow (negative — behind); 0 — the clause is omitted
     away_lead_days: int = 3
+
+    @property
+    def home_region_names(self) -> tuple[str, ...]:
+        return tuple(x.strip() for x in self.home_regions.split(",") if x.strip())
+
+    @property
+    def home_extra_place_words(self) -> tuple[str, ...]:
+        return tuple(x.strip() for x in self.home_extra_places.split(",") if x.strip())
 
     @field_validator("tg_owner_chat_id", "away_from", "away_until", mode="before")
     @classmethod
@@ -492,6 +509,21 @@ REGION_NAMES: tuple[str, ...] = (
     "Ростовская область", "Краснодарский край", "Республика Адыгея", "Волгоградская область",
     "Астраханская область", "Республика Калмыкия", "Ставропольский край",
 )
+# The home perimeter the owner chose for his October 2026 trip (decision #77): Moscow, the Moscow region and the
+# regions bordering it. The value of HOME_REGIONS in his .env; kept here so the names are checked against the hh.ru
+# dictionary by the tests. Towns of the Moscow region that a source may name without the region go to HOME_EXTRA_PLACES.
+HOME_REGIONS_CENTRAL: tuple[str, ...] = (
+    "Москва", "Московская область", "Тверская область", "Ярославская область", "Владимирская область",
+    "Рязанская область", "Тульская область", "Калужская область", "Смоленская область",
+)
+HOME_EXTRA_PLACES_MOSCOW: tuple[str, ...] = (
+    "Подольск", "Химки", "Мытищи", "Балашиха", "Королёв", "Королев", "Люберцы", "Одинцово", "Красногорск", "Домодедово",
+    "Щёлково", "Щелково", "Электросталь", "Серпухов", "Коломна", "Пушкино", "Жуковский", "Раменское", "Долгопрудный",
+    "Реутов", "Сергиев Посад", "Орехово-Зуево", "Ногинск", "Фрязино", "Дубна", "Чехов", "Ивантеевка", "Клин",
+    "Дмитров", "Ступино", "Павловский Посад", "Наро-Фоминск", "Видное", "Лобня", "Егорьевск", "Солнечногорск",
+    "Истра", "Зеленоград", "Троицк", "Щербинка", "Лыткарино", "Воскресенск", "Кашира", "Можайск", "Волоколамск",
+)
+
 # Control values for cache validation (documented ids on hh.ru).
 KNOWN_AREA_IDS: dict[str, int] = {"Москва": 1, "Московская область": 2019}
 

@@ -38,7 +38,7 @@ import httpx
 
 from hh_scout.config import BLOCKED_REGIONS, TRUDVSEM_COMPANY_QUERIES, TRUDVSEM_QUERIES, Settings
 from hh_scout.db import kv_get, kv_set, transaction, utcnow
-from hh_scout.pipeline import dedup, prefilter, repo
+from hh_scout.pipeline import dedup, home_region, prefilter, repo
 from hh_scout.pipeline.contacts import normalize_email
 
 log = logging.getLogger(__name__)
@@ -267,7 +267,8 @@ def store_vacancy(conn: sqlite3.Connection, settings: Settings, v: TvVacancy, qu
         return None
     facts = prefilter.CardFacts(hh_id=v.ext_id, title=v.title, applied=False, archived=False,
                                 region=blocked_region_name(v.region), employer=v.employer,
-                                company=(lead_kind == "company"))
+                                company=(lead_kind == "company"),
+                                outside=home_region.outside_name(v.area_name, home_region.stems_of(settings)))
     reason = prefilter.decide(facts)
     if reason is None and not v.emails:
         reason = "no_email"   # nothing to answer on hh.ru and nowhere to write — no lead (decision #56)

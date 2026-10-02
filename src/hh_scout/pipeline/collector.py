@@ -142,7 +142,10 @@ class Collector:
     # -- public ------------------------------------------------------------------
 
     def run(self, run_id: int | None = None) -> CollectStats:
-        region_ids = [RUSSIA_ID] if self.s.search_all_russia else resolve_region_ids(self.conn, self.s)
+        if self.s.home_region_names:   # home regions only while the owner is away (decision #77)
+            region_ids = resolve_region_ids(self.conn, self.s, self.s.home_region_names)
+        else:
+            region_ids = [RUSSIA_ID] if self.s.search_all_russia else resolve_region_ids(self.conn, self.s)
         tasks = plan_tasks(region_ids, rng=self.rng, company_channels=self.s.company_channels_set, only_pass=self.only_pass,
                            passes=self.s.search_passes_set)
         log.info("План сбора: %d задач, бюджет %d загрузок, регионы %s", len(tasks), self.page_budget, region_ids)

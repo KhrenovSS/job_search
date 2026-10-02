@@ -38,7 +38,7 @@ import httpx
 
 from hh_scout.config import PROJECT_ROOT, ZAKUPKI_QUERIES, Settings
 from hh_scout.db import kv_set, transaction, utcnow
-from hh_scout.pipeline import dedup, defense, repo
+from hh_scout.pipeline import dedup, defense, home_region, repo
 from hh_scout.pipeline.contacts import normalize_email
 
 log = logging.getLogger(__name__)
@@ -332,6 +332,14 @@ def resolve_row(conn: sqlite3.Connection, settings: Settings, fetcher: Fetcher, 
                           + (f" на {supplier.price} ₽" if supplier.price else "")
                           + (f", срок исполнения до {supplier.deadline}" if supplier.deadline else "")
                           + (f": {supplier.subject}" if supplier.subject else "") + ".</p>")
+    place = home_region.outside_name(supplier.address, home_region.stems_of(settings))
+    if place:   # the winner sits outside the home regions (decision #77); the card is kept for the record
+        conn.execute("UPDATE vacancies SET employer = ?, employer_id = ?, area_name = ?, raw_json = ?, status = 'skipped', "
+                     "skip_reason = ?, updated_at = ? WHERE id = ?",
+                     (employer, employer_id, _city(supplier.address), json.dumps(raw, ensure_ascii=False),
+                      home_region.PREFIX + place, utcnow(), row["id"]))
+        log.info("Победитель закупки %s — вне домашних регионов (%s), не лид", employer, place[:40])
+        return "skipped"
     conn.execute("UPDATE vacancies SET employer = ?, employer_id = ?, area_name = ?, raw_json = ?, status = 'prefiltered', "
                  "skip_reason = NULL, updated_at = ? WHERE id = ?",
                  (employer, employer_id, _city(supplier.address), json.dumps(raw, ensure_ascii=False), utcnow(), row["id"]))

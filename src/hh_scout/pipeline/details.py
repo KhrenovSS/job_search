@@ -30,7 +30,7 @@ from hh_scout.browser.hh_pages import PageFormatError, looks_like_vacancy_page, 
 from hh_scout.browser.session import BrowserSession, BrowserUnavailable, HHBlocked, PageIncomplete, WindowRegistry
 from hh_scout.config import Settings
 from hh_scout.hh.areas import blocked_region
-from hh_scout.pipeline import dedup, repo
+from hh_scout.pipeline import dedup, home_region, repo
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +62,7 @@ class DetailsFetcher:
         self._session_factory = session_factory or (
             lambda budget: BrowserSession(settings, page_budget=budget, rng=self.rng, registry=registry))
         self._should_stop = should_stop or (lambda: False)
+        self._home: home_region.Home | None = None   # home regions (decision #77), loaded on the first page
         self.page_loads_before = page_loads_before   # the run's earlier stages; `runs.page_loads` is a total
         self.stats = DetailsStats()
         self._done: set[str] = set()
@@ -146,6 +147,13 @@ class DetailsFetcher:
             if region:   # the card had no `area.path`, the page has — decision #65 holds before any evaluation
                 status = "skipped"
                 repo.set_status(self.conn, hh_id, status, repo.REGION_PREFIX + region)
+            elif status == "prefiltered":
+                if self._home is None:
+                    self._home = home_region.Home.load(self.conn, self.s)
+                place = self._home.hh_place(detail.area_path, detail.area_name)
+                if place:   # same for the home regions (decision #77)
+                    status = "skipped"
+                    repo.set_status(self.conn, hh_id, status, home_region.PREFIX + place)
         self.stats.outcomes[status] += 1
         log.info("Вакансия %s «%s» → %s (описание %d симв., навыков %d)", hh_id, detail.title[:50], status,
                  len(detail.description_text), len(detail.key_skills))
