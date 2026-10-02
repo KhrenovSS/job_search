@@ -7,7 +7,7 @@ constants: it changes rarely and is easier to review in code than in env vars.
 
 from __future__ import annotations
 
-from datetime import time
+from datetime import date, time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -218,7 +218,19 @@ class Settings(BaseSettings):
     weight_role: float = 0.25   # they need a programmer (not designer / maintenance / sales)
     weight_lead: float = 0.20   # direct employer, contract-friendly signals
 
-    @field_validator("tg_owner_chat_id", mode="before")
+    # The owner is away (v9.42, decision #76): from away_lead_days before away_from through away_until every letter
+    # ends with a postscript — where he is, the time difference with Moscow, the phone is probably unreachable, write
+    # to e-mail. The code appends it at the Telegram door (`ranker.away_note` / `format_letter`), not the model: a
+    # letter written before the trip and sent from the queue gets it too, and the four-line signature check still
+    # sees its lines. Empty dates — no postscript. Starts before the departure because an answer to a letter sent
+    # the day before lands during the trip.
+    away_from: date | None = None
+    away_until: date | None = None
+    away_where: str = "в командировке"     # prepositional phrase: «в командировке в Китае»
+    away_tz_shift_h: int = 0                # hours ahead of Moscow (negative — behind); 0 — the clause is omitted
+    away_lead_days: int = 3
+
+    @field_validator("tg_owner_chat_id", "away_from", "away_until", mode="before")
     @classmethod
     def _empty_to_none(cls, v: object) -> object:
         return None if v in ("", None) else v

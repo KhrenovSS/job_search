@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from hh_scout.config import TZ, Settings
 from hh_scout.hh.salary import human_from_raw
@@ -215,20 +215,64 @@ def format_outcome_dimensions(blocks: list[tuple[str, list[dict]]], curve: list[
     return "\n".join(lines)
 
 
-def format_letter(employer: str | None, text: str, key: str = "hh", *, by_email: bool = False) -> str:
+def format_letter(employer: str | None, text: str, key: str = "hh", *, by_email: bool = False,
+                  postscript: str = "") -> str:
     """Cover letter (or a profi.ru bid) as a separate Telegram message; <pre> gives one-tap copy in Telegram clients.
 
     The last door before Telegram: a letter written days ago is sent from the database verbatim, so the
     role-address label is cut here too (decision #50). `by_email` — the letter goes to the company's address, not
     as an hh.ru response (a «Работа России» vacancy, v9.25): the owner pastes the header into the mail subject,
-    so it reads «Предложение партнёрства для …» like a company offer, whatever prompt wrote the text.
+    so it reads «Предложение партнёрства для …» like a company offer, whatever prompt wrote the text. `postscript`
+    (`away_note`, v9.42) goes after the signature: the owner is away and the phone will not answer.
     """
     text = strip_role_address(text)
+    if postscript:
+        text = text.rstrip() + "\n\n" + postscript.strip()
     if key == "profi":
         return f"✉️ Предложение для «{_esc(employer or 'заказчика')}» (profi.ru):\n<pre>{_esc(text)}</pre>"
     if key == "company" or by_email:
         return f"🤝 Предложение партнёрства для «{_esc(employer or 'компании')}»:\n<pre>{_esc(text)}</pre>"
     return f"✉️ Отклик для «{_esc(employer or 'компании')}»:\n<pre>{_esc(text)}</pre>"
+
+
+MONTHS_GEN_RU = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября",
+                 "ноября", "декабря")
+
+
+def _ru_span(start: date, end: date) -> str:
+    if start.month == end.month and start.year == end.year:
+        return f"с {start.day} по {end.day} {MONTHS_GEN_RU[end.month - 1]}"
+    return f"с {start.day} {MONTHS_GEN_RU[start.month - 1]} по {end.day} {MONTHS_GEN_RU[end.month - 1]}"
+
+
+def _ru_hours(n: int) -> str:
+    n = abs(n)
+    if n % 10 == 1 and n % 100 != 11:
+        return f"{n} час"
+    if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+        return f"{n} часа"
+    return f"{n} часов"
+
+
+def away_note(settings: Settings, today: date | None = None) -> str:
+    """The postscript every letter ends with while the owner is away (v9.42, decision #76), or "" outside the dates.
+
+    Owner, 02.10: 3–28 October in China, the phone is unavailable — say so at the end of the response: the dates,
+    +5 hours to Moscow, phone probably unreachable, write to e-mail, he will try to answer. The dates live in `.env`
+    (`AWAY_FROM`, `AWAY_UNTIL`, `AWAY_WHERE`, `AWAY_TZ_SHIFT_H`), so the note disappears by itself after the trip.
+    It starts `away_lead_days` before the departure: an answer to yesterday's letter lands during the trip.
+    """
+    start, end = settings.away_from, settings.away_until
+    if start is None or end is None or end < start:
+        return ""
+    today = today or datetime.now(TZ).date()
+    if today < start - timedelta(days=settings.away_lead_days) or today > end:
+        return ""
+    tz = ""
+    if settings.away_tz_shift_h:
+        tz = f", разница с Москвой {'+' if settings.away_tz_shift_h > 0 else '−'}{_ru_hours(settings.away_tz_shift_h)}"
+    return (f"{_ru_span(start, end).capitalize()} я {settings.away_where.strip()}{tz}. Телефон, вероятно, будет "
+            "недоступен — пишите, пожалуйста, на почту, постараюсь ответить.")
 
 
 def hh_contract_note(row: sqlite3.Row) -> str | None:

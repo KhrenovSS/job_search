@@ -24,7 +24,7 @@ from hh_scout.sources import trudvsem
 from hh_scout.llm.cover_letter import CoverLetterWriter
 from hh_scout.pipeline import outcomes, repo
 from hh_scout.pipeline.digest_builder import record_manual_letter
-from hh_scout.pipeline.ranker import format_card, format_inbox, format_letter, format_outcome_dimensions
+from hh_scout.pipeline.ranker import away_note, format_card, format_inbox, format_letter, format_outcome_dimensions
 from hh_scout.pipeline.rows import letter_key, needs_email, row_site
 
 log = logging.getLogger(__name__)
@@ -288,7 +288,8 @@ async def letter_cmd(m: Message, command: CommandObject, settings: Settings, con
         return
     row = repo.lead_by_hh_id(conn, hh_id)
     card = await m.answer(format_card(1, row, row), reply_markup=vote_kb(row["id"]))
-    letter = await m.answer(format_letter(row["employer"], text, letter_key(row), by_email=needs_email(row)))
+    letter = await m.answer(format_letter(row["employer"], text, letter_key(row), by_email=needs_email(row),
+                                           postscript=away_note(settings)))
     # a queue lead the owner just received is a sent lead from here on: closable, counted, never re-sent
     record_manual_letter(conn, settings, row, getattr(card, "message_id", None), getattr(letter, "message_id", None))
 

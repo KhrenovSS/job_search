@@ -30,7 +30,7 @@ from hh_scout.pipeline import outcomes, repo
 from hh_scout.pipeline.digest_builder import (close_digest, daily_quota_left, open_digest, plan_digest, skip_defense,
                                               skip_unreachable,
                                               promote_floor, record_sent_lead)
-from hh_scout.pipeline.ranker import digest_header, format_card, format_letter, format_queue_tail
+from hh_scout.pipeline.ranker import away_note, digest_header, format_card, format_letter, format_queue_tail
 from hh_scout.pipeline.rows import letter_key, needs_email, row_site
 
 log = logging.getLogger(__name__)
@@ -116,7 +116,8 @@ async def _deliver(bot: Bot, conn: sqlite3.Connection, settings: Settings, chat_
             letter = rules.letter(row)
             if letter:
                 await asyncio.sleep(pause)
-                letter_msg = await send_message(bot, chat_id, format_letter(row["employer"], letter, letter_key(row), by_email=needs_email(row)),
+                letter_msg = await send_message(bot, chat_id, format_letter(row["employer"], letter, letter_key(row), by_email=needs_email(row),
+                                                                            postscript=away_note(settings)),
                                                 settings=settings)
                 letter_id = letter_msg.message_id
             record_sent_lead(conn, digest_id, i, row, msg.message_id, letter_id)

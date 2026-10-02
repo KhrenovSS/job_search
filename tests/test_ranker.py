@@ -140,3 +140,44 @@ def test_company_card_takes_the_email_from_the_dossier_when_the_catalogue_has_no
              company_brief=None)
     card = format_card(1, v, e)
     assert "Писать на" not in card and "📞 https://setr.ru/" in card
+
+
+def test_away_note_is_added_after_the_signature_only_between_the_dates():
+    """v9.42 (decision #76): 3–28 October the owner is in China without a phone — every letter says so at the end.
+
+    The code appends it at the Telegram door, so a letter written before the trip and sent from the queue gets it
+    too; outside the dates (and with no dates in .env) the letter is untouched.
+    """
+    from datetime import date
+
+    from hh_scout.pipeline.ranker import away_note, format_letter
+
+    s = Settings(_env_file=None, away_from=date(2026, 10, 3), away_until=date(2026, 10, 28),
+                 away_where="в командировке в Китае", away_tz_shift_h=5)
+    note = away_note(s, date(2026, 10, 10))
+    assert note == ("С 3 по 28 октября я в командировке в Китае, разница с Москвой +5 часов. Телефон, вероятно, будет "
+                    "недоступен — пишите, пожалуйста, на почту, постараюсь ответить.")
+    assert away_note(s, date(2026, 10, 2)) == note          # lead days: the answer would land during the trip
+    assert away_note(s, date(2026, 9, 29)) == ""
+    assert away_note(s, date(2026, 10, 29)) == ""
+    assert away_note(Settings(_env_file=None), date(2026, 10, 10)) == ""   # no dates — no note
+    # empty strings in .env mean "not set", not a parse error
+    assert Settings(_env_file=None, away_from="", away_until="").away_from is None
+
+    letter = "Текст письма.\n\nСергей Хренов\nработаю по договору (ИП)\n+7 900 000-00-00\nmail@example.com\n"
+    out = format_letter("Завод", letter, postscript=note)
+    assert out.endswith(f"mail@example.com\n\n{note}</pre>")
+    assert format_letter("Завод", letter).endswith("mail@example.com\n</pre>")   # no postscript — untouched
+
+
+def test_away_note_spans_months_and_declines_hours():
+    from datetime import date
+
+    from hh_scout.pipeline.ranker import away_note
+
+    s = Settings(_env_file=None, away_from=date(2026, 9, 28), away_until=date(2026, 10, 2), away_tz_shift_h=-3)
+    assert away_note(s, date(2026, 9, 30)).startswith("С 28 сентября по 2 октября я в командировке, разница с Москвой −3 часа.")
+    s = Settings(_env_file=None, away_from=date(2026, 11, 1), away_until=date(2026, 11, 3), away_tz_shift_h=1)
+    assert ", разница с Москвой +1 час." in away_note(s, date(2026, 11, 1))
+    s = Settings(_env_file=None, away_from=date(2026, 11, 1), away_until=date(2026, 11, 3))
+    assert away_note(s, date(2026, 11, 1)).startswith("С 1 по 3 ноября я в командировке. Телефон")
