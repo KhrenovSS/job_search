@@ -32,6 +32,12 @@ IN_QUEUE="v.status='evaluated' and (e.total >= $THRESHOLD or e.floor = 1)"
 echo "=== Сейчас: $(date '+%d.%m %H:%M') ==="
 echo "код: $(git log -1 --format='%h %ad %s' --date=format:'%d.%m %H:%M' 2>/dev/null | cut -c1-110)"
 echo "порог: $THRESHOLD · незакоммичено: $(git status --porcelain 2>/dev/null | wc -l) файл(ов)"
+# Режим на время отъезда (v9.42/v9.43, решения №76/№77): видно сразу, что отбор сужен и до какого числа приписка в письмах.
+HOME_RE="$(grep -E '^HOME_REGIONS=' .env 2>/dev/null | tail -1 | cut -d= -f2-)"
+AWAY_TO="$(grep -E '^AWAY_UNTIL=' .env 2>/dev/null | tail -1 | cut -d= -f2)"
+FLOOR="$(grep -E '^DAILY_LETTERS_FLOOR=' .env 2>/dev/null | tail -1 | cut -d= -f2)"
+[ -n "$HOME_RE" ] && echo "⚠️ домашние регионы (решение №77, откат — ROADMAP «По возвращении»): $(echo "$HOME_RE" | tr ',' '\n' | wc -l) шт., дневной минимум ${FLOOR:-5}"
+[ -n "$AWAY_TO" ] && echo "✈️ приписка об отъезде в письмах до $AWAY_TO (решение №76)"
 bash scripts/svc.sh status 2>/dev/null | grep -v '^● '
 # Пока подход идёт, ключа next_crawl_at в kv нет (scheduler пишет его после прогона) — показываем сам подход.
 q "select coalesce((select 'идёт #' || id || ' с ' || strftime('%H:%M', started_at, '+3 hours') from runs
