@@ -283,3 +283,25 @@ def test_an_incomplete_page_closes_its_query_and_the_collection_goes_on(monkeypa
     assert "cut" in loads and stats.incomplete_pages == 1
     assert stats.stopped_reason is None and stats.new_vacancies > 0
     assert len([u for u in loads if u != "cut"]) > loads.index("cut")     # pages were loaded after the cut one
+
+
+def test_deep_seed_walks_past_pages_with_nothing_new_up_to_max_pages(monkeypatch):
+    """v9.45: after the geography narrowed (decision #77) the unseen vacancies of a region sit behind a first page
+    that is already known; the 03.10 seed stopped at 13 pages for 8 new cards. --deep ignores the early stop."""
+    from hh_scout.browser import pacing
+    from hh_scout.pipeline import collector as mod
+
+    c, conn, loads = _make(monkeypatch)
+    c.run()                                         # everything the fake site has is known now
+    monkeypatch.setattr(pacing, "sleep", lambda s: None)
+    loads2 = []
+    s = Settings(_env_file=None, daily_page_loads_min=60, daily_page_loads_max=60, max_pages_per_query=4,
+                 search_all_russia=False, company_channels="", search_passes="regional")
+    deep = mod.Collector(s, conn, session_factory=lambda b: FakeSession(b, loads2), rng=random.Random(0), page_budget=60,
+                         deep=True, max_pages=3)
+    stats = deep.run()
+    regional = [u for u in loads2 if "area=" in u]
+    assert stats.new_vacancies == 0 and len(regional) == 3          # pages 0, 1, 2 — not stopped after page 0
+    assert deep.max_pages == 3
+    assert mod.Collector(s, conn, deep=True).max_pages == mod.DEEP_MAX_PAGES
+    assert mod.Collector(s, conn).max_pages == 4                    # the sittings keep MAX_PAGES_PER_QUERY

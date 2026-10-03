@@ -29,6 +29,7 @@ from hh_scout.pipeline import negotiations, repo
 
 log = logging.getLogger(__name__)
 
+DEEP_MAX_PAGES = 30          # --deep without --max-pages: 30 × 50 cards per query — a month of a region's vacancies
 PASS_REGIONAL = "regional"   # geography pass: the whole country by default, or REGION_NAMES (see Settings.search_all_russia)
 PASS_REMOTE = "remote"
 PASS_PROJECT = "project"
@@ -122,6 +123,8 @@ class Collector:
         page_loads_before: int = 0,
         only_pass: str | None = None,
         period_days: int | None = None,
+        deep: bool = False,
+        max_pages: int | None = None,
     ) -> None:
         self.s = settings
         self.conn = conn
@@ -130,6 +133,13 @@ class Collector:
         self.page_budget = page_budget
         self.only_pass = only_pass                 # seed run of one channel (CLI); None = the full plan
         self.period_days = period_days or settings.search_period_days
+        # Seed mode (v9.45, CLI --deep): walk every page of every query up to `max_pages`, ignoring the «a page with
+        # nothing new ends the task» rule. hh sorts by date, so after a geography or query change the unseen vacancies
+        # sit on pages 2–25 behind a first page that is already known — the 03.10 seed of the home regions stopped at
+        # 13 pages for 8 new cards exactly because of that rule. Never for the scheduled sittings: there the rule saves
+        # the page budget for vacancy pages.
+        self.deep = deep
+        self.max_pages = max_pages if max_pages is not None else (DEEP_MAX_PAGES if deep else settings.max_pages_per_query)
         self.policy = pacing.policy_from_settings(settings)
         registry = WindowRegistry(conn, reap=True)
         self._session_factory = session_factory or (
@@ -229,8 +239,10 @@ class Collector:
         task.next_page += 1
         if not page.has_next or not page.cards:
             task.done = True
-        elif task.next_page >= self.s.max_pages_per_query:
+        elif task.next_page >= self.max_pages:
             task.done = True
+        elif self.deep:
+            return   # a seed walks on: the known pages are the fresh ones, the unseen lie behind them
         elif new_here == 0 and task.next_page >= 1:
             # sorted by publication time desc: a page with nothing new means the rest is known too — including
             # page 0 (v9.19): at night hh posts almost nothing, and the second page of every task cost two night
@@ -265,6 +277,9 @@ def main() -> int:
     ap.add_argument("--pass", dest="only_pass", choices=sorted(COMPANY_PASSES | {PASS_REGIONAL, PASS_REMOTE, PASS_PROJECT, PASS_GPH}),
                     help="run only this pass — e.g. the one-off seed of a company channel")
     ap.add_argument("--period", type=int, help="search period in days for this run (default SEARCH_PERIOD_DAYS)")
+    ap.add_argument("--deep", action="store_true",
+                    help="seed mode: every page of every query up to --max-pages, even when a page brings nothing new")
+    ap.add_argument("--max-pages", type=int, help=f"pages per query (default MAX_PAGES_PER_QUERY; with --deep {DEEP_MAX_PAGES})")
     args = ap.parse_args()
 
     settings = load_settings()
@@ -284,7 +299,7 @@ def main() -> int:
     run_id = repo.start_run(conn, "manual")
     started = time.monotonic()
     collector = Collector(settings, conn, gap_scale=0.0 if args.no_gaps else args.gap_scale, page_budget=budget,
-                          only_pass=args.only_pass, period_days=args.period)
+                          only_pass=args.only_pass, period_days=args.period, deep=args.deep, max_pages=args.max_pages)
     try:
         stats = collector.run(run_id)
     except Exception as e:  # noqa: BLE001 — report and mark the run failed
