@@ -81,6 +81,9 @@ def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     its own commit with its own disk sync, and a loop of hundreds of them holds the database lock for seconds,
     long enough to starve another connection past its busy_timeout. Wrap batch writes in this instead.
     Nested use joins the outer transaction (the outer commit/rollback wins).
+    Only around writes — never around a network request or a sleep: the lock starves every other connection, and on
+    a connection shared with another thread that thread's `with conn:` commits it from under you (03.10, v9.44).
+    A worker thread opens its own connection (`Scheduler._with_own_db`, `bot.digest._evaluate_pending`).
     """
     if conn.in_transaction:
         yield conn

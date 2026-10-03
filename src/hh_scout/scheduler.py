@@ -23,7 +23,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from hh_scout import health
 from hh_scout.config import TZ, Settings
 from hh_scout import db as dbmod
-from hh_scout.db import kv_get, kv_set
+from hh_scout.db import kv_get, kv_set, open_db
 from hh_scout.pipeline import repo
 from hh_scout.pipeline.budget import daily_cap
 from hh_scout.pipeline.run import CrawlReport, run_crawl
@@ -319,12 +319,25 @@ class Scheduler:
             log.exception("Резервная копия БД не создана")
             await self.alerter.send([health.Alert("backup_failed", f"⚠️ Не удалось сделать резервную копию БД: {e}")])
 
+    def _with_own_db(self, fn: Callable[..., object], *args: object) -> object:
+        """Run a blocking source job in the worker thread on its own connection: `fn(conn, settings, *args)`.
+
+        `self.conn` belongs to the event-loop thread (the bot, the kv writes of the crawl job). Sharing it with a
+        worker thread meant one thread's `with conn:` committed the other's open transaction (03.10, v9.44); like
+        `_evaluate_pending` in bot/digest.py, a job gets a connection of its own and closes it.
+        """
+        conn = open_db(self.s.db_path)
+        try:
+            return fn(conn, self.s, *args)
+        finally:
+            conn.close()
+
     async def owen_job(self) -> None:
         """Weekly: new companies in the ОВЕН integrator catalogue become `new` company leads (no browser, no hh)."""
         from hh_scout.sources import owen
 
         try:
-            new, total = await asyncio.to_thread(owen.refresh, self.conn, self.s)
+            new, total = await asyncio.to_thread(self._with_own_db, owen.refresh)
             kv_set(self.conn, "owen_last", f"{dbmod.utcnow()}|{total}|{new}")
         except Exception as e:  # noqa: BLE001
             log.exception("Каталог ОВЕН не обновился")
@@ -334,12 +347,14 @@ class Scheduler:
         """Daily: completed 44-ФЗ automation procurements → their winners as `tender` company leads (decision #68).
 
         ~25 minutes at one request a minute, no browser; `run_job` writes kv `zakupki_last` itself. Runs inside the
-        04–07 sitting window, but every write is a short per-row transaction, so it does not hold the DB.
+        04–07 sitting window on a connection of its own (`_with_own_db`), and its writes are short autocommits between
+        the requests — never a transaction around the network (03.10: one held across a minute-long gap was committed
+        by the sitting's `with conn:` on the shared connection, and the job died on its own COMMIT; v9.44).
         """
         from hh_scout.sources import zakupki
 
         try:
-            await asyncio.to_thread(zakupki.run_job, self.conn, self.s)
+            await asyncio.to_thread(self._with_own_db, zakupki.run_job)
         except Exception as e:  # noqa: BLE001
             log.exception("Реестр закупок не прочитался")
             await self.alerter.send([health.Alert("zakupki_failed", f"⚠️ Реестр закупок (zakupki.gov.ru) не прочитался: {e}")])
@@ -360,7 +375,7 @@ class Scheduler:
             log.info("Поиск щитовиков: подход всё ещё идёт — сегодня пропускаю")
             return
         try:
-            await asyncio.to_thread(web_discovery.run_job, self.conn, self.s)
+            await asyncio.to_thread(self._with_own_db, web_discovery.run_job)
         except Exception as e:  # noqa: BLE001
             log.exception("Поиск щитовиков упал")
             await self.alerter.send([health.Alert("discovery_failed", f"⚠️ Поиск щитовиков через мост не удался: {e}")])

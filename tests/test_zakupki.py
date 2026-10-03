@@ -32,14 +32,18 @@ def _settings(**kw):
 class FakeFetcher:
     """Answers by URL substring; counts requests like the real one."""
 
-    def __init__(self, pages: dict[str, str]):
+    def __init__(self, pages: dict[str, str], conn=None):
         self.pages = pages
         self.requests = 0
         self.urls: list[str] = []
+        self.conn = conn            # when given: every request asserts the job holds no transaction while it waits
+        self.in_tx: list[bool] = []
 
     def get(self, url, params=None):
         self.requests += 1
         self.urls.append(url)
+        if self.conn is not None:
+            self.in_tx.append(self.conn.in_transaction)
         for key, page in self.pages.items():
             if key in url:
                 return page
@@ -185,3 +189,14 @@ def test_city_from_supplier_address_skips_districts():
     assert zakupki._city("105203, Г.МОСКВА, ВН.ТЕР.Г. МУНИЦИПАЛЬНЫЙ ОКРУГ ВОСТОЧНОЕ ИЗМАЙЛОВО, УЛ. 14-Я ПАРКОВАЯ") == "Москва"
     assert zakupki._city(None) is None
 
+
+def test_job_never_holds_a_transaction_while_fetching():
+    """v9.44 (03.10): a `BEGIN IMMEDIATE` held across the minute-long gap between two ЕИС requests locked every other
+    connection out of writing, and on the scheduler's shared connection the sitting's `with conn:` committed it from
+    under the job — «cannot commit - no transaction is active». The network is read in autocommit; writes are short."""
+    conn = _conn()
+    f = FakeFetcher({"rss.html": RSS, "supplier-results.html": RESULTS, "contractCard": CARD}, conn=conn)
+    res = zakupki.run_job(conn, _settings(), f, queries=("SCADA",), resolve_limit=1)
+    assert res.resolved == 1 and f.requests == 3
+    assert f.in_tx == [False, False, False]
+    assert not conn.in_transaction

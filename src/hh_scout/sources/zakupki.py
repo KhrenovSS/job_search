@@ -383,9 +383,12 @@ def run_job(conn: sqlite3.Connection, settings: Settings, fetcher: Fetcher | Non
     rows = conn.execute("SELECT * FROM vacancies WHERE site = ? AND status = 'new' "
                         "ORDER BY COALESCE(json_extract(raw_json, '$.tries'), 0), published_at DESC, id LIMIT ?",
                         (SITE, limit)).fetchall()
+    # No transaction here: `resolve_row` makes two requests to the ЕИС a minute apart. A `BEGIN IMMEDIATE` held across
+    # them locked every other connection out of writing for 1–2 min per notice, and on the scheduler's shared
+    # connection the sitting's own `with conn:` committed it from under the job («cannot commit - no transaction is
+    # active», 03.10, v9.44). The 3–5 writes per row go in autocommit, each its own short commit.
     for row in rows:
-        with transaction(conn):
-            status = resolve_row(conn, settings, f, row)
+        status = resolve_row(conn, settings, f, row)
         res.resolved += status == "prefiltered"
         res.waiting += status == "new"
         res.skipped += status == "skipped"
