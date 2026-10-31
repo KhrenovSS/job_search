@@ -161,3 +161,18 @@ def test_m017_backfills_area_path_from_the_stored_vacancy_page():
     assert migrate(conn) == len(MIGRATIONS)
     got = {r["hh_id"]: r["area_path"] for r in conn.execute("SELECT hh_id, area_path FROM vacancies")}
     assert got == {"1": ".113.225.2114.131.", "2": ".2173.", "3": None, "4": None, "5": None}
+
+
+def test_m018_indexes_the_folded_employer_name_and_the_planner_uses_it():
+    """31.10: the name half of `same_employer_sql` scanned the whole table through `casefold` (46 ms a query, two or
+    three per row swept); with the expression index the company check is a lookup — and the sqlite3 shell, which has no
+    `casefold`, still reads the table."""
+    from hh_scout.pipeline import repo
+    conn = connect(":memory:")
+    migrate(conn)
+    names = {r["name"] for r in conn.execute("PRAGMA index_list(vacancies)")}
+    assert "idx_vacancies_employer_cf" in names
+    sql = f"SELECT v.id FROM vacancies v WHERE ({repo.same_employer_sql('v')})"
+    plan = " ".join(r[3] for r in conn.execute("EXPLAIN QUERY PLAN " + sql, repo.same_employer_params("1", "ООО Ромашка")))
+    assert "idx_vacancies_employer_cf" in plan and "idx_vacancies_employer_id" in plan
+    assert "SCAN" not in plan

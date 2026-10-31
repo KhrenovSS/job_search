@@ -131,7 +131,7 @@ src/hh_scout/
   config.py        Settings из .env (порог, веса, лимиты, окна, ритм, токены) + константы: SEARCH_QUERIES (5),
                    REGION_NAMES (48 — запасной путь при SEARCH_ALL_RUSSIA=false; по умолчанию ищем по всей России),
                    TITLE_STOP/KEEP/REQUIRED_ANY, COMPANY_QUERIES (каналы panel/design), TRUDVSEM_QUERIES (v9.25) + TRUDVSEM_COMPANY_QUERIES (v9.40), ZAKUPKI_QUERIES (v9.26);  logging_setup.py — логи в stdout/journald
-  db.py            SQLite (автокоммит, WAL), миграции _m001…_m017 (PRAGMA user_version), kv_get/kv_set, transaction(),
+  db.py            SQLite (автокоммит, WAL), миграции _m001…_m018 (PRAGMA user_version), kv_get/kv_set, transaction(),
                    backup() — ночная копия в data/backups/ (7 штук)
   main.py          сервис: aiogram polling + планировщик; первый старт помечает превью как sent
   scheduler.py     дайджест по cron, подход на каждое окно `CRAWL_WINDOWS` (случайный старт, доля лимита), восстановление из kv,

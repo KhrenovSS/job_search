@@ -334,3 +334,30 @@ def test_linking_needs_an_employer_id():
     _vac(conn, "a", "triage", employer="ооо ромашка", employer_id=None)        # by name, as before
     assert dedup.skip_covered(conn, s, "triage") == 1
     assert _status(conn, "a") == ("skipped", "duplicate_employer:L")
+
+
+def test_sweeps_hold_no_transaction_while_they_decide(monkeypatch):
+    """31.10: `revive_orphans` and `skip_covered` ran their per-row reads inside one `BEGIN IMMEDIATE`, holding the
+    write lock for the whole sweep (15 s – 2.5 min); a card button pressed in the bot meanwhile hung past Telegram's
+    callback timeout. The verdict is reads; only the skip / the revival writes, as its own statement."""
+    s = Settings(_env_file=None, employer_repeat_days=90)
+    conn = _conn()
+    _vac(conn, "L", "sent")
+    _vac(conn, "a", "triage")
+    _vac(conn, "d", "skipped", employer="Другая", employer_id="200", skip_reason="duplicate_employer:L")
+    _vac(conn, "e", "evaluated", employer="Третья", employer_id="300", total=70)
+    _vac(conn, "f", "evaluated", employer="Третья", employer_id="300", total=60)
+    seen: list[bool] = []
+    real = repo.employer_lead
+
+    def spy(conn_, *a, **kw):
+        seen.append(conn_.in_transaction)
+        return real(conn_, *a, **kw)
+    monkeypatch.setattr(repo, "employer_lead", spy)
+    assert dedup.skip_covered(conn, s, "triage") == 1
+    assert dedup.revive_orphans(conn, s) == 1
+    assert dedup.dedupe_evaluated(conn, s) == 1
+    assert seen and not any(seen)
+    assert _status(conn, "a") == ("skipped", "duplicate_employer:L")
+    assert _status(conn, "d") == ("to_fetch", None) or _status(conn, "d") == ("triage", None)
+    assert _status(conn, "f") == ("skipped", "duplicate_employer:e")

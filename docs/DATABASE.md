@@ -11,7 +11,8 @@
 `with_dossier`), `_m014_floor` (`evaluations.floor` — взята по дневному минимуму ниже порога, решение №52),
 `_m015_lead_kind` (`vacancies.lead_kind` vacancy/company, `evaluations.offer_focus` — решение №53), `_m016_employer_contacts`
 (`employer_contacts` — решение №64), `_m017_area_path` (`vacancies.area_path` — `area.path` hh.ru «.113.225.2114.131.», бэкфилл из
-`raw_json.area`; закрытые регионы, решение №65).
+`raw_json.area`; закрытые регионы, решение №65), `_m018_employer_casefold_index` (индекс по выражению `casefold(employer)` —
+проверка «у компании уже есть лид / ответ / метка оборонки» стала поиском по индексу вместо прохода по всей таблице; v9.46).
 Время — TEXT ISO-8601 UTC; границы для сравнения строятся через `repo.iso_utc` (строка с `+03:00` рядом с `+00:00`
 сравнивается как текст и сдвигает окно на три часа).
 Почти весь SQL — в `src/hh_scout/pipeline/repo.py` (свои запросы держат ещё миграции `db.py`, `llm/evaluator.py`, `llm/company_research.py`, `pipeline/budget.py`, `pipeline/plant.py`, `pipeline/dedup.py` (`revive_orphans`), `sources/trudvsem.py`, `sources/zakupki.py`, `hh/areas.py`, `health.py`, `bot/feedback.py`, `bot/handlers.py`); аналитика над строками (исходы, полосы, зрелость) — в `pipeline/outcomes.py`.
@@ -108,7 +109,7 @@
 - `applied`, `has_chat`: из страницы откликов; `triage_priority`, `triage_note`: от триажа.
 - `employer_id` (v8, `_m007`): hh.ru `company.id` строкой — ключ «одна компания — один лид»; пишется из карточки поиска и со
   страницы вакансии, для старых строк заполнен из `raw_json.company.id`; у карточек до v8 и у profi.ru — NULL (тогда сравнение
-  по `employer` через SQL-функцию `casefold`, зарегистрированную в `db.connect`). Индексы: `idx_vacancies_employer_id`, `idx_vacancies_employer`, `idx_vacancies_status`, `idx_vacancies_site_status` (`_m006`), `idx_areas_name`, UNIQUE `idx_eval_vacancy`, `idx_lead_actions_vacancy`, `ix_negotiation_events(vacancy_id, seen_at)` (`_m012`), `idx_employer_contacts_value(kind, value)` (`_m016`).
+  по `employer` через SQL-функцию `casefold`, зарегистрированную в `db.connect`). Индексы: `idx_vacancies_employer_id`, `idx_vacancies_employer`, `idx_vacancies_employer_cf` по выражению `casefold(employer)` (`_m018`, v9.46: его используют `repo.employer_lead`, `employer_responded`, `defense_employer` — MULTI-INDEX OR с `idx_vacancies_employer_id`; функция объявлена deterministic, как требует индекс по выражению; **в оболочке `sqlite3`, где `casefold` нет, таблица читается, но `UPDATE vacancies SET employer = …` и `DELETE FROM vacancies` падают с «unknown function: casefold()» — такие правки делать из Python через `db.connect`), `idx_vacancies_status`, `idx_vacancies_site_status` (`_m006`), `idx_areas_name`, UNIQUE `idx_eval_vacancy`, `idx_lead_actions_vacancy`, `ix_negotiation_events(vacancy_id, seen_at)` (`_m012`), `idx_employer_contacts_value(kind, value)` (`_m016`).
 
 ## `evaluations`
 `id`, `vacancy_id` (UNIQUE), `created_at` (по нему — «проверено N» в шапке и приоритет очереди); `tech_score`, `role_score`,

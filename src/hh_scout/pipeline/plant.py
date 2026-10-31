@@ -91,11 +91,11 @@ def admit(conn: sqlite3.Connection, settings: Settings) -> int:
         return 0
     with transaction(conn):
         rows = repo.admit_plant_leads(conn, settings.plant_leads_per_day)
-        admitted = 0
-        for r in rows:
-            fresh = repo.vacancy_by_id(conn, r["id"])
-            if dedup.skip_if_covered(conn, settings, fresh) is None:
-                admitted += 1
+    admitted = 0
+    for r in rows:   # outside the transaction (31.10): the verdict is reads, the skip is one statement — see `dedup.skip_covered`
+        fresh = repo.vacancy_by_id(conn, r["id"])
+        if dedup.skip_if_covered(conn, settings, fresh) is None:
+            admitted += 1
     if admitted:
         log.info("Эксплуатанты: допущено в очередь описаний %d компаний (по %d в день)", admitted, settings.plant_leads_per_day)
     return admitted

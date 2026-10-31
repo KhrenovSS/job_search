@@ -29,7 +29,6 @@ import sqlite3
 from collections.abc import Mapping
 
 from hh_scout.config import Settings
-from hh_scout.db import transaction
 from hh_scout.pipeline import defense, repo
 from hh_scout.pipeline.rows import lead_kind as _lead_kind, row_site
 
@@ -120,12 +119,16 @@ def skip_if_covered(conn: sqlite3.Connection, settings: Settings, row: sqlite3.R
 
 
 def skip_covered(conn: sqlite3.Connection, settings: Settings, status: str) -> int:
-    """All rows in `status` whose employer already has a lead → skipped/duplicate_employer. Returns how many."""
+    """All rows in `status` whose employer already has a lead → skipped/duplicate_employer. Returns how many.
+
+    No transaction around the loop on purpose (31.10): the verdict on a row is two or three reads, and the writes are
+    a few dozen single statements per sitting — each commits on its own. A transaction here held the write lock for
+    the whole sweep (15 s – 2.5 min before `_m018`), and a card button pressed in the bot meanwhile hung until the
+    lock was free, past Telegram's callback timeout (`db.transaction` — «only around writes»)."""
     n = 0
-    with transaction(conn):
-        for row in repo.list_vacancies(conn, status):
-            if skip_if_covered(conn, settings, row) is not None:
-                n += 1
+    for row in repo.list_vacancies(conn, status):
+        if skip_if_covered(conn, settings, row) is not None:
+            n += 1
     if n:
         log.info("Дубли компаний среди %s: %d пропущено без загрузки/оценки", status, n)
     return n
@@ -149,22 +152,23 @@ def revive_orphans(conn: sqlite3.Connection, settings: Settings) -> int:
         "SELECT * FROM vacancies WHERE site IN ('hh', 'owen', 'trudvsem', 'zakupki', 'web') AND status = 'skipped' AND skip_reason LIKE ? ORDER BY id",
         (DUPLICATE_PREFIX + "%",)).fetchall()
     n = 0
-    with transaction(conn):
-        for row in rows:
-            cover = conn.execute("SELECT status FROM vacancies WHERE hh_id = ?",
-                                 (row["skip_reason"][len(DUPLICATE_PREFIX):],)).fetchone()
-            if cover is not None and cover["status"] in _IN_FLIGHT:
-                continue                                   # that vacancy may still become the company's lead
-            if covering_lead(conn, settings, row) is not None:
-                continue                                   # the company has a lead (or one on its way) — stay a duplicate
-            if row_site(row) in ("owen", "trudvsem", "zakupki", "web"):
-                status = "prefiltered"   # nothing to open: the catalogue card / the API item is the whole page
-            else:
-                status = "to_fetch" if row["triage_priority"] is not None else "triage"
-            repo.set_status(conn, row["hh_id"], status, None)
-            log.info("Дубль вернулся в очередь (%s): %s «%s» (%s) — у %s лида не осталось", status, row["hh_id"],
-                     (row["title"] or "")[:50], row["area_name"] or "—", row["employer"] or "—")
-            n += 1
+    # no transaction around the loop — see `skip_covered`; a revived `prefiltered` twin is visible to the next
+    # iteration either way (same connection), so the company's other twins stay down as before
+    for row in rows:
+        cover = conn.execute("SELECT status FROM vacancies WHERE hh_id = ?",
+                             (row["skip_reason"][len(DUPLICATE_PREFIX):],)).fetchone()
+        if cover is not None and cover["status"] in _IN_FLIGHT:
+            continue                                   # that vacancy may still become the company's lead
+        if covering_lead(conn, settings, row) is not None:
+            continue                                   # the company has a lead (or one on its way) — stay a duplicate
+        if row_site(row) in ("owen", "trudvsem", "zakupki", "web"):
+            status = "prefiltered"   # nothing to open: the catalogue card / the API item is the whole page
+        else:
+            status = "to_fetch" if row["triage_priority"] is not None else "triage"
+        repo.set_status(conn, row["hh_id"], status, None)
+        log.info("Дубль вернулся в очередь (%s): %s «%s» (%s) — у %s лида не осталось", status, row["hh_id"],
+                 (row["title"] or "")[:50], row["area_name"] or "—", row["employer"] or "—")
+        n += 1
     if n:
         log.info("Осиротевших дублей возвращено в очередь: %d", n)
     return n
@@ -192,34 +196,33 @@ def dedupe_evaluated(conn: sqlite3.Connection, settings: Settings) -> int:
     links = repo.contact_links(conn)
     groups: list[list[sqlite3.Row]] = []  # groups[i][0] is the kept lead; a row joins a group if it matches ANY member
     n = 0
-    with transaction(conn):
-        for row in rows:
-            group = next((g for g in groups if any(same_company(m, row, links) for m in g)), None)
-            if group is not None:
-                twin = group[0]
-                group.append(row)
-                repo.skip_as_duplicate(conn, row["id"], twin["hh_id"])
-                log.info("Дубль компании в дайджесте: %s «%s» (%s) уступает %s (%s, %d баллов)", row["hh_id"],
-                         (row["title"] or "")[:50], row["area_name"] or "—", twin["hh_id"], twin["area_name"] or "—", twin["total"])
-                n += 1
-                continue
-            answered = answered_employer(conn, settings, row)
-            if answered is not None:
-                repo.skip_as_responded(conn, row["id"], answered["hh_id"])
-                log.info("В компанию уже откликались: %s «%s» — %s, отклик по %s", row["hh_id"],
-                         (row["title"] or "")[:50], row["employer"] or "—", answered["hh_id"])
-                n += 1
-                continue
-            sent = repo.employer_lead(conn, row["employer_id"], row["employer"], exclude_id=row["id"],
-                                      threshold=settings.score_threshold, repeat_days=settings.employer_repeat_days,
-                                      candidate_kind=_lead_kind(row), linked_ids=sorted(links.get(row["employer_id"], ())))
-            if sent is not None and sent["status"] == "sent":
-                repo.skip_as_duplicate(conn, row["id"], sent["hh_id"])
-                log.info("Дубль компании: %s «%s» — %s уже получал лид %s", row["hh_id"], (row["title"] or "")[:50],
-                         row["employer"] or "—", sent["hh_id"])
-                n += 1
-                continue
-            groups.append([row])
+    for row in rows:   # no transaction around the loop — see `skip_covered`
+        group = next((g for g in groups if any(same_company(m, row, links) for m in g)), None)
+        if group is not None:
+            twin = group[0]
+            group.append(row)
+            repo.skip_as_duplicate(conn, row["id"], twin["hh_id"])
+            log.info("Дубль компании в дайджесте: %s «%s» (%s) уступает %s (%s, %d баллов)", row["hh_id"],
+                     (row["title"] or "")[:50], row["area_name"] or "—", twin["hh_id"], twin["area_name"] or "—", twin["total"])
+            n += 1
+            continue
+        answered = answered_employer(conn, settings, row)
+        if answered is not None:
+            repo.skip_as_responded(conn, row["id"], answered["hh_id"])
+            log.info("В компанию уже откликались: %s «%s» — %s, отклик по %s", row["hh_id"],
+                     (row["title"] or "")[:50], row["employer"] or "—", answered["hh_id"])
+            n += 1
+            continue
+        sent = repo.employer_lead(conn, row["employer_id"], row["employer"], exclude_id=row["id"],
+                                  threshold=settings.score_threshold, repeat_days=settings.employer_repeat_days,
+                                  candidate_kind=_lead_kind(row), linked_ids=sorted(links.get(row["employer_id"], ())))
+        if sent is not None and sent["status"] == "sent":
+            repo.skip_as_duplicate(conn, row["id"], sent["hh_id"])
+            log.info("Дубль компании: %s «%s» — %s уже получал лид %s", row["hh_id"], (row["title"] or "")[:50],
+                     row["employer"] or "—", sent["hh_id"])
+            n += 1
+            continue
+        groups.append([row])
     if n:
         log.info("Одна компания — один лид: %d оценённых вакансий пропущено как дубли", n)
     return n

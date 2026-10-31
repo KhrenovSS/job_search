@@ -424,6 +424,24 @@ def _m017_area_path(conn: sqlite3.Connection) -> None:
                            OR json_extract(raw_json, '$.area.regionId') IS NOT NULL)""")
 
 
+def _m018_employer_casefold_index(conn: sqlite3.Connection) -> None:
+    """v9.46: an index on `casefold(employer)` — the name half of `repo.same_employer_sql`.
+
+    Every "does this company already have a lead / an answer / a defence mark" check (`repo.employer_lead`,
+    `employer_responded`, `defense_employer`) matched the name with `casefold(v.employer) = casefold(?)`, which no plain
+    index serves: a full scan of the table through the Python function, ~46 ms on 15k rows, two or three times per
+    row swept. The dedup sweeps at the start of a sitting (`dedup.revive_orphans`, `skip_covered`) ran 15 s – 2.5 min
+    and held the write lock the whole time, so a card button pressed meanwhile hung and its callback expired
+    (31.10). With this index the same check is a lookup (~0.1 ms); the planner joins it with
+    `idx_vacancies_employer_id` as MULTI-INDEX OR.
+
+    `casefold` is registered in `db.connect` as deterministic, which is what an expression index requires. A connection
+    without it (the `sqlite3` shell) still reads the table, but an UPDATE of `employer` or a DELETE there fails with
+    «unknown function: casefold()» — do such writes through Python (`hh_scout.pipeline.prefilter --requeue-reason`, a
+    one-off script with `db.connect`)."""
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_vacancies_employer_cf ON vacancies(casefold(employer))")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m001_initial,
     _m002_triage_columns,
@@ -442,6 +460,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _m015_lead_kind,
     _m016_employer_contacts,
     _m017_area_path,
+    _m018_employer_casefold_index,
 ]
 
 
