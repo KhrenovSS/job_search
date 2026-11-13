@@ -321,7 +321,7 @@ class CoverLetterWriter:
                     if dedup.skip_if_covered(self.conn, self.s, row) is not None:
                         return None
             brief_dict = brief.model_dump() if brief is not None else None
-            if self.defense(row, brief_dict) or self.unreachable(row, brief_dict):
+            if self.defense(row, brief_dict) or self.unreachable(row, brief_dict, researched=brief is not None):
                 return None
         payload = letter_payload(row, company, hint)
         lo, hi = LENGTH_LIMITS.get(key, LENGTH_LIMITS["hh"])
@@ -366,13 +366,22 @@ class CoverLetterWriter:
                  row["hh_id"], row["employer"] or "—")
         return True
 
-    def unreachable(self, row: sqlite3.Row, brief: dict | None = None) -> bool:
+    def unreachable(self, row: sqlite3.Row, brief: dict | None = None, *, researched: bool = True) -> bool:
         """A catalogue company with no e-mail — in the catalogue or in the dossier just researched — is skipped
         (`skipped/no_email`, decision #56): there is no hh.ru vacancy to answer and nowhere to send the offer, so a
         letter would only cost bridge time and clutter the chat. Runs after research, so the dossier gets its chance.
+
+        `researched=False` — there is no dossier yet: the per-run research limit was spent or the bridge failed. The
+        lead then waits for the next run instead of being written off (v9.48): 31 of the 44 web-discovery companies
+        skipped as `no_email` by 13.11 had never been researched at all.
         """
         if not needs_email(row) or contact_email(row, brief):
             return False
+        if not researched and self.s.company_research_enabled and row_get(row, "status", "evaluated") == "evaluated":
+            self.stats.left_for_later += 1
+            log.info("Письмо для %s («%s») откладываю: e-mail нет, досье ещё не собрано — лид ждёт следующего прохода",
+                     row["hh_id"], row["employer"] or "—")
+            return True
         with self.conn:
             repo.set_status(self.conn, row["hh_id"], "skipped", "no_email")
         self.stats.no_email += 1

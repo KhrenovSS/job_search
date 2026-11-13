@@ -284,3 +284,31 @@ def test_the_vacancy_page_records_the_company_site_as_a_contact_key():
                  "'owen_catalog','owen_si','new','{}','t','t')")
     repo.record_contacts(conn, "owen:5", urls=["http://www.interrao-oco.ru/contacts"])
     assert repo.linked_employer_ids(conn, d.employer_id) == ["owen:5"]
+
+
+def test_a_company_without_an_email_waits_for_its_dossier_instead_of_being_written_off(tmp_path):
+    """v9.48: the research limit of a run was spent → no dossier yet → the lead keeps its place; the send-side guard
+    leaves it alone too. Once a dossier exists and still has no address, the old rule holds."""
+    from hh_scout.llm import company_research
+    from hh_scout.llm.cover_letter import CoverLetterWriter
+    from hh_scout.llm.schemas import CompanyBrief
+    from hh_scout.pipeline.digest_builder import skip_unreachable
+
+    prompts = tmp_path / "prompts"
+    prompts.mkdir()
+    for name, text in (("candidate_profile.md", "П"), ("resume.md", "Р"), ("cover_letter.md", "h\n---\nR {resume}"),
+                       ("company_offer.md", "h\n---\nO {resume}"), ("letter_review.md", "h\n---\nREVIEW")):
+        (prompts / name).write_text(text, encoding="utf-8")
+    s = Settings(_env_file=None, bridge_url="http://bridge.test", bridge_token="t", prompts_dir=prompts)
+    conn = _db()
+    _owen_row(conn, 31, "owen:31", [])
+    row = repo.lead_by_hh_id(conn, "owen:31")
+    w = CoverLetterWriter(s, conn, BridgeClient(s, sleep=lambda x: None))
+    assert w.unreachable(row, None, researched=False) is True            # no letter now…
+    assert conn.execute("SELECT status, skip_reason FROM vacancies WHERE hh_id = 'owen:31'").fetchone()[:] == ("evaluated", None)
+    assert w.stats.left_for_later == 1 and w.stats.no_email == 0
+    assert skip_unreachable(conn, s) == 0                                # …and the guard before a send agrees
+    with conn:
+        company_research.save(conn, row["employer_id"], row["employer"], CompanyBrief(found=False))
+    assert skip_unreachable(conn, s) == 1                                # researched, still no address: no lead
+    assert conn.execute("SELECT skip_reason FROM vacancies WHERE hh_id = 'owen:31'").fetchone()[0] == "no_email"

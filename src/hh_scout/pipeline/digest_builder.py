@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from hh_scout.config import Settings
 from hh_scout.db import transaction
+from hh_scout.llm import company_research
 from hh_scout.pipeline import dedup, defense, repo
 from hh_scout.pipeline.rows import contact_email, is_defense, needs_email
 
@@ -50,6 +51,14 @@ def promote_floor(conn: sqlite3.Connection, settings: Settings) -> int:
     return len(chosen)
 
 
+def _researched(conn: sqlite3.Connection, settings: Settings, row: sqlite3.Row) -> bool:
+    """Whether the dossier has had its chance to find the company's address (v9.48): a lead the research limit has
+    not reached yet keeps waiting — its e-mail may be one web read away."""
+    if not settings.company_research_enabled or not row["employer_id"]:
+        return True
+    return company_research.cached(conn, row["employer_id"], settings.company_research_ttl_days) is not None
+
+
 def skip_unreachable(conn: sqlite3.Connection, settings: Settings) -> int:
     """Catalogue companies with no e-mail leave the queue as `skipped/no_email` (decision #56).
 
@@ -57,7 +66,7 @@ def skip_unreachable(conn: sqlite3.Connection, settings: Settings) -> int:
     the rule existed, or a lead whose address the owner has since removed — right before a send. Returns how many.
     """
     rows = [r for r in repo.lead_queue(conn, settings.score_threshold, None, wait_bonus_max=settings.queue_wait_bonus_max)
-            if needs_email(r) and not contact_email(r)]
+            if needs_email(r) and not contact_email(r) and (r["letter"] or _researched(conn, settings, r))]
     if rows:
         with transaction(conn):
             for r in rows:
