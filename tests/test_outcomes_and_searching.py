@@ -68,3 +68,50 @@ def test_searching_days_measures_our_own_history_not_the_posting_date():
                  "'new','hh',?,?)", (utcnow(), utcnow()))
     other = conn.execute("SELECT * FROM vacancies WHERE hh_id = '902'").fetchone()
     assert repo.employer_searching_days(conn, other) == 0
+
+
+def _mail_lead(conn, hh_id, total, *, sent_at, site="trudvsem"):
+    vid = _lead(conn, hh_id, total, applied=0)
+    conn.execute("UPDATE vacancies SET site = ? WHERE id = ?", (site, vid))
+    conn.execute("UPDATE digests SET sent_at = ? WHERE id = (SELECT digest_id FROM digest_items WHERE vacancy_id = ?)",
+                 (sent_at, vid))
+    return vid
+
+
+def test_an_email_letter_is_measured_once_the_owner_can_report_its_answer():
+    """v9.47: a letter sent by e-mail after the outcome buttons appeared is silence until the owner says otherwise;
+    an older one stays blind — unless he reported its answer afterwards."""
+    conn = _db()
+    old = _mail_lead(conn, "t1", 77, sent_at="2026-10-20T10:00:00+00:00")
+    old_answered = _mail_lead(conn, "t2", 78, sent_at="2026-10-21T10:00:00+00:00", site="owen")
+    new = _mail_lead(conn, "t3", 79, sent_at=utcnow(), site="web")
+    repo.record_mail_outcome(conn, old_answered, "invited")
+    got = {r["vacancy_id"]: outcomes.outcome_of(r) for r in repo.outcome_rows(conn, "2000-01-01")}
+    assert got == {old: "blind", old_answered: "invited", new: "silent"}
+    repo.record_mail_outcome(conn, new, "answered")
+    repo.record_mail_outcome(conn, new, "answered")          # the same button twice is one event
+    got = {r["vacancy_id"]: outcomes.outcome_of(r) for r in repo.outcome_rows(conn, "2000-01-01")}
+    assert got[new] == "answered"
+    assert conn.execute("SELECT COUNT(*) FROM negotiation_events WHERE vacancy_id = ?", (new,)).fetchone()[0] == 1
+    band = {b["band"]: b for b in outcomes.outcome_stats(repo.outcome_rows(conn, "2000-01-01"), 0)}["75+"]
+    assert band["written"] == 3 and band["blind"] == 1 and band["invited"] == 1 and band["answered"] == 1
+
+
+def test_replied_finds_an_email_lead_by_a_part_of_the_company_name():
+    conn = _db()
+    vid = _mail_lead(conn, "t4", 70, sent_at="2026-10-20T10:00:00+00:00")
+    conn.execute("UPDATE vacancies SET employer = 'ООО «Энергопром»' WHERE id = ?", (vid,))
+    _lead(conn, "9", 70, employer="Энергопром-Сервис")       # an hh.ru response: its answer comes from the sync
+    assert [r["id"] for r in repo.mail_leads_like(conn, "энергопром")] == [vid]
+    assert repo.mail_leads_like(conn, "нет такой") == []
+
+
+def test_outcome_buttons_and_the_collapsed_line():
+    from hh_scout.bot.keyboards import outcome_kb, parse_callback
+    from hh_scout.pipeline.ranker import format_collapsed
+    kb = outcome_kb(7, "invited").inline_keyboard[0]
+    assert [b.callback_data for b in kb] == ["out:7:answered", "out:7:invited", "out:7:refused"]
+    assert [b.text.endswith("✓") for b in kb] == [False, True, False]
+    assert parse_callback("out:7:invited") == ("out", 7, "invited")
+    row = {"employer": "ООО Щит", "url": "u", "title": "Сборщик"}
+    assert "🤝 разговор" in format_collapsed("responded", row, outcome="invited")

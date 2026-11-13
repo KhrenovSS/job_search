@@ -11,12 +11,13 @@ from datetime import datetime, timedelta
 
 import httpx
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
 from hh_scout.bot.digest import send_digest
-from hh_scout.bot.feedback import awaiting_reason, set_awaiting_reason
-from hh_scout.bot.keyboards import vote_kb
+from hh_scout.bot.feedback import awaiting_reason, collapsed_with_outcome, set_awaiting_reason
+from hh_scout.bot.keyboards import MAIL_OUTCOMES, outcome_kb, vote_kb
 from hh_scout.bot.lead_actions import cleanup_stale, collapse_lead
 from hh_scout.config import TZ, Settings
 from hh_scout.db import kv_get
@@ -44,12 +45,16 @@ HELP = (
     "/pause · /resume — приостановить/возобновить автоматические сборы\n"
     "/skipped [N] — последние отсеянные вакансии с причинами\n"
     "/stats [дней] — что ответили компании: письма, ответы, приглашения и отказы по полосам балла\n"
+    "/replied &lt;компания&gt; [разговор|отказ] — компания ответила на письмо по e-mail "
+    "(«/replied Энергопром разговор»); на новых карточках для этого есть кнопки\n"
     "/letter &lt;hh_id&gt; [пожелание] — написать или переписать отклик "
     "(«/letter 137256632 больше про SCADA»)\n"
     "/help — эта справка\n\n"
     "Кнопки под карточкой: 👍/👎 — обратная связь для ИИ (👎 сворачивает карточку; «✍️ своими словами» — "
     "напишите причину ответом на вопрос бота, оценщик её учтёт), "
-    "✅ Написал — отклик отправлен (карточка сворачивается, письмо удаляется), ⏸ Позже — отложить."
+    "✅ Написал — отклик отправлен (карточка сворачивается, письмо удаляется), ⏸ Позже — отложить. "
+    "Под свёрнутой карточкой письма по e-mail остаются 💬 Ответили / 🤝 Разговор / 🚫 Отказ — "
+    "так ответы на такие письма попадают в /stats."
 )
 
 
@@ -204,7 +209,8 @@ async def stats_cmd(m: Message, command: CommandObject, settings: Settings, conn
     if young:
         lines.append(f"Дозревает: {young} — письма моложе {mature_days} дн., их молчание пока ничего не значит.")
     if blind:
-        lines.append(f"Без канала измерения: {blind} — письмо ушло мимо hh.ru, ответ компании нам не виден.")
+        lines.append(f"Без канала измерения: {blind} — письмо ушло по e-mail до {repo.MAIL_OUTCOMES_SINCE[8:]}.{repo.MAIL_OUTCOMES_SINCE[5:7]}, "
+                     "ответ на него не отмечен (/replied &lt;компания&gt;).")
     await m.answer("\n".join(lines))
     blocks = [(title, outcomes.outcome_by(rows, key, mature_days)) for title, key in outcomes.DIMENSIONS]
     if any(rows_ for _, rows_ in blocks):
@@ -245,6 +251,47 @@ async def done_cmd(m: Message, command: CommandObject, conn: sqlite3.Connection)
         await m.answer(f"✅ Отмечено: написал — {row['employer'] or ''} · {row['title'][:60]}")
     else:
         await m.answer("Этот лид уже закрыт или ещё не отправлялся.")
+
+
+_REPLIED_WORDS = {"разговор": "invited", "отказ": "refused", "ответ": "answered", "ответили": "answered"}
+REPLIED_USAGE = ("Использование: /replied &lt;часть названия компании&gt; [разговор|отказ] — компания ответила на письмо, "
+                 "отправленное по e-mail.\nНапример: <code>/replied Энергопром разговор</code>; без второго слова — «ответили».")
+
+
+@router.message(Command("replied"))
+async def replied_cmd(m: Message, command: CommandObject, conn: sqlite3.Connection) -> None:
+    """The answer to an e-mail letter whose card was collapsed before the outcome buttons existed (v9.47)."""
+    words = (command.args or "").split()
+    kind = "answered"
+    if words and words[-1].casefold() in _REPLIED_WORDS:
+        kind = _REPLIED_WORDS[words.pop().casefold()]
+    if not words:
+        await m.answer(REPLIED_USAGE)
+        return
+    row = repo.vacancy_by_id(conn, int(words[0])) if len(words) == 1 and words[0].isdigit() else None
+    if row is not None and not (needs_email(row) and row["status"] == "sent"):
+        row = None
+    if row is None:
+        found = repo.mail_leads_like(conn, " ".join(words))
+        if not found:
+            await m.answer("Среди компаний, которым вы писали по e-mail, такой нет. Проверьте название — достаточно его части.")
+            return
+        if len(found) > 1:
+            lines = [f"<code>/replied {r['id']} {next(w for w, k in _REPLIED_WORDS.items() if k == kind)}</code> — "
+                     f"{r['employer'] or '—'}" for r in found]
+            await m.answer("Подходит несколько компаний, выберите строку:\n" + "\n".join(lines))
+            return
+        row = found[0]
+    with conn:
+        repo.record_mail_outcome(conn, row["id"], kind)
+    card_id, _ = repo.lead_messages(conn, row["id"])
+    if card_id:
+        try:
+            await m.bot.edit_message_text(collapsed_with_outcome(conn, row, kind), chat_id=m.chat.id, message_id=card_id,
+                                          reply_markup=outcome_kb(row["id"], kind))
+        except TelegramBadRequest:
+            pass  # the card is too old to edit or already says so — the outcome is recorded either way
+    await m.answer(f"Записано: {dict(MAIL_OUTCOMES)[kind]} — {row['employer'] or ''}")
 
 
 @router.message(Command("cleanup"))

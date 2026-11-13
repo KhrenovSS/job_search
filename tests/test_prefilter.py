@@ -116,3 +116,32 @@ def test_run_skips_blocked_regions_from_the_card_path_and_withdraws_rows_already
     assert repo.floor_candidates(conn, threshold=50, min_total=40, min_role=40, lookback_days=3) == []
     # a second pass changes nothing
     assert repo.skip_blocked_regions(conn, {2114: "Республика Крым"}) == {}
+
+
+def test_a_trade_title_from_an_automation_query_goes_on_to_its_company_channel():
+    """v9.47: the title rule used to write off «Электромеханик» and «Сборщик НКУ» found by a query about ПЛК/АСУ ТП —
+    the companies behind them are plant and panel leads. «Работа России» (`decide` alone) keeps the old rule."""
+    from hh_scout.config import Settings
+    from hh_scout.db import connect, migrate
+    from hh_scout.pipeline.prefilter import run, trade_channel
+
+    assert trade_channel("Сборщик НКУ (электромонтажник)") == "panel"
+    assert trade_channel("Главный энергетик") == "plant" and trade_channel("Электромонтёр 5 разряда") == "plant"
+    assert trade_channel("Руководитель отдела продаж") is None
+    assert decide(_c("Главный энергетик")) == "no_engineering_title"
+
+    conn = connect(":memory:")
+    migrate(conn)
+    for hh_id, title in (("1", "Сборщик НКУ"), ("2", "Электромеханик"), ("3", "Офис-менеджер"), ("4", "Инженер АСУ ТП")):
+        conn.execute("INSERT INTO vacancies(hh_id,title,url,source,search_pass,status,first_seen_at,updated_at) "
+                     "VALUES (?,?,'u','s','regional','new','t','t')", (hh_id, title))
+    got = run(conn, Settings(_env_file=None, company_channels="panel,design,plant"))
+    assert got == {"trade_panel": 1, "trade_plant": 1, "no_engineering_title": 1, "passed": 1}
+    st = {r["hh_id"]: (r["status"], r["skip_reason"], r["lead_kind"] or "vacancy", r["search_pass"])
+          for r in conn.execute("SELECT * FROM vacancies")}
+    assert st == {"1": ("triage", None, "company", "panel"), "2": ("triage", None, "vacancy", "regional"),
+                  "3": ("skipped", "no_engineering_title", "vacancy", "regional"), "4": ("triage", None, "vacancy", "regional")}
+
+    conn.execute("UPDATE vacancies SET status = 'new', skip_reason = NULL, lead_kind = 'vacancy', search_pass = 'regional'")
+    got = run(conn, Settings(_env_file=None, company_channels=""))          # channels off: the old rule
+    assert got == {"no_engineering_title": 3, "passed": 1}

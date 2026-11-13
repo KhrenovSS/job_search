@@ -184,7 +184,7 @@ def test_a_dislike_in_the_owners_own_words_reaches_the_calibration_block():
     said = []
 
     class _Bot:
-        async def edit_message_text(self, text, chat_id, message_id):
+        async def edit_message_text(self, text, chat_id, message_id, reply_markup=None):
             said.append(("edit", message_id, text))
 
         async def delete_message(self, chat_id, message_id):

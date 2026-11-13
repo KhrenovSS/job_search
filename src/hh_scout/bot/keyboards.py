@@ -16,6 +16,18 @@ def vote_kb(vacancy_id: int, *, liked: bool = False, deferred: bool = False) -> 
     ])
 
 
+MAIL_OUTCOMES = (("answered", "💬 Ответили"), ("invited", "🤝 Разговор"), ("refused", "🚫 Отказ"))
+
+
+def outcome_kb(vacancy_id: int, chosen: str | None = None) -> InlineKeyboardMarkup:
+    """Under the collapsed card of a lead written to by e-mail: what the company answered (v9.47). hh.ru reports
+    that itself for a response; for an e-mail only the owner knows. The buttons stay, so «ответили» can become
+    «разговор» a week later."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=f"{label} ✓" if code == chosen else label, callback_data=f"out:{vacancy_id}:{code}")
+        for code, label in MAIL_OUTCOMES]])
+
+
 def reason_kb(vacancy_id: int) -> InlineKeyboardMarkup:
     row1 = [InlineKeyboardButton(text=label, callback_data=f"fbr:{vacancy_id}:{code}") for code, label in REASONS[:2]]
     row2 = [InlineKeyboardButton(text=label, callback_data=f"fbr:{vacancy_id}:{code}") for code, label in REASONS[2:4]]
@@ -30,6 +42,6 @@ def done_kb(label: str = "✓ учтено") -> InlineKeyboardMarkup:
 def parse_callback(data: str) -> tuple[str, int, str] | None:
     """'fb:12:up' -> ('fb', 12, 'up'); None if malformed."""
     parts = data.split(":")
-    if len(parts) != 3 or parts[0] not in ("fb", "fbr", "act") or not parts[1].isdigit():
+    if len(parts) != 3 or parts[0] not in ("fb", "fbr", "act", "out") or not parts[1].isdigit():
         return None
     return parts[0], int(parts[1]), parts[2]

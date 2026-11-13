@@ -17,7 +17,8 @@ import sqlite3
 from collections import Counter
 from dataclasses import dataclass
 
-from hh_scout.config import BLOCKED_REGIONS, TITLE_KEEP_WORDS, TITLE_REQUIRED_ANY, TITLE_STOP_WORDS, Settings
+from hh_scout.config import (BLOCKED_REGIONS, TITLE_KEEP_WORDS, TITLE_PANEL_HINTS, TITLE_PLANT_HINTS, TITLE_REQUIRED_ANY,
+                             TITLE_STOP_WORDS, Settings)
 from hh_scout.db import transaction
 from hh_scout.hh.areas import blocked_region
 from hh_scout.pipeline import defense, home_region, repo
@@ -70,6 +71,20 @@ def decide(card: CardFacts) -> str | None:
     return None
 
 
+NO_TITLE = "no_engineering_title"
+
+
+def trade_channel(title: str) -> str | None:
+    """Which company channel a title without an engineering word still points at (v9.47): 'panel' — a panel
+    builder's trade, 'plant' — a trade of a company that runs automation; None — the title rule holds."""
+    low = title.casefold()
+    if any(k in low for k in TITLE_PANEL_HINTS):
+        return repo.PANEL_PASS
+    if any(k in low for k in TITLE_PLANT_HINTS):
+        return repo.PLANT_PASS
+    return None
+
+
 def _facts(row: sqlite3.Row, home: home_region.Home | None = None) -> CardFacts:
     return CardFacts(hh_id=row["hh_id"], title=row["title"] or "", applied=bool(row["applied"]),
                      archived=(row["skip_reason"] == "archived"), company=(lead_kind(row) == "company"),
@@ -87,11 +102,19 @@ def run(conn: sqlite3.Connection, settings: Settings, *, dry_run: bool = False) 
     with transaction(conn):  # one commit for the whole batch, not one disk sync per card
         for row in rows:
             reason = decide(_facts(row, home))
-            key = reason or "passed"
+            # a trade title from an automation query: the company goes on to its channel (v9.47)
+            channel = trade_channel(row["title"] or "") if reason == NO_TITLE else None
+            if channel not in settings.company_channels_set:
+                channel = None
+            key = f"trade_{channel}" if channel else reason or "passed"
             outcomes[key.split(":")[0]] += 1
             if dry_run:
                 continue
-            if reason:
+            if channel:
+                if channel == repo.PANEL_PASS:
+                    repo.to_company_channel(conn, row["hh_id"], channel)   # judged by the company triage
+                repo.set_status(conn, row["hh_id"], "triage")              # a plant trade: the vacancy triage pools it
+            elif reason:
                 repo.set_status(conn, row["hh_id"], "skipped", reason)
             else:
                 repo.set_status(conn, row["hh_id"], "triage")

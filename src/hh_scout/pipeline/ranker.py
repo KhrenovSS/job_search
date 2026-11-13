@@ -295,11 +295,17 @@ COLLAPSED_LABELS = {
 _REASON_RU = {"salary": "зарплата", "format": "формат", "stack": "не мой стек", "agency": "агентство"}
 
 
-def format_collapsed(kind: str, row: sqlite3.Row, when: datetime | None = None, reason: str | None = None) -> str:
-    """One-line replacement for a processed lead card (no keyboard)."""
+MAIL_OUTCOME_RU = {"answered": "💬 ответили", "invited": "🤝 разговор", "refused": "🚫 отказ"}
+
+
+def format_collapsed(kind: str, row: sqlite3.Row, when: datetime | None = None, reason: str | None = None,
+                     outcome: str | None = None) -> str:
+    """One-line replacement for a processed lead card. `outcome` is what the company answered to an e-mail (v9.47)."""
     when = when or datetime.now(TZ)
     label = COLLAPSED_LABELS.get(kind, kind)
     tail = f" · {_REASON_RU.get(reason, reason)}" if reason else ""
+    if outcome:
+        tail += f" · {MAIL_OUTCOME_RU.get(outcome, outcome)}"
     return (f"{label} {when.strftime('%d.%m')}{tail} · {_esc(row['employer'] or 'компания не указана')} · "
             f"<a href=\"{row['url']}\">{_esc(row['title'])}</a>")
 

@@ -588,5 +588,15 @@ TITLE_REQUIRED_ANY: tuple[str, ...] = (
     "инженер", "программ", "автоматиз", "автоматик", "асу", "плк", "plc", "scada", "codesys", "кип", "наладчик",
     "разработчик", "техник", "электроник", "embedded", "engineer", "automation", "controls",
 )
+# A title without an engineering word is not always noise (v9.47, decision #78): the card came from a query about
+# ПЛК / АСУ ТП / SCADA, so the company behind it has automation. Measured 13.11 on 60 companies whose card the title
+# rule had dropped: the triage sent 41 to the plant pool, opened 1, closed 18. Such cards go on instead of being
+# written off — hh.ru rows only: «Работа России» has no triage stage behind the rule.
+# A panel trade: the company is judged as a panel builder (channel `panel`) — the panel pass finds the same card,
+# but whichever pass sees it first owns the row, and the vacancy pass used to drop it.
+TITLE_PANEL_HINTS: tuple[str, ...] = ("сборщик", "электромонтажник", "монтажник")
+# A plant trade: the vacancy triage closes the card and pools the company as a plant (`plant: true`, decision #55).
+TITLE_PLANT_HINTS: tuple[str, ...] = ("энергетик", "электромехан", "электромонт", "слесар", "электрик", "механик",
+                                      "метролог", "технолог")
 
 GROSS_TO_NET = 0.87  # approximation; progressive НДФЛ since 2025 makes it slightly optimistic above 200k/month

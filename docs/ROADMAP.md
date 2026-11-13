@@ -1,5 +1,19 @@
 # История и состояние проекта
 
+## v9.47 (13.11.2026) — больше лидов: порог 40, рабочие специальности в каналы компаний, исходы писем по e-mail
+Разбор по просьбе владельца («как находить больше заказчиков»). Листать hh.ru больше незачем: дневной лимит не выбирается
+(175–240 из 281), 2-я–5-я страницы выдачи дают 1–3 новых карточки, вакансию бот видит в среднем через 2,4 ч после публикации.
+Исходы 1116 откликов: каналы дают 2–4 % приглашений каждый, балл приглашение не предсказывает (решение №79).
+Сделано: (1) решение №80 — кнопки исхода под свёрнутой карточкой письма по e-mail и `/replied`; `outcomes.tracked`,
+`repo.record_mail_outcome`, `mail_leads_like`, `bot/keyboards.outcome_kb`, обработчик `out:` в `bot/feedback.py`;
+(2) решение №78 — `prefilter.trade_channel`, `TITLE_PANEL_HINTS` / `TITLE_PLANT_HINTS`, в журнале префильтра ключи
+`trade_panel` / `trade_plant`; (3) решение №79 — `SCORE_THRESHOLD=40` в `.env`.
+Тесты: `test_an_email_letter_is_measured_once_the_owner_can_report_its_answer`,
+`test_replied_finds_an_email_lead_by_a_part_of_the_company_name`, `test_outcome_buttons_and_the_collapsed_line`,
+`test_a_trade_title_from_an_automation_query_goes_on_to_its_company_channel`.
+Проверить через две недели (27.11): полосы 40–49 в `/stats`, строки «Канал» для e-mail-каналов, сколько компаний дали
+`trade_panel` / `trade_plant` и сколько из них стали лидами.
+
 ## v9.46 (31.10.2026) — зачистка дублей не держит блокировку, проверка компании по индексу
 Разбор дня 31.10: единственные ошибки за сутки — три `TelegramBadRequest: query is too old` в 13:27:50 (кнопка «✅ Написал»,
 апдейт шёл 21 с). Причина: после префильтра `dedup.revive_orphans` и `skip_covered` шли в одной транзакции `BEGIN IMMEDIATE`,

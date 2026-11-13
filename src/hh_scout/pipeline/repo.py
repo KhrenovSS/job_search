@@ -148,6 +148,7 @@ def insert_discovered(conn: sqlite3.Connection, card: "DiscoveredCard") -> bool:
 SOURCE_PREFIX_DISCOVERY = "discovery:"
 
 
+PANEL_PASS = "panel"          # the hh.ru channel of panel builders (`collector.PASS_PANEL`)
 PLANT_PASS = "plant"          # v9.15: companies that run automation, found through a closed non-programmer card
 PLANT_POOL = "plant_pool"     # skip_reason of a pooled card: inert for every stage until `admit_plant_leads`
 
@@ -330,6 +331,12 @@ def set_status(conn: sqlite3.Connection, hh_id: str, status: str, reason: str | 
         "UPDATE vacancies SET status = ?, skip_reason = ?, updated_at = ? WHERE hh_id = ?",
         (status, reason, utcnow(), hh_id),
     )
+
+
+def to_company_channel(conn: sqlite3.Connection, hh_id: str, channel: str) -> None:
+    """A vacancy-pass card whose title names a company channel's trade becomes that channel's company card (v9.47)."""
+    conn.execute("UPDATE vacancies SET lead_kind = 'company', search_pass = ?, updated_at = ? WHERE hh_id = ?",
+                 (channel, utcnow(), hh_id))
 
 
 def save_triage(conn: sqlite3.Connection, hh_id: str, *, open_it: bool, priority: int, note: str) -> None:
@@ -1054,12 +1061,49 @@ def employer_searching_days(conn: sqlite3.Connection, row: sqlite3.Row) -> int:
 # --- outcomes: what came back from the companies (v9.7) ----------------------------------
 # The rows only; what they mean is `pipeline/outcomes.py`.
 
+# Letters sent by e-mail have no hh.ru conversation to read, so the owner reports the answer himself with the buttons
+# under the collapsed card (v9.47). A letter sent before the buttons existed stays «blind» unless he reported it
+# afterwards: counting 434 old letters as silence would invent a failure nobody measured.
+MAIL_OUTCOMES_SINCE = "2026-11-13"
+MAIL_STATES = {"answered": "RESPONSE", "invited": "INTERVIEW", "refused": "DISCARD"}   # the vocabulary hh.ru uses
+MAIL_SITES = ("owen", "trudvsem", "zakupki", "web")
+
+
+def record_mail_outcome(conn: sqlite3.Connection, vacancy_id: int, kind: str) -> None:
+    """What a company answered to an e-mail, in the columns the hh.ru sync fills for a response: /stats, the digest
+    header and the evaluator's calibration then read both channels alike. `updated_at` stays — the daily gates of the
+    company channels count rows by it."""
+    state = MAIL_STATES[kind]
+    conn.execute("UPDATE vacancies SET negotiation_state = ?, has_chat = 1, negotiation_seen_at = ? WHERE id = ?",
+                 (state, utcnow(), vacancy_id))
+    record_negotiation(conn, vacancy_id, state, True)
+
+
+def mail_leads_like(conn: sqlite3.Connection, text: str, limit: int = 8) -> list[sqlite3.Row]:
+    """E-mail leads the owner wrote to whose company name contains `text` — for `/replied` on cards collapsed
+    before the outcome buttons existed."""
+    marks = ",".join("?" * len(MAIL_SITES))
+    return conn.execute(
+        f"SELECT v.* FROM vacancies v WHERE v.site IN ({marks}) AND v.status = 'sent' "
+        "AND casefold(v.employer) LIKE ? AND EXISTS (SELECT 1 FROM lead_actions a WHERE a.vacancy_id = v.id "
+        "AND a.action = 'responded') ORDER BY v.id DESC LIMIT ?",
+        (*MAIL_SITES, f"%{text.casefold().replace('%', '').replace('_', ' ')}%", limit)).fetchall()
+
+
+def responded_at(conn: sqlite3.Connection, vacancy_id: int) -> str | None:
+    row = conn.execute("SELECT created_at FROM lead_actions WHERE vacancy_id = ? AND action = 'responded' "
+                       "ORDER BY id DESC LIMIT 1", (vacancy_id,)).fetchone()
+    return row["created_at"] if row else None
+
+
 _OUTCOMES_SQL = f"""
     SELECT v.id AS vacancy_id,
            e.total AS total,
            v.applied AS applied,
            v.has_chat AS has_chat,
            v.negotiation_state AS state,
+           v.site AS site,
+           (v.site <> 'hh' AND (v.negotiation_state IS NOT NULL OR MIN(d.sent_at) >= '{MAIL_OUTCOMES_SINCE}')) AS mail_tracked,
            e.company_kind AS company_kind,
            e.floor AS floor,
            v.lead_kind AS lead_kind,

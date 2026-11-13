@@ -9,10 +9,14 @@ from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery
 
-from hh_scout.bot.keyboards import REASONS, parse_callback, reason_kb, vote_kb
+from datetime import datetime
+
+from hh_scout.bot.keyboards import MAIL_OUTCOMES, REASONS, outcome_kb, parse_callback, reason_kb, vote_kb
 from hh_scout.bot.lead_actions import collapse_lead
+from hh_scout.config import TZ
 from hh_scout.db import kv_get, kv_set
 from hh_scout.pipeline import repo
+from hh_scout.pipeline.ranker import format_collapsed
 
 log = logging.getLogger(__name__)
 router = Router(name="feedback")
@@ -118,3 +122,36 @@ async def action(cb: CallbackQuery, conn: sqlite3.Connection) -> None:
         await cb.answer("Отложено — в /inbox внизу списка")
     else:
         await cb.answer("Неизвестное действие")
+
+
+def collapsed_with_outcome(conn: sqlite3.Connection, row: sqlite3.Row, kind: str) -> str:
+    """The collapsed line of an e-mail lead with the company's answer added; the date stays the day of the letter."""
+    when = None
+    raw = repo.responded_at(conn, row["id"])
+    if raw:
+        try:
+            when = datetime.fromisoformat(raw).astimezone(TZ)
+        except ValueError:
+            when = None
+    return format_collapsed("responded", row, when=when, outcome=kind)
+
+
+@router.callback_query(F.data.startswith("out:"))
+async def mail_outcome(cb: CallbackQuery, conn: sqlite3.Connection) -> None:
+    """💬 Ответили / 🤝 Разговор / 🚫 Отказ under a collapsed e-mail lead (v9.47): the outcome hh.ru cannot report."""
+    parsed = parse_callback(cb.data or "")
+    if not parsed or parsed[2] not in repo.MAIL_STATES:
+        await cb.answer("Не понял кнопку")
+        return
+    _, vacancy_id, kind = parsed
+    row = repo.vacancy_by_id(conn, vacancy_id)
+    if row is None:
+        await cb.answer("Лид не найден")
+        return
+    with conn:
+        repo.record_mail_outcome(conn, vacancy_id, kind)
+    try:
+        await cb.message.edit_text(collapsed_with_outcome(conn, row, kind), reply_markup=outcome_kb(vacancy_id, kind))
+    except TelegramBadRequest:
+        pass  # the same button twice: nothing to change
+    await cb.answer(f"Записано: {dict(MAIL_OUTCOMES)[kind]}")

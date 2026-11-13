@@ -15,6 +15,8 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Callable, Sequence
 
+from hh_scout.pipeline.rows import row_get
+
 # Score bands the method is calibrated on. Kept here, not in the query, so the digest, /stats and
 # any later threshold decision all slice the data the same way.
 # 40–59 joined on 2026-09-20 (decision #52: threshold 50 and the daily floor down to 40); the older bands keep their edges.
@@ -52,10 +54,16 @@ def age_days(row: sqlite3.Row) -> float:
     return (datetime.now(timezone.utc) - when).total_seconds() / 86400.0
 
 
+def tracked(row: sqlite3.Row | dict) -> bool:
+    """Whether the answer to this letter can reach us: hh.ru shows it for a response (`applied`), and for a letter
+    sent by e-mail the owner reports it with the card's buttons (`mail_tracked`, v9.47)."""
+    return bool(row["applied"]) or bool(row_get(row, "mail_tracked"))
+
+
 def outcome_of(row: sqlite3.Row | dict) -> str:
     """invited / refused / answered / silent / blind — what the company did about this letter."""
-    if not row["applied"]:
-        return "blind"       # sent outside hh.ru: the answer is invisible to us, never a failure
+    if not tracked(row):
+        return "blind"       # sent outside hh.ru before the outcome buttons: the answer is invisible, never a failure
     state = (row["state"] or "").upper()
     if state == "INTERVIEW":
         return "invited"
@@ -92,19 +100,19 @@ def maturing(rows: Sequence[sqlite3.Row], mature_days: int) -> int:
 
 
 def _tally(cell: Sequence[sqlite3.Row]) -> dict[str, Any]:
-    tracked = [r for r in cell if r["applied"]]
-    kinds = [outcome_of(r) for r in tracked]
+    seen = [r for r in cell if tracked(r)]
+    kinds = [outcome_of(r) for r in seen]
     answered, invited = kinds.count("answered"), kinds.count("invited")
     return {
         "n": len(cell),
-        "tracked": len(tracked),
-        "blind": len(cell) - len(tracked),
+        "tracked": len(seen),
+        "blind": len(cell) - len(seen),
         "answered": answered,      # wrote back and did not refuse; invitations are their own column
         "invited": invited,
         "refused": kinds.count("refused"),
         "silent": kinds.count("silent"),
         # the share worth acting on: any positive reaction among the letters hh can see
-        "rate": round(100 * (answered + invited) / len(tracked)) if len(tracked) >= MIN_CELL else None,
+        "rate": round(100 * (answered + invited) / len(seen)) if len(seen) >= MIN_CELL else None,
     }
 
 
@@ -155,7 +163,7 @@ def reply_delay_curve(rows: Sequence[sqlite3.Row]) -> list[tuple[str, int, int]]
     buckets = (("0-1 дн.", 0, 2), ("2-4 дн.", 2, 5), ("5-7 дн.", 5, 8), ("8+ дн.", 8, 10_000))
     out = []
     for name, lo, hi in buckets:
-        cell = [r for r in rows if r["applied"] and lo <= age_days(r) < hi]
+        cell = [r for r in rows if tracked(r) and lo <= age_days(r) < hi]
         out.append((name, len(cell), sum(1 for r in cell if outcome_of(r) != "silent")))
     return out
 

@@ -15,8 +15,10 @@ from datetime import datetime, timedelta, timezone
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 
+from hh_scout.bot.keyboards import outcome_kb
 from hh_scout.pipeline import repo
 from hh_scout.pipeline.ranker import format_collapsed
+from hh_scout.pipeline.rows import needs_email
 
 log = logging.getLogger(__name__)
 BULK_PAUSE_S = 0.5   # between leads of a bulk collapse; a single one (a button press) needs no pause
@@ -48,10 +50,12 @@ async def collapse_lead(bot: Bot, conn: sqlite3.Connection, chat_id: int, vacanc
     card_id, letter_id = repo.lead_messages(conn, vacancy_id)
     with conn:
         repo.add_action(conn, vacancy_id, kind, reason)
+    # a letter sent by e-mail: the collapsed card keeps the buttons the owner reports the answer with (v9.47)
+    markup = outcome_kb(vacancy_id) if kind == "responded" and row is not None and needs_email(row) else None
     if card_id:
         await _wait_out_flood(
             lambda: bot.edit_message_text(format_collapsed(kind, row, reason=reason), chat_id=chat_id,
-                                          message_id=card_id), "свернуть карточку", vacancy_id)
+                                          message_id=card_id, reply_markup=markup), "свернуть карточку", vacancy_id)
     if letter_id:
         await _wait_out_flood(lambda: bot.delete_message(chat_id, letter_id), "удалить письмо", vacancy_id)
     return True

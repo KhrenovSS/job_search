@@ -200,7 +200,7 @@ kv `sending_since` (21.09) — момент начала мгновенной о
 означало сутки, а не время с последнего подхода.
 
 ## Что ответила компания (v9.7)
-`vacancies.negotiation_state` — состояние переписки на hh.ru как его отдаёт сам сайт (`RESPONSE` — отклик без ответа,
+`vacancies.negotiation_state` — для письма по e-mail (`site` owen / trudvsem / zakupki / web) исход отмечает владелец кнопками или `/replied` (решение №80, `repo.record_mail_outcome`); для hh.ru — состояние переписки как его отдаёт сам сайт (`RESPONSE` — отклик без ответа,
 `INTERVIEW` — пригласили, `DISCARD` — отказ), `negotiation_seen_at` — когда мы это увидели. Пишется при синхронизации
 откликов (`pipeline/negotiations.sync_page` → `repo.mark_applied`): любое ненулевое состояние перезаписывает прежнее, NULL поверх
 значения не пишется (`COALESCE`); порядок код не проверяет — hh сам не отзывает приглашение.
