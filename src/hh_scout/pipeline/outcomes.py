@@ -208,12 +208,27 @@ def _by_letter_len(r: sqlite3.Row) -> str | None:
     return "до 2500" if n < 2500 else "2500-3000" if n < 3000 else "3000+"
 
 
+# v9.51 (decision #82): the letter rules changed on 14.11.2026 — company first, a concrete next step in the closing,
+# one or two terms instead of the stock five, the vacancy named in an offer that answers it. The split is by the
+# letter's own timestamp (UTC), so a lead that waited in the queue and was rewritten counts under the new rules.
+LETTER_RULES_SINCE = "2026-11-15"
+
+
+def _by_letter_rules(r: sqlite3.Row) -> str | None:
+    at = r["letter_at"]
+    if not at:
+        return None
+    day = f"{LETTER_RULES_SINCE[8:]}.{LETTER_RULES_SINCE[5:7]}"
+    return f"с {day} (v9.51)" if str(at) >= LETTER_RULES_SINCE else f"до {day}"
+
+
 DIMENSIONS: tuple[tuple[str, Callable[[sqlite3.Row], str | None]], ...] = (
     ("Тип компании", _by_company_kind),
     ("Формат работы", _by_work_format),
     ("Досье на компанию", _by_dossier),
     ("Ищут давно", _by_searching),
     ("Длина письма", _by_letter_len),
+    ("Правила письма", _by_letter_rules),
     ("Порог / минимум", _by_floor),
     ("Тип лида", _by_lead_kind),
     ("Канал", _by_channel),

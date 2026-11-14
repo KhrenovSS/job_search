@@ -261,3 +261,11 @@ def test_bands_below_sixty_are_measured_on_their_own_and_floor_letters_are_a_sli
     assert bands["40-49"]["written"] == 1 and bands["40-49"]["answered"] == 1 and bands["55-59"]["silent"] == 1
     by_floor = {b["name"]: b for b in outcomes.outcome_by(rows, dict(outcomes.DIMENSIONS)["Порог / минимум"], 5)}
     assert by_floor["по дневному минимуму"]["tracked"] == 1 and by_floor["по порогу"]["tracked"] == 1
+
+
+def test_stats_split_letters_by_the_rules_they_were_written_under():
+    """v9.51 (decision #82): the before/after cut the 12.12.2026 review of the new letter rules rests on."""
+    cut = dict(outcomes.DIMENSIONS)["Правила письма"]
+    assert cut({"letter_at": "2026-11-14T15:16:38+00:00"}) == "до 15.11"
+    assert cut({"letter_at": "2026-11-15T02:00:00+00:00"}) == "с 15.11 (v9.51)"
+    assert cut({"letter_at": None}) is None

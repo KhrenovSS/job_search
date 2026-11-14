@@ -499,3 +499,25 @@ def test_a_procurement_winner_without_a_site_still_gets_its_contract_hooks():
     got = dossier_for_letter(tender, found)
     assert got["what_they_do"] == "Автоматизация котельных" and got["sites"] == ["Тверь"]
     assert "sources" not in got and "note" not in got and "contact_email" not in got
+
+
+def test_brochure_phrases_are_refused_but_plain_verbs_are_not():
+    """v9.51 (decision #82): whole brochure phrases are refused by code; single words are left to the editor."""
+    from hh_scout.llm import letter_checks
+    for phrase in ("Важно отметить, что программу отлаживаю на стенде.", "У меня богатый опыт в АСУ ТП.",
+                   "Работаю на высоком уровне.", "Надеюсь на сотрудничество."):
+        assert "оборот" in letter_checks.cliche_problem(phrase), phrase
+    # ordinary engineering prose with the same roots stays legal
+    assert letter_checks.cliche_problem("ПЛК обеспечивает обмен по Modbus, уровень в баке высокий — авария.") == ""
+
+
+def test_a_company_offer_knows_how_it_will_be_delivered():
+    """v9.51 (decision #82): an offer answering a fitter's vacancy on hh.ru explains why a programmer writes;
+    one that goes by e-mail must not mention a vacancy — the prompt tells them apart by `delivery`."""
+    conn = _db()
+    conn.execute("UPDATE vacancies SET lead_kind = 'company', search_pass = 'plant' WHERE id = 1")
+    conn.execute("UPDATE vacancies SET lead_kind = 'company', search_pass = 'discovery', site = 'web' WHERE id = 2")
+    by_hh = letter_payload(repo.lead_by_hh_id(conn, "1"))
+    by_mail = letter_payload(repo.lead_by_hh_id(conn, "2"))
+    assert (by_hh["kind"], by_hh["delivery"]) == ("company", "hh_response")
+    assert (by_mail["kind"], by_mail["delivery"]) == ("company", "email")

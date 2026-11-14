@@ -35,7 +35,13 @@ MONEY_RE = re.compile(
 
 # Phrases that make the letter read as a mailshot or as flattery of the recruiter.
 BANNED = ("помогу закрыть", "закрыть позицию", "закрыть вакансию", "уникальн", "инновацион", "уважаемые",
-          "динамично развивающ", "выполните kpi", "сэкономите на зарплате", "сэкономите бюджет", "сэкономить бюджет")
+          "динамично развивающ", "выполните kpi", "сэкономите на зарплате", "сэкономите бюджет", "сэкономить бюджет",
+          # v9.51 (decision #82): the unambiguous marks of machine and brochure prose. Only whole phrases — a bare
+          # «обеспечивает» or «является» is a matter for the prompt and the editor, a substring ban would refuse good letters
+          "важно отметить", "стоит отметить", "следует подчеркнуть", "богатый опыт", "богатым опытом",
+          "индивидуальный подход", "индивидуальным подходом", "высокий уровень", "высоком уровне", "лучшие практики",
+          "лучших практик", "в современных условиях", "надеюсь на сотрудничество", "надеюсь на дальнейшее",
+          "надеюсь на плодотворное")
 
 # The letter must never sort its reader by job title: "Для отдела кадров: подряд не требует…" reads as a mailshot,
 # and the owner deleted that label by hand from every letter that had it (v9.6, decision #38). Cutting the label is

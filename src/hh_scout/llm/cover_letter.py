@@ -111,6 +111,9 @@ def letter_payload(row: sqlite3.Row, company: dict | None = None, owner_hint: st
         return {
             "kind": "company",
             "channel": row["search_pass"],
+            # v9.51 (decision #82): an offer that goes out as a response to somebody else's vacancy (a fitter, a panel
+            # assembler) must say why a programmer is writing; one that goes by e-mail must not mention the vacancy
+            "delivery": "email" if needs_email(row) else "hh_response",
             "company_name": row["employer"],
             "company_kind": row["company_kind"],
             "city": row["area_name"],
