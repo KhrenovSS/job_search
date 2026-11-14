@@ -45,10 +45,14 @@ class VacancyEvaluation(BaseModel):
     # v9.19: an operations/КИПиА vacancy of a company that runs automation itself — below the threshold it is not
     # a miss but a `plant` lead-in-waiting (same meaning as `TriageVerdict.plant`, one stage later)
     plant: bool = False
-    # v9.20 (decision #61): the only mandatory environment is one the owner does not sell himself (Siemens TIA Portal,
-    # Allen-Bradley Studio 5000, Omron, Mitsubishi, B&R …) — the company wants a specialist in it, not a contractor.
-    # The code turns this into `skipped/foreign_platform_only` whatever the scores say; a list of brands is not this.
+    # v9.20 (decision #61), widened by v9.49 (decision #81): every environment the vacancy names is one the owner does
+    # not sell himself (Siemens, ТЕКОН, Allen-Bradley, Omron, Mitsubishi, Yokogawa …) — none is CODESYS-based, ОВЕН,
+    # Schneider / Systeme Electric or a Chinese PLC. The code turns this into `skipped/foreign_platform_only` whatever
+    # the scores say. One own platform in the list, or no platform named, is not this.
     foreign_platform_only: bool = False
+    # v9.49 (decision #81): the work is boiler houses / heat substations (ИТП) — not a lock-out, the code subtracts
+    # `Settings.heating_score_penalty` from the total, so such leads go last and the weakest fall under the threshold.
+    heating_object: bool = False
     # v9.33 (decision #72): a defence enterprise, a structure of a holding with a defence wing, military products or
     # гособоронзаказ in the text — `skipped/defense:evaluation` whatever the scores say.
     defense_enterprise: bool = False
@@ -87,6 +91,8 @@ class CompanyEvaluation(BaseModel):
     offer_focus: list[str] = Field(default_factory=list)
     red_flags: list[str] = Field(default_factory=list)
     defense_enterprise: bool = False   # v9.33 (decision #72), same meaning as in VacancyEvaluation
+    foreign_platform_only: bool = False   # v9.49 (decision #81): the automation seen runs only on foreign platforms
+    heating_object: bool = False          # v9.49 (decision #81): a boiler-house / ИТП company — penalised, not dropped
 
     @field_validator("hh_id", mode="before")
     @classmethod

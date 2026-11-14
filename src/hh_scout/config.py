@@ -217,6 +217,9 @@ class Settings(BaseSettings):
     weight_tech: float = 0.55   # CODESYS/ST/MasterSCADA/PLC programming match
     weight_role: float = 0.25   # they need a programmer (not designer / maintenance / sales)
     weight_lead: float = 0.20   # direct employer, contract-friendly signals
+    # v9.49 (decision #81): boiler houses and heat substations (ИТП) gave the owner negative feedback and 1 invitation
+    # in 60 responses — not dropped, but the total loses this many points (`heating_object` of the evaluation).
+    heating_score_penalty: int = 15
 
     # Home regions (v9.43, decision #77): while the owner is away he takes fewer leads of a higher grade — only from
     # Moscow, the Moscow region and its neighbours. hh.ru region names, comma-separated (resolved through the cached

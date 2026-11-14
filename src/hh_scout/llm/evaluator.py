@@ -212,8 +212,9 @@ class Evaluator:
 
         Decision #72 (v9.33): a defence enterprise — or a structure of a holding with a defence wing — gets no letter,
         vacancy or company alike (`skipped/defense:evaluation`); the company's other rows follow through `dedup`.
-        Decision #61 (v9.20): a vacancy whose only mandatory environment is not the owner's — a company that wants a
-        Siemens (Allen-Bradley, Omron …) specialist — leaves the queue as `skipped/foreign_platform_only`.
+        Decision #61 (v9.20), widened by #81 (v9.49): a row whose every named environment is foreign — a company that
+        wants a Siemens (ТЕКОН, Allen-Bradley …) specialist — leaves the queue as `skipped/foreign_platform_only`,
+        vacancy or company lead alike.
         The scores stay in `evaluations` for the record; neither the daily floor nor `--requeue-rejected` take
         `skipped` rows back."""
         if ev.defense_enterprise and letter_key(row) != "profi":
@@ -221,11 +222,11 @@ class Evaluator:
             log.info("Оборонное предприятие, не лид: %s «%s» — %s (оценка: %s)", row["hh_id"], (row["title"] or "")[:50],
                      row["employer"] or "—", "; ".join(ev.red_flags) or "оборонное предприятие")
             return "defense"
-        if isinstance(ev, CompanyEvaluation) or not ev.foreign_platform_only or letter_key(row) != "hh":
+        if not ev.foreign_platform_only or letter_key(row) == "profi":
             return None
         repo.set_status(self.conn, row["hh_id"], "skipped", "foreign_platform_only")
-        log.info("Чужая среда, не лид: %s «%s» — %s (%s)", row["hh_id"], (row["title"] or "")[:50], row["employer"] or "—",
-                 "; ".join(ev.red_flags) or "единственная обязательная среда не из ядра")
+        log.info("Только чужие среды, не лид: %s «%s» — %s (%s)", row["hh_id"], (row["title"] or "")[:50],
+                 row["employer"] or "—", "; ".join(ev.red_flags) or "ни одной своей среды")
         return "foreign"
 
     def _pool_if_plant(self, row: sqlite3.Row, ev: VacancyEvaluation | CompanyEvaluation) -> bool:
@@ -245,18 +246,28 @@ class Evaluator:
             return True
         return False
 
+    def _heating(self, ev: VacancyEvaluation | CompanyEvaluation, total: int) -> tuple[int, list[str]]:
+        """Decision #81 (v9.49): a boiler-house / ИТП lead keeps its place in the queue but loses points — it goes last,
+        and the weakest fall under the threshold. The penalty is named in red_flags so the card shows why."""
+        flags = list(ev.red_flags)
+        penalty = self.s.heating_score_penalty
+        if not ev.heating_object or penalty <= 0:
+            return total, flags
+        flags.append(f"котельная/ИТП: −{penalty}")
+        return max(0, total - penalty), flags
+
     def _store(self, row: sqlite3.Row, ev: VacancyEvaluation | CompanyEvaluation) -> None:
         if isinstance(ev, CompanyEvaluation):
             # a company lead: fit stands where tech does, there is no role, the contract form is unknown by nature
-            total = company_total_score(self.s, ev.fit_score, ev.lead_score)
+            total, flags = self._heating(ev, company_total_score(self.s, ev.fit_score, ev.lead_score))
             values = (row["id"], ev.fit_score, 0, 0, 0, ev.lead_score, total, "maybe", int(ev.company_kind == "agency"),
-                      "unknown", ev.company_kind, ev.verdict, ev.pitch_hint, json.dumps(ev.red_flags, ensure_ascii=False),
+                      "unknown", ev.company_kind, ev.verdict, ev.pitch_hint, json.dumps(flags, ensure_ascii=False),
                       None, utcnow(), json.dumps(ev.offer_focus, ensure_ascii=False))
         else:
-            total = total_score(self.s, ev.tech_score, ev.role_score, ev.lead_score)
+            total, flags = self._heating(ev, total_score(self.s, ev.tech_score, ev.role_score, ev.lead_score))
             values = (row["id"], ev.tech_score, 0, 0, ev.role_score, ev.lead_score, total, ev.ip_gph_possible,
                       int(ev.is_agency), "unknown", ev.company_kind, ev.verdict, ev.pitch_hint,
-                      json.dumps(ev.red_flags, ensure_ascii=False), None, utcnow(), None)
+                      json.dumps(flags, ensure_ascii=False), None, utcnow(), None)
         self.conn.execute("DELETE FROM evaluations WHERE vacancy_id = ?", (row["id"],))
         self.conn.execute(
             """INSERT INTO evaluations(vacancy_id, tech_score, salary_score, format_score, role_score, lead_score, total,

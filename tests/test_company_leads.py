@@ -98,6 +98,43 @@ def test_company_evaluation_is_stored_with_fit_and_lead_and_no_role(tmp_path):
 
 
 @respx.mock
+def test_foreign_platforms_lock_out_and_a_heating_object_goes_last(tmp_path):
+    """Decision #81 (v9.49): a company whose automation runs only on foreign platforms is no lead; a boiler-house /
+    ИТП lead keeps its place but loses `heating_score_penalty` points — the weakest fall under the threshold."""
+    from hh_scout.llm.evaluator import Evaluator
+    from hh_scout.llm.schemas import CompanyEvaluation
+
+    prompts = tmp_path / "prompts"
+    prompts.mkdir()
+    (prompts / "candidate_profile.md").write_text("ПРОФИЛЬ", encoding="utf-8")
+    (prompts / "company_evaluation.md").write_text("h\n---\nCOMPANY-EVAL {feedback_block}", encoding="utf-8")
+    s = Settings(_env_file=None, bridge_url="http://bridge.test", bridge_token="t", prompts_dir=prompts, score_threshold=40)
+    conn = _db()
+    for vid in (11, 12, 13, 14):
+        _company_row(conn, vid, str(vid), employer=f"Компания {vid}")
+
+    def scored(hh_id, fit, lead, **extra):
+        return {"hh_id": hh_id, "fit_score": fit, "lead_score": lead, "company_kind": "panel_builder", "verdict": "v",
+                "pitch_hint": "p", "offer_focus": ["templates"], "red_flags": [], **extra}
+
+    respx.post("http://bridge.test/complete").mock(return_value=httpx.Response(200, json={"text": json.dumps([
+        scored("11", 80, 70, foreign_platform_only=True),     # линии на SIMATIC и Allen-Bradley
+        scored("12", 80, 70, heating_object=True),            # шкафы для котельных: 76 − 15 = 61, still a lead, later
+        scored("13", 50, 50, heating_object=True),            # 50 − 15 = 35: under the threshold 40
+        scored("14", 80, 70),
+    ])}))
+    stats = Evaluator(s, conn, BridgeClient(s, sleep=lambda x: None)).run()
+    assert (stats.evaluated, stats.locked_out) == (4, 1)
+    row = conn.execute("SELECT status, skip_reason FROM vacancies WHERE hh_id='11'").fetchone()
+    assert tuple(row) == ("skipped", "foreign_platform_only")
+    heat = repo.lead_by_hh_id(conn, "12")
+    assert heat["total"] == 76 - 15 and "котельная/ИТП: −15" in json.loads(heat["red_flags"])
+    assert repo.lead_by_hh_id(conn, "13")["total"] == 35
+    assert [r["hh_id"] for r in repo.lead_queue(conn, 40)] == ["14", "12"]
+    assert CompanyEvaluation(hh_id="x", fit_score=1, lead_score=1, verdict="v").heating_object is False   # old answers valid
+
+
+@respx.mock
 def test_company_letter_uses_its_own_prompt_stamp_and_payload(tmp_path):
     from hh_scout.llm.cover_letter import CoverLetterWriter, letter_payload, rules_hash
 
