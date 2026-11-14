@@ -142,6 +142,26 @@ def test_revive_orphans_does_not_loop():
     assert dedup.revive_orphans(conn, s) == 0
 
 
+def test_revive_orphans_keeps_same_title_twins_of_a_judged_cover_down():
+    """One «Электромонтажник» in many cities: once one copy was evaluated as no lead, the others stay duplicates."""
+    s = Settings(_env_file=None)
+    conn = _conn()
+    _vac(conn, "W", "evaluated", employer="Адара", employer_id="1", total=21)
+    conn.execute("UPDATE vacancies SET title = 'Электромонтажник' WHERE hh_id = 'W'")
+    _vac(conn, "t1", "skipped", employer="Адара", employer_id="1", skip_reason="duplicate_employer:W", priority=1)
+    conn.execute("UPDATE vacancies SET title = ' электромонтажник ' WHERE hh_id = 't1'")
+    _vac(conn, "t2", "skipped", employer="Адара", employer_id="1", skip_reason="duplicate_employer:W", priority=1)
+    # a cover rejected without an evaluation (page never read) does not hold same-title twins
+    _vac(conn, "R", "rejected", employer="Бета", employer_id="2")
+    conn.execute("UPDATE vacancies SET title = 'Электромонтажник' WHERE hh_id = 'R'")
+    _vac(conn, "b1", "skipped", employer="Бета", employer_id="2", skip_reason="duplicate_employer:R", priority=1)
+    conn.execute("UPDATE vacancies SET title = 'Электромонтажник' WHERE hh_id = 'b1'")
+    assert dedup.revive_orphans(conn, s) == 2
+    assert _status(conn, "t1") == ("skipped", "duplicate_employer:W")   # same text, judged already
+    assert _status(conn, "t2") == ("to_fetch", None)                    # another vacancy of the company
+    assert _status(conn, "b1") == ("to_fetch", None)
+
+
 def _responded(conn, vacancy_id, *, when=None, action="responded"):
     conn.execute("INSERT INTO lead_actions(vacancy_id, action, created_at) VALUES (?,?,?)",
                  (vacancy_id, action, when or utcnow()))

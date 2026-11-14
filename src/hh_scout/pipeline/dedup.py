@@ -135,6 +135,10 @@ def skip_covered(conn: sqlite3.Connection, settings: Settings, status: str) -> i
 
 
 DUPLICATE_PREFIX = "duplicate_employer:"
+def _same_title(a: str | None, b: str | None) -> bool:
+    return bool(a) and " ".join((a or "").casefold().split()) == " ".join((b or "").casefold().split())
+
+
 _IN_FLIGHT = ("new", "triage", "to_fetch")  # the covering vacancy still has a chance; `prefiltered` covers via covering_lead
 
 
@@ -147,7 +151,11 @@ def revive_orphans(conn: sqlite3.Connection, settings: Settings) -> int:
 
     Back to `to_fetch` if the card already passed AI triage (`triage_priority` is set), otherwise back to `triage`;
     a catalogue row (`site='owen'`, v9.22) has no page to open and goes straight back to `prefiltered`.
-    No loop: a revived twin ends up `rejected` (not `skipped`), so it is never picked up a second time."""
+    No loop: a revived twin ends up `rejected` (not `skipped`), so it is never picked up a second time.
+
+    A twin with the same title as an evaluated cover stays down (14.11): a contractor posting one «Электромонтажник»
+    in 70 cities otherwise revived all 70 after each rejection, the next one became the cover, cost a page and an
+    evaluation, scored the same and revived the rest again — ~3 pages and 3 bridge calls per sitting for nothing."""
     rows = conn.execute(
         "SELECT * FROM vacancies WHERE site IN ('hh', 'owen', 'trudvsem', 'zakupki', 'web') AND status = 'skipped' AND skip_reason LIKE ? ORDER BY id",
         (DUPLICATE_PREFIX + "%",)).fetchall()
@@ -155,10 +163,13 @@ def revive_orphans(conn: sqlite3.Connection, settings: Settings) -> int:
     # no transaction around the loop — see `skip_covered`; a revived `prefiltered` twin is visible to the next
     # iteration either way (same connection), so the company's other twins stay down as before
     for row in rows:
-        cover = conn.execute("SELECT status FROM vacancies WHERE hh_id = ?",
-                             (row["skip_reason"][len(DUPLICATE_PREFIX):],)).fetchone()
+        cover = conn.execute(
+            "SELECT v.status, v.title, EXISTS(SELECT 1 FROM evaluations e WHERE e.vacancy_id = v.id) AS judged "
+            "FROM vacancies v WHERE v.hh_id = ?", (row["skip_reason"][len(DUPLICATE_PREFIX):],)).fetchone()
         if cover is not None and cover["status"] in _IN_FLIGHT:
             continue                                   # that vacancy may still become the company's lead
+        if cover is not None and cover["judged"] and _same_title(cover["title"], row["title"]):
+            continue   # the same vacancy in another city: its text was judged already, another page would repeat it
         if covering_lead(conn, settings, row) is not None:
             continue                                   # the company has a lead (or one on its way) — stay a duplicate
         if row_site(row) in ("owen", "trudvsem", "zakupki", "web"):
