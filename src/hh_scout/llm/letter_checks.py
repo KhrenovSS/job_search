@@ -41,7 +41,10 @@ BANNED = ("помогу закрыть", "закрыть позицию", "за�
           "важно отметить", "стоит отметить", "следует подчеркнуть", "богатый опыт", "богатым опытом",
           "индивидуальный подход", "индивидуальным подходом", "высокий уровень", "высоком уровне", "лучшие практики",
           "лучших практик", "в современных условиях", "надеюсь на сотрудничество", "надеюсь на дальнейшее",
-          "надеюсь на плодотворное")
+          "надеюсь на плодотворное",
+          # decision #83: the reverse-vending machine is «фандомат» and nothing else — «постомат» was a typo that
+          # had spread from the resume into 43 letters; the owner never built a parcel locker
+          "постомат", "постамат")
 
 # The letter must never sort its reader by job title: "Для отдела кадров: подряд не требует…" reads as a mailshot,
 # and the owner deleted that label by hand from every letter that had it (v9.6, decision #38). Cutting the label is

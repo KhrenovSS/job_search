@@ -507,6 +507,9 @@ def test_brochure_phrases_are_refused_but_plain_verbs_are_not():
     for phrase in ("Важно отметить, что программу отлаживаю на стенде.", "У меня богатый опыт в АСУ ТП.",
                    "Работаю на высоком уровне.", "Надеюсь на сотрудничество."):
         assert "оборот" in letter_checks.cliche_problem(phrase), phrase
+    # decision #83: the machine is «фандомат»; the typo «постомат» is refused so the model rewrites it
+    assert "оборот" in letter_checks.cliche_problem("Писал ПО постомата по приёму тары на Wecon AC60.")
+    assert letter_checks.cliche_problem("Писал ПО фандомата (автомата по приёму тары) на Wecon AC60.") == ""
     # ordinary engineering prose with the same roots stays legal
     assert letter_checks.cliche_problem("ПЛК обеспечивает обмен по Modbus, уровень в баке высокий — авария.") == ""
 
