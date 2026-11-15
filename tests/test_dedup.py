@@ -381,3 +381,46 @@ def test_sweeps_hold_no_transaction_while_they_decide(monkeypatch):
     assert _status(conn, "a") == ("skipped", "duplicate_employer:L")
     assert _status(conn, "d") == ("to_fetch", None) or _status(conn, "d") == ("triage", None)
     assert _status(conn, "f") == ("skipped", "duplicate_employer:e")
+
+
+def _title(conn, hh_id, title):
+    conn.execute("UPDATE vacancies SET title = ? WHERE hh_id = ?", (title, hh_id))
+
+
+def test_collapse_batch_folds_same_title_twins_of_one_company_before_triage():
+    """15.11: one contractor's 26 identical «Электромонтажник» went to AI triage one by one (v9.52)."""
+    s = Settings(_env_file=None)
+    conn = _conn()
+    for h in ("e1", "e2", "e3"):
+        _vac(conn, h, "triage", employer="Р-Капитал", employer_id="7")
+        _title(conn, h, "Электромонтажник")
+    _vac(conn, "p1", "triage", employer="Р-Капитал", employer_id="7")       # another position of the same company
+    _title(conn, "p1", "Программист ПЛК")
+    _vac(conn, "o1", "triage", employer="Другая", employer_id="8")          # same title, another company
+    _title(conn, "o1", "Электромонтажник")
+    assert dedup.collapse_batch(conn, s, "triage") == 2
+    statuses = {h: _status(conn, h) for h in ("e1", "e2", "e3", "p1", "o1")}
+    kept = [h for h in ("e1", "e2", "e3") if statuses[h] == ("triage", None)]
+    assert len(kept) == 1
+    for h in ("e1", "e2", "e3"):
+        if h != kept[0]:
+            assert statuses[h] == ("skipped", f"duplicate_employer:{kept[0]}")
+    assert statuses["p1"] == ("triage", None)
+    assert statuses["o1"] == ("triage", None)
+    assert dedup.collapse_batch(conn, s, "triage") == 0                     # idempotent
+
+
+def test_twins_of_a_cover_closed_by_triage_stay_down_and_of_an_open_one_wait():
+    s = Settings(_env_file=None)
+    conn = _conn()
+    _vac(conn, "K", "skipped", employer="Р-Капитал", employer_id="7", skip_reason="triage", priority=1)
+    _title(conn, "K", "Электромонтажник")
+    _vac(conn, "k1", "skipped", employer="Р-Капитал", employer_id="7", skip_reason="duplicate_employer:K")
+    _title(conn, "k1", "Электромонтажник")
+    _vac(conn, "F", "to_fetch", employer="Бета", employer_id="2", priority=1)
+    _title(conn, "F", "Электромонтажник")
+    _vac(conn, "f1", "skipped", employer="Бета", employer_id="2", skip_reason="duplicate_employer:F")
+    _title(conn, "f1", "Электромонтажник")
+    assert dedup.revive_orphans(conn, s) == 0
+    assert _status(conn, "k1") == ("skipped", "duplicate_employer:K")
+    assert _status(conn, "f1") == ("skipped", "duplicate_employer:F")

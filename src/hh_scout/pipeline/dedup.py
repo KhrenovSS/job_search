@@ -9,6 +9,8 @@ HR desk. That check runs first, since it holds even when the company has no lead
 
 Applied three times, each as early as the data allows (cheapest first):
 * `skip_covered(conn, settings, status)` — before AI triage (`triage`) and, per row, before opening a vacancy page (`to_fetch`);
+* `collapse_batch(conn, settings, status)` — right after it, before AI triage: rows of one company with the same title
+  in one batch become one card (v9.52) — a contractor posting «Электромонтажник» in 26 cities sent all 26 to triage;
 * `dedupe_evaluated(conn, settings)` — after evaluation, before letters, and again when the digest is planned: among the
   evaluated hh.ru leads at/above the threshold only the best-scored vacancy of each employer stays.
 Identity: hh.ru `company.id` (`vacancies.employer_id`) or, for cards without an id, the employer name — and, since v9.22
@@ -134,6 +136,35 @@ def skip_covered(conn: sqlite3.Connection, settings: Settings, status: str) -> i
     return n
 
 
+def collapse_batch(conn: sqlite3.Connection, settings: Settings, status: str) -> int:
+    """Rows in `status` of one company with the same title collapse into the first one (`list_vacancies` order —
+    best first); the others → skipped/duplicate_employer:<kept>. Returns how many (v9.52).
+
+    `skip_covered` only sees leads that already exist, so twins inside one batch never closed each other: on 15.11
+    one contractor's 26 identical «Электромонтажник» went to AI triage one by one. Only the same title collapses —
+    two different positions of one company may get different triage verdicts. If the kept card is closed by triage,
+    `revive_orphans` keeps its same-title twins down; if it is opened, `skip_covered` holds them as usual.
+    No transaction around the loop — see `skip_covered`."""
+    rows = [r for r in repo.list_vacancies(conn, status) if not _exempt(r)]
+    if len(rows) < 2:
+        return 0
+    links = repo.contact_links(conn)
+    kept: list[sqlite3.Row] = []
+    n = 0
+    for row in rows:
+        twin = next((k for k in kept if _same_title(k["title"], row["title"]) and same_company(k, row, links)), None)
+        if twin is None:
+            kept.append(row)
+            continue
+        repo.skip_as_duplicate(conn, row["id"], twin["hh_id"])
+        log.debug("Одинаковая вакансия компании: %s «%s» (%s) — свёрнута в %s", row["hh_id"], (row["title"] or "")[:50],
+                  row["area_name"] or "—", twin["hh_id"])
+        n += 1
+    if n:
+        log.info("Одинаковые вакансии одной компании среди %s: %d свёрнуто в одну карточку", status, n)
+    return n
+
+
 DUPLICATE_PREFIX = "duplicate_employer:"
 def _same_title(a: str | None, b: str | None) -> bool:
     return bool(a) and " ".join((a or "").casefold().split()) == " ".join((b or "").casefold().split())
@@ -155,7 +186,9 @@ def revive_orphans(conn: sqlite3.Connection, settings: Settings) -> int:
 
     A twin with the same title as an evaluated cover stays down (14.11): a contractor posting one «Электромонтажник»
     in 70 cities otherwise revived all 70 after each rejection, the next one became the cover, cost a page and an
-    evaluation, scored the same and revived the rest again — ~3 pages and 3 bridge calls per sitting for nothing."""
+    evaluation, scored the same and revived the rest again — ~3 pages and 3 bridge calls per sitting for nothing.
+    A cover closed by AI triage counts as judged too (v9.52, `collapse_batch`): the same card in another city would get
+    the same verdict."""
     rows = conn.execute(
         "SELECT * FROM vacancies WHERE site IN ('hh', 'owen', 'trudvsem', 'zakupki', 'web') AND status = 'skipped' AND skip_reason LIKE ? ORDER BY id",
         (DUPLICATE_PREFIX + "%",)).fetchall()
@@ -164,7 +197,8 @@ def revive_orphans(conn: sqlite3.Connection, settings: Settings) -> int:
     # iteration either way (same connection), so the company's other twins stay down as before
     for row in rows:
         cover = conn.execute(
-            "SELECT v.status, v.title, EXISTS(SELECT 1 FROM evaluations e WHERE e.vacancy_id = v.id) AS judged "
+            "SELECT v.status, v.title, (EXISTS(SELECT 1 FROM evaluations e WHERE e.vacancy_id = v.id) "
+            "                          OR (v.status = 'skipped' AND v.skip_reason = 'triage')) AS judged "
             "FROM vacancies v WHERE v.hh_id = ?", (row["skip_reason"][len(DUPLICATE_PREFIX):],)).fetchone()
         if cover is not None and cover["status"] in _IN_FLIGHT:
             continue                                   # that vacancy may still become the company's lead

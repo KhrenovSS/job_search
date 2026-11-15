@@ -249,6 +249,7 @@ def run_crawl(settings: Settings, db_path: Path | str, trigger: str = "manual", 
     try:
         report.revived_duplicates = dedup.revive_orphans(conn, settings)
         report.duplicate_employers += dedup.skip_covered(conn, settings, "triage")
+        report.duplicate_employers += dedup.collapse_batch(conn, settings, "triage")
     except Exception as e:  # noqa: BLE001
         log.exception("Отсев дублей компаний упал")
         report.errors.append(f"дубли: {e}")

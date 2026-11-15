@@ -240,6 +240,7 @@ probe() {  # $1 — номер строки (порядок вывода), $2 �
   probe 5 "zakupki.gov.ru"       "https://zakupki.gov.ru/"                                           "канал tender v9.26: RSS + страницы ЕИС, по запросу в минуту" &
   probe 6 "hh.ru"                "https://hh.ru/"                                                    "основной источник (через VPN — нероссийский IP, риск №51)" &
   probe 7 "rabota.ru"            "https://www.rabota.ru/"                                            "открыт и так; API нет" &
+  probe 8 "owen.ru"              "https://owen.ru/"                                                  "каталог интеграторов ОВЕН (по воскресеньям 04:00); прямой маршрут с 15.11" &
   wait
 } | sort -n | cut -f2-
 
