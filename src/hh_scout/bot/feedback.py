@@ -12,7 +12,7 @@ from aiogram.types import CallbackQuery
 from datetime import datetime
 
 from hh_scout.bot.keyboards import MAIL_OUTCOMES, REASONS, outcome_kb, parse_callback, reason_kb, vote_kb
-from hh_scout.bot.lead_actions import collapse_lead
+from hh_scout.bot.lead_actions import close_lead, render_closed
 from hh_scout.config import TZ
 from hh_scout.db import kv_get, kv_set
 from hh_scout.pipeline import repo
@@ -88,7 +88,10 @@ async def reason(cb: CallbackQuery, conn: sqlite3.Connection) -> None:
     reason_code = None if code in ("skip", "text") else code
     with conn:
         repo.update_feedback_reason(conn, vacancy_id, reason_code)
-    collapsed = await collapse_lead(cb.bot, conn, cb.message.chat.id, vacancy_id, "disliked", reason_code)
+    collapsed = close_lead(conn, vacancy_id, "disliked", reason_code)
+    await cb.answer("Учтено")  # before the Telegram edits, like «✅ Написал» (v9.53)
+    if collapsed:
+        await render_closed(cb.bot, conn, cb.message.chat.id, vacancy_id, "disliked", reason_code)
     if code == "text":
         # the owner's own words (v9.11): the next reply to this prompt lands in feedback.reason as free text
         prompt = await cb.message.answer(ASK_REASON_TEXT)
@@ -97,7 +100,6 @@ async def reason(cb: CallbackQuery, conn: sqlite3.Connection) -> None:
         from hh_scout.bot.keyboards import done_kb
         label = "👎 учтено" if code == "skip" else f"👎 {_REASON_LABEL.get(code, code)}"
         await cb.message.edit_reply_markup(reply_markup=done_kb(label))
-    await cb.answer("Учтено")
 
 
 @router.callback_query(F.data.startswith("act:"))
@@ -108,12 +110,15 @@ async def action(cb: CallbackQuery, conn: sqlite3.Connection) -> None:
         return
     _, vacancy_id, what = parsed
     if what == "responded":
+        # record first, answer the tap at once, edit the chat after (v9.53): the two Telegram calls of the
+        # collapse took up to 7 s on 17.11 and the spinning button was pressed twice
+        if not close_lead(conn, vacancy_id, "responded"):
+            await cb.answer("Лид уже закрыт")
+            return
         with conn:
             repo.add_feedback(conn, vacancy_id, +1)
-        if await collapse_lead(cb.bot, conn, cb.message.chat.id, vacancy_id, "responded"):
-            await cb.answer("Отмечено: написал")
-        else:
-            await cb.answer("Лид уже закрыт")
+        await cb.answer("Отмечено: написал")
+        await render_closed(cb.bot, conn, cb.message.chat.id, vacancy_id, "responded")
     elif what == "later":
         with conn:
             if not _deferred(conn, vacancy_id):

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot
@@ -24,11 +25,18 @@ log = logging.getLogger(__name__)
 BULK_PAUSE_S = 0.5   # between leads of a bulk collapse; a single one (a button press) needs no pause
 
 
+SLOW_CALL_S = 2.0  # a Telegram call slower than this is logged: the owner sees it as a button that hangs
+
+
 async def _wait_out_flood(call, what: str, vacancy_id: int) -> bool:
     """Run one edit/delete, waiting out Telegram's flood control once. False means the card stayed as it was."""
     for attempt in (1, 2):
+        started = time.monotonic()
         try:
             await call()
+            took = time.monotonic() - started
+            if took > SLOW_CALL_S:
+                log.info("Telegram медленно: %s для %s — %.1f с", what, vacancy_id, took)
             return True
         except TelegramRetryAfter as e:
             if attempt == 2:
@@ -41,15 +49,21 @@ async def _wait_out_flood(call, what: str, vacancy_id: int) -> bool:
     return False
 
 
-async def collapse_lead(bot: Bot, conn: sqlite3.Connection, chat_id: int, vacancy_id: int, kind: str,
-                        reason: str | None = None) -> bool:
-    """Record the closing action, replace the card with one line, delete the letter. Returns False if not open."""
+def close_lead(conn: sqlite3.Connection, vacancy_id: int, kind: str, reason: str | None = None) -> bool:
+    """Record the closing action if the lead is still open. No await inside: a second tap of the same button
+    arriving while the first one waits on Telegram already sees the lead closed (v9.53)."""
     if not repo.is_lead_open(conn, vacancy_id):
         return False
-    row = repo.vacancy_by_id(conn, vacancy_id)
-    card_id, letter_id = repo.lead_messages(conn, vacancy_id)
     with conn:
         repo.add_action(conn, vacancy_id, kind, reason)
+    return True
+
+
+async def render_closed(bot: Bot, conn: sqlite3.Connection, chat_id: int, vacancy_id: int, kind: str,
+                        reason: str | None = None) -> None:
+    """Replace the card of a closed lead with one line and delete its letter (two Telegram calls)."""
+    row = repo.vacancy_by_id(conn, vacancy_id)
+    card_id, letter_id = repo.lead_messages(conn, vacancy_id)
     # a letter sent by e-mail: the collapsed card keeps the buttons the owner reports the answer with (v9.47)
     markup = outcome_kb(vacancy_id) if kind == "responded" and row is not None and needs_email(row) else None
     if card_id:
@@ -58,6 +72,14 @@ async def collapse_lead(bot: Bot, conn: sqlite3.Connection, chat_id: int, vacanc
                                           message_id=card_id, reply_markup=markup), "свернуть карточку", vacancy_id)
     if letter_id:
         await _wait_out_flood(lambda: bot.delete_message(chat_id, letter_id), "удалить письмо", vacancy_id)
+
+
+async def collapse_lead(bot: Bot, conn: sqlite3.Connection, chat_id: int, vacancy_id: int, kind: str,
+                        reason: str | None = None) -> bool:
+    """Record the closing action, replace the card with one line, delete the letter. Returns False if not open."""
+    if not close_lead(conn, vacancy_id, kind, reason):
+        return False
+    await render_closed(bot, conn, chat_id, vacancy_id, kind, reason)
     return True
 
 

@@ -259,3 +259,42 @@ def test_calibration_block_does_not_call_a_fresh_letter_silence():
     conn.execute("UPDATE digests SET sent_at = ?", (repo.utcnow(),))
     block = feedback_block(conn, mature_days=5)
     assert "молчит" not in block                                    # sent today: silence means nothing yet
+
+
+def test_written_tap_is_answered_before_telegram_and_a_second_tap_counts_once():
+    """v9.53: on 17.11 the collapse took up to 7 s and the spinning «✅ Написал» was pressed twice."""
+    import asyncio
+
+    from hh_scout.bot import feedback as fb_mod
+
+    conn = _db()
+    finalize_digest(conn, Settings(_env_file=None), [(repo.lead_by_hh_id(conn, "1"), 500, 501)], checked=0)
+    said = []
+
+    class _Bot:
+        async def edit_message_text(self, text, chat_id, message_id, reply_markup=None):
+            said.append("edit")
+            await asyncio.sleep(0.05)  # a slow Telegram: the second tap arrives meanwhile
+
+        async def delete_message(self, chat_id, message_id):
+            said.append("delete")
+
+    class _Cb:
+        data = "act:1:responded"
+        bot = _Bot()
+        message = type("M", (), {"chat": type("C", (), {"id": 1})()})()
+
+        async def answer(self, text=None):
+            said.append(("cb", text))
+
+    async def two_taps():
+        await asyncio.gather(fb_mod.action(_Cb(), conn), fb_mod.action(_Cb(), conn))
+
+    asyncio.run(two_taps())
+    assert said[0] == ("cb", "Отмечено: написал")
+    assert said.index(("cb", "Отмечено: написал")) < said.index("edit")
+    assert ("cb", "Лид уже закрыт") in said
+    assert said.count("edit") == 1 and said.count("delete") == 1
+    n_act = conn.execute("SELECT count(*) FROM lead_actions WHERE vacancy_id = 1 AND action = 'responded'").fetchone()[0]
+    n_fb = conn.execute("SELECT count(*) FROM feedback WHERE vacancy_id = 1").fetchone()[0]
+    assert (n_act, n_fb) == (1, 1)
