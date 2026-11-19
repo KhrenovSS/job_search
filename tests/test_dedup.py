@@ -309,7 +309,8 @@ def test_catalogue_row_and_hh_rows_of_one_firm_meet_both_ways():
     assert _status(conn2, "v")[0] == "triage"                                # a programmer vacancy is another channel
 
 
-def test_an_answered_catalogue_offer_does_not_close_a_vacancy_but_closes_a_company_row():
+def test_an_answered_catalogue_offer_closes_both_a_vacancy_and_a_company_row():
+    """v9.54, decision #84: an answer on any card closes the company for both kinds."""
     s = Settings(_env_file=None, employer_repeat_days=90)
     conn = _conn()
     ovid = _owen(conn, "9", "sent", employer="Завод", emails=["info@zavod.ru"])
@@ -318,11 +319,55 @@ def test_an_answered_catalogue_offer_does_not_close_a_vacancy_but_closes_a_compa
     _vac(conn, "p", "triage", employer="ООО Завод", employer_id="100")
     conn.execute("UPDATE vacancies SET lead_kind = 'company', search_pass = 'design' WHERE hh_id = 'p'")
     repo.record_contacts(conn, "100", emails=["INFO@zavod.ru"])
-    v = conn.execute("SELECT * FROM vacancies WHERE hh_id = 'v'").fetchone()
-    assert dedup.answered_employer(conn, s, v) is None
-    assert dedup.skip_covered(conn, s, "triage") == 1
+    assert dedup.skip_covered(conn, s, "triage") == 2
     assert _status(conn, "p") == ("skipped", "employer_responded:owen:9")
-    assert _status(conn, "v")[0] == "triage"
+    assert _status(conn, "v") == ("skipped", "employer_responded:owen:9")
+
+
+def _company(conn, hh_id):
+    conn.execute("UPDATE vacancies SET lead_kind = 'company', search_pass = 'panel' WHERE hh_id = ?", (hh_id,))
+
+
+def test_dedupe_evaluated_keeps_the_vacancy_over_a_company_offer_of_the_same_firm():
+    """19.11 НПО РИК: «Программист ПЛК» (vacancy) and «Инженер-наладчик» (panel channel) went out as two letters."""
+    s = Settings(_env_file=None, score_threshold=40)
+    conn = _conn()
+    _vac(conn, "prog", "evaluated", employer="НПО РИК", employer_id="13147933", total=90)
+    _vac(conn, "nal", "evaluated", employer="НПО РИК", employer_id="13147933", total=75)
+    _company(conn, "nal")
+    assert dedup.dedupe_evaluated(conn, s) == 1
+    assert _status(conn, "nal") == ("skipped", "duplicate_employer:prog")
+    assert _status(conn, "prog")[0] == "evaluated"
+    # the vacancy wins even when the company offer scored higher
+    conn2 = _conn()
+    _vac(conn2, "off", "evaluated", total=95)
+    _company(conn2, "off")
+    _vac(conn2, "vac", "evaluated", total=60)
+    assert dedup.dedupe_evaluated(conn2, s) == 1
+    assert _status(conn2, "off") == ("skipped", "duplicate_employer:vac")
+    assert _status(conn2, "vac")[0] == "evaluated"
+
+
+def test_answer_on_a_company_card_closes_the_firms_later_vacancy():
+    s = Settings(_env_file=None, employer_repeat_days=90)
+    conn = _conn()
+    vid = _vac(conn, "pl", "sent")
+    conn.execute("UPDATE vacancies SET lead_kind = 'company', search_pass = 'plant' WHERE id = ?", (vid,))
+    _responded(conn, vid)                                          # «✅ Написал» on the plant-channel card
+    _vac(conn, "prog", "triage")
+    assert dedup.skip_covered(conn, s, "triage") == 1
+    assert _status(conn, "prog") == ("skipped", "employer_responded:pl")
+
+
+def test_unanswered_company_offer_still_lets_the_vacancy_through():
+    """What is left of decision #55: a cold offer nobody answered does not close the firm's programmer vacancy."""
+    s = Settings(_env_file=None, employer_repeat_days=90)
+    conn = _conn()
+    _vac(conn, "pl", "sent")
+    _company(conn, "pl")
+    _vac(conn, "prog", "triage")
+    assert dedup.skip_covered(conn, s, "triage") == 0
+    assert _status(conn, "prog")[0] == "triage"
 
 
 def test_dedupe_evaluated_collapses_catalogue_twins_and_leaves_profi_alone():

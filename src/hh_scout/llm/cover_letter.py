@@ -289,9 +289,9 @@ class CoverLetterWriter:
         The single choke point for the owner's rule «пишем только туда, куда ещё не откликались»: it holds for the
         digest, for `/letter` and for any ad-hoc script, and it fires before research, so a skip costs nothing.
         """
-        # `exclude_self=False`: a row the owner already answered himself is not a candidate either. Through
-        # `dedup` the row's own kind is passed (v9.22): a company offer marked «✅ Написал» does not block the
-        # letter for that firm's programmer vacancy — the same rule the queue applies (`repo._kind_sql`).
+        # `exclude_self=False`: a row the owner already answered himself is not a candidate either. Any kind
+        # counts (v9.54, decision #84): a company offer marked «✅ Написал» blocks the letter for that firm's
+        # programmer vacancy too — on hh.ru both reach the same HR desk.
         answered = dedup.answered_employer(self.conn, self.s, row, exclude_self=False)
         if answered is not None:
             log.info("Письмо для %s не пишу: в «%s» уже откликались (%s, %s)", row["hh_id"], row["employer"] or "—",

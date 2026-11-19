@@ -424,19 +424,19 @@ def _company_row(conn, vid, *, employer="ООО", employer_id=None, status="sent
 
 
 @respx.mock
-def test_a_company_offer_the_owner_answered_does_not_block_the_letter_for_that_firms_vacancy(tmp_path):
-    """The queue lets a programmer vacancy through a cold offer to the same firm (`repo._kind_sql`); the letter
-    writer used to disagree and refused to write — the lead was evaluated for nothing (v9.22 fix)."""
+def test_a_company_offer_the_owner_answered_blocks_the_letter_for_that_firms_vacancy(tmp_path):
+    """v9.54, decision #84: «✅ Написал» on a cold offer closes the firm for both kinds — the queue
+    (`dedup.answered_employer`) and the letter writer agree, so no letter goes to the same HR desk twice."""
     s = _settings(tmp_path)
     conn = _db()
     _company_row(conn, 9)
     conn.execute("INSERT INTO lead_actions(vacancy_id, action, created_at) VALUES (9, 'responded', 't')")
     respx.post("http://bridge.test/complete").mock(return_value=httpx.Response(200, json={"text": GOOD, "cost_usd": 0.01}))
     w = CoverLetterWriter(s, conn, BridgeClient(s, sleep=lambda x: None))
-    assert w.answered_employer(repo.lead_by_hh_id(conn, "1")) is None
+    assert w.answered_employer(repo.lead_by_hh_id(conn, "1")) is not None
     company = conn.execute("SELECT * FROM vacancies WHERE id = 9").fetchone()
-    assert w.answered_employer(company) is not None                     # a second company offer is still blocked
-    assert w.run().written == 2
+    assert w.answered_employer(company) is not None                     # a second company offer is blocked as before
+    assert w.run().written == 0                                        # every row here is the same «ООО»
 
 
 @respx.mock

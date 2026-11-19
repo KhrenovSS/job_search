@@ -742,14 +742,15 @@ def employer_lead(conn: sqlite3.Connection, employer_id: str | None, employer: s
 
 
 def employer_responded(conn: sqlite3.Connection, employer_id: str | None, employer: str | None, *,
-                       exclude_id: int | None, within_days: int, candidate_kind: str = "company",
+                       exclude_id: int | None, within_days: int,
                        linked_ids: Sequence[str] = ()) -> sqlite3.Row | None:
     """The vacancy of this employer the owner has already answered, within `within_days` (0 = ever), newest first.
 
     Two ways an answer is recorded: the owner applied on hh.ru himself and the collector saw it in his negotiations
     (`vacancies.applied = 1`), or he pressed «✅ Написал» on a lead card (`lead_actions.responded` / `auto_responded`).
     A letter goes to the company's HR, not to a branch, so one answer closes the whole company — writing again would
-    land on the same desk.
+    land on the same desk. Both lead kinds count (v9.54, decision #84): an answer on a company-offer card closes the
+    firm's programmer vacancy too and the other way round — on hh.ru both reach the same HR desk.
 
     When the answer happened: the button press is exact; for a response made on hh.ru itself the best we have is the
     first time the sync saw it (`negotiation_events`), never `updated_at` — that column moves for other reasons and
@@ -767,7 +768,7 @@ def employer_responded(conn: sqlite3.Connection, employer_id: str | None, employ
                                  (SELECT MIN(ne.seen_at) FROM negotiation_events ne WHERE ne.vacancy_id = v.id),
                                  v.updated_at) AS answered_at
                    FROM vacancies v
-                  WHERE (({same_employer_sql('v')}){linked_sql}) AND v.id IS NOT ? {_kind_sql(candidate_kind)}
+                  WHERE (({same_employer_sql('v')}){linked_sql}) AND v.id IS NOT ?
                     AND (v.applied = 1 OR EXISTS (SELECT 1 FROM lead_actions a WHERE a.vacancy_id = v.id
                                                    AND a.action IN ('responded', 'auto_responded')))
                ) WHERE answered_at >= ? ORDER BY answered_at DESC, id DESC LIMIT 1""")

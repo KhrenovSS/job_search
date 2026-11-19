@@ -18,6 +18,9 @@ Identity: hh.ru `company.id` (`vacancies.employer_id`) or, for cards without an 
 firm from the ОВЕН catalogue (`owen:<tag>`) and the same firm on hh.ru meet, in both directions. profi.ru is exempt.
 Kinds (v9.15): a *vacancy* candidate is covered only by vacancy rows — a cold `plant` offer must not block the same
 company's real programmer vacancy later; a *company* candidate is covered by any row (`repo._kind_sql`).
+Two exceptions (v9.54, decision #84 — 19.11 НПО РИК got a programmer letter and a panel-channel letter in one batch,
+both read by the same HR desk): an answer on any card closes the company for both kinds (`answered_employer`), and
+leads of both kinds waiting at once collapse into one — the vacancy wins whatever the score (`dedupe_evaluated`).
 
 A twin is often skipped against a vacancy that has not been evaluated yet (`prefiltered`). If that one then turns out
 not to be a lead, the whole company would silently vanish — so `revive_orphans(conn, settings)` puts such twins back
@@ -68,8 +71,7 @@ def answered_employer(conn: sqlite3.Connection, settings: Settings, row: sqlite3
         return None
     return repo.employer_responded(conn, row["employer_id"], row["employer"],
                                    exclude_id=row["id"] if exclude_self else None,
-                                   within_days=settings.employer_repeat_days, candidate_kind=_lead_kind(row),
-                                   linked_ids=_links(conn, row))
+                                   within_days=settings.employer_repeat_days, linked_ids=_links(conn, row))
 
 
 def defense_row(conn: sqlite3.Connection, row: sqlite3.Row) -> sqlite3.Row | None:
@@ -219,10 +221,12 @@ def revive_orphans(conn: sqlite3.Connection, settings: Settings) -> int:
     return n
 
 
-def same_company(a: sqlite3.Row, b: sqlite3.Row, links: Mapping[str, set[str]] | None = None) -> bool:
+def same_company(a: sqlite3.Row, b: sqlite3.Row, links: Mapping[str, set[str]] | None = None, *,
+                 cross_kind: bool = False) -> bool:
     """Whether two rows are one organisation: the same hh.ru id or name, or (with `links` from `repo.contact_links`)
-    two employers that share an e-mail address or a web domain (v9.22)."""
-    if (_lead_kind(a) == "vacancy") != (_lead_kind(b) == "vacancy"):
+    two employers that share an e-mail address or a web domain (v9.22). Rows of different lead kinds are two
+    channels unless `cross_kind` (leads waiting at the same time, v9.54 — decision #84)."""
+    if not cross_kind and (_lead_kind(a) == "vacancy") != (_lead_kind(b) == "vacancy"):
         # a vacancy lead and a company offer to the same employer are two channels, not twins (v9.15) — in both
         # directions: until 24.09 only `a`=vacancy was checked, so a company row with the higher total closed the
         # programmer vacancy as its duplicate in `dedupe_evaluated`, against decision #55 (`repo._kind_sql`)
@@ -235,14 +239,19 @@ def same_company(a: sqlite3.Row, b: sqlite3.Row, links: Mapping[str, set[str]] |
 
 
 def dedupe_evaluated(conn: sqlite3.Connection, settings: Settings) -> int:
-    """Among evaluated hh.ru and catalogue leads at/above the threshold keep one per company (highest total, then
-    newest); a company that already has a `sent` lead within the repeat window keeps none. Returns how many were skipped."""
+    """Among evaluated hh.ru and catalogue leads at/above the threshold keep one per company (a vacancy before a
+    company offer, then highest total, then newest); a company that already has a `sent` lead within the repeat window
+    keeps none. Returns how many were skipped.
+
+    Kinds meet here (v9.54, decision #84): a programmer vacancy and a panel/plant offer of one firm waiting at once
+    went out as two letters to one HR desk. Vacancies are sorted first, so a vacancy never joins a company's group."""
     rows = [r for r in repo.evaluated_leads(conn, settings.score_threshold) if not _exempt(r)]  # total DESC, published DESC
+    rows.sort(key=lambda r: _lead_kind(r) != "vacancy")   # stable: score order kept inside each kind
     links = repo.contact_links(conn)
     groups: list[list[sqlite3.Row]] = []  # groups[i][0] is the kept lead; a row joins a group if it matches ANY member
     n = 0
     for row in rows:   # no transaction around the loop — see `skip_covered`
-        group = next((g for g in groups if any(same_company(m, row, links) for m in g)), None)
+        group = next((g for g in groups if any(same_company(m, row, links, cross_kind=True) for m in g)), None)
         if group is not None:
             twin = group[0]
             group.append(row)

@@ -118,9 +118,9 @@ def test_a_plant_offer_does_not_cover_the_companys_real_programmer_vacancy():
     assert dedup.covering_lead(conn, S, vacancy) is None             # a vacancy is covered by vacancies only
     another_company_row = _card(conn, "C", status="triage", skip_reason=None, note=None, lead_kind="company", search_pass="panel")
     assert dedup.covering_lead(conn, S, another_company_row)["hh_id"] == "P"   # a company candidate — by anything
-    # ...and the "✅ Написал" pressed on the plant card does not close the vacancy channel either
+    # ...but the "✅ Написал" pressed on the plant card closes the vacancy too (v9.54, decision #84)
     repo.add_action(conn, _row(conn, "P")["id"], "responded")
-    assert dedup.answered_employer(conn, S, vacancy) is None
+    assert dedup.answered_employer(conn, S, vacancy) is not None
     assert dedup.answered_employer(conn, S, another_company_row) is not None
 
 
@@ -131,20 +131,22 @@ def test_a_vacancy_lead_still_covers_the_companys_plant_row():
     assert dedup.covering_lead(conn, S, pooled)["hh_id"] == "V"
 
 
-def test_dedupe_evaluated_keeps_a_vacancy_lead_and_a_company_offer_of_one_employer_apart():
+def test_dedupe_evaluated_keeps_the_vacancy_and_drops_a_company_offer_of_one_employer():
+    """v9.54, decision #84: both waiting at once — one letter, the vacancy, whatever the scores."""
     conn = _conn()
     _card(conn, "V", status="evaluated", skip_reason=None, note=None, total=70)
     _card(conn, "P", status="evaluated", skip_reason=None, note=None, lead_kind="company", search_pass="plant", total=65)
     dedup.dedupe_evaluated(conn, S)
     assert _row(conn, "V")["status"] == "evaluated"
-    assert _row(conn, "P")["status"] == "evaluated"                  # two channels, not twins
-    # the other way round: the company row scores higher and is seen first — the vacancy must survive too
+    assert (_row(conn, "P")["status"], _row(conn, "P")["skip_reason"]) == ("skipped", "duplicate_employer:V")
+    # the other way round: the company row scores higher — the vacancy still survives, the offer goes
     conn2 = _conn()
     _card(conn2, "V", status="evaluated", skip_reason=None, note=None, total=70)
     _card(conn2, "P", status="evaluated", skip_reason=None, note=None, lead_kind="company", search_pass="plant", total=80)
     dedup.dedupe_evaluated(conn2, S)
-    assert _row(conn2, "V")["status"] == "evaluated" and _row(conn2, "P")["status"] == "evaluated"
-    assert dedup.same_company(_row(conn2, "P"), _row(conn2, "V")) is False
+    assert _row(conn2, "V")["status"] == "evaluated" and _row(conn2, "P")["status"] == "skipped"
+    assert dedup.same_company(_row(conn2, "P"), _row(conn2, "V")) is False          # still two channels by default
+    assert dedup.same_company(_row(conn2, "P"), _row(conn2, "V"), cross_kind=True) is True
 
 
 # --- the evaluator feeds the pool too (v9.19) ---------------------------------------------------

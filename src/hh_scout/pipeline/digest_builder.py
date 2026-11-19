@@ -40,7 +40,7 @@ def promote_floor(conn: sqlite3.Connection, settings: Settings) -> int:
         if (dedup.answered_employer(conn, settings, row, exclude_self=False) is not None
                 or dedup.covering_lead(conn, settings, row) is not None):
             continue
-        if any(dedup.same_company(c, row, links) for c in chosen):
+        if any(dedup.same_company(c, row, links, cross_kind=True) for c in chosen):   # one firm per batch, any kind (#84)
             continue
         chosen.append(row)
     if chosen:
