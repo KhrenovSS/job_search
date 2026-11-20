@@ -1189,6 +1189,15 @@ def is_lead_open(conn: sqlite3.Connection, vacancy_id: int) -> bool:
     return row is not None
 
 
+def closing_action(conn: sqlite3.Connection, vacancy_id: int) -> tuple[str, str | None] | None:
+    """(action, reason) that closed this lead — the same actions `is_lead_open` looks at; None if still open."""
+    row = conn.execute(
+        "SELECT action, reason FROM lead_actions WHERE vacancy_id = ? "
+        "AND action IN ('responded','auto_responded','disliked','closed_stale') ORDER BY id LIMIT 1",
+        (vacancy_id,)).fetchone()
+    return (row["action"], row["reason"]) if row else None
+
+
 def add_feedback(conn: sqlite3.Connection, vacancy_id: int, value: int, reason: str | None = None) -> None:
     conn.execute("INSERT INTO feedback(vacancy_id, value, reason, created_at) VALUES (?, ?, ?, ?)",
                  (vacancy_id, value, reason, utcnow()))

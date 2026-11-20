@@ -298,3 +298,61 @@ def test_written_tap_is_answered_before_telegram_and_a_second_tap_counts_once():
     n_act = conn.execute("SELECT count(*) FROM lead_actions WHERE vacancy_id = 1 AND action = 'responded'").fetchone()[0]
     n_fb = conn.execute("SELECT count(*) FROM feedback WHERE vacancy_id = 1").fetchone()[0]
     assert (n_act, n_fb) == (1, 1)
+
+
+def _tap_cb(said, answer_error=None):
+    class _Bot:
+        async def edit_message_text(self, text, chat_id, message_id, reply_markup=None):
+            said.append("edit")
+
+        async def delete_message(self, chat_id, message_id):
+            said.append("delete")
+
+    class _Cb:
+        data = "act:1:responded"
+        bot = _Bot()
+        message = type("M", (), {"chat": type("C", (), {"id": 1})()})()
+
+        async def answer(self, text=None):
+            said.append(("cb", text))
+            if answer_error is not None:
+                raise answer_error
+
+    return _Cb()
+
+
+def test_written_tap_collapses_even_when_the_answer_is_too_old():
+    """v9.55: on 20.11 cb.answer hung 24 s, Telegram said «query is too old», the card was never collapsed."""
+    import asyncio
+
+    from aiogram.exceptions import TelegramBadRequest
+    from aiogram.methods import AnswerCallbackQuery
+
+    from hh_scout.bot import feedback as fb_mod
+
+    conn = _db()
+    finalize_digest(conn, Settings(_env_file=None), [(repo.lead_by_hh_id(conn, "1"), 500, 501)], checked=0)
+    said = []
+    err = TelegramBadRequest(method=AnswerCallbackQuery(callback_query_id="x"),
+                             message="Bad Request: query is too old and response timeout expired")
+    asyncio.run(fb_mod.action(_tap_cb(said, err), conn))
+    assert said.count("edit") == 1 and said.count("delete") == 1
+    assert not repo.is_lead_open(conn, 1)
+    assert not fb_mod._rendering
+
+
+def test_a_tap_on_a_closed_but_uncollapsed_card_collapses_it_without_a_second_feedback():
+    import asyncio
+
+    from hh_scout.bot import feedback as fb_mod
+
+    conn = _db()
+    finalize_digest(conn, Settings(_env_file=None), [(repo.lead_by_hh_id(conn, "1"), 500, 501)], checked=0)
+    repo.add_action(conn, 1, "responded")           # recorded, but the collapse never reached the chat
+    repo.add_feedback(conn, 1, +1)
+    said = []
+    asyncio.run(fb_mod.action(_tap_cb(said), conn))
+    assert ("cb", "Лид уже закрыт — сворачиваю карточку") in said
+    assert said.count("edit") == 1 and said.count("delete") == 1
+    assert conn.execute("SELECT count(*) FROM feedback WHERE vacancy_id = 1").fetchone()[0] == 1
+    assert repo.closing_action(conn, 1) == ("responded", None)
