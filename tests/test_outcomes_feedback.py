@@ -267,5 +267,9 @@ def test_stats_split_letters_by_the_rules_they_were_written_under():
     """v9.51 (decision #82): the before/after cut the 12.12.2026 review of the new letter rules rests on."""
     cut = dict(outcomes.DIMENSIONS)["Правила письма"]
     assert cut({"letter_at": "2026-11-14T15:16:38+00:00"}) == "до 15.11"
-    assert cut({"letter_at": "2026-11-15T02:00:00+00:00"}) == "с 15.11 (v9.51)"
+    assert cut({"letter_at": "2026-11-15T02:00:00+00:00"}) == "15.11–23.11 (v9.51)"
+    # v9.56 (decision #85): the format moved into the first sentence — a third band, not a blend with v9.51
+    assert cut({"letter_at": "2026-11-23T10:00:00+00:00"}) == "15.11–23.11 (v9.51)"
+    assert cut({"letter_at": "2026-11-23T23:00:00+00:00"}) == "с 23.11 (v9.56)"
+    assert cut({"letter_at": "2026-12-01T08:00:00+00:00"}) == "с 23.11 (v9.56)"
     assert cut({"letter_at": None}) is None

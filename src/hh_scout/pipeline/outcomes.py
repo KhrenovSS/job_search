@@ -212,14 +212,26 @@ def _by_letter_len(r: sqlite3.Row) -> str | None:
 # one or two terms instead of the stock five, the vacancy named in an offer that answers it. The split is by the
 # letter's own timestamp (UTC), so a lead that waited in the queue and was rewritten counts under the new rules.
 LETTER_RULES_SINCE = "2026-11-15"
+# v9.56 (decision #85): on 23.11.2026 the format («не в штат, а на подряд: работаю по ИП») moved into the first
+# sentence (the boundary is the hour of the deploy, UTC). A third band, so the 12.12 review compares v9.51 with v9.56 instead of mixing them. Newest first.
+LETTER_RULES_BANDS = (("2026-11-23T17:00", "v9.56"), (LETTER_RULES_SINCE, "v9.51"))
+
+
+def _day(iso: str) -> str:
+    return f"{iso[8:10]}.{iso[5:7]}"
 
 
 def _by_letter_rules(r: sqlite3.Row) -> str | None:
     at = r["letter_at"]
     if not at:
         return None
-    day = f"{LETTER_RULES_SINCE[8:]}.{LETTER_RULES_SINCE[5:7]}"
-    return f"с {day} (v9.51)" if str(at) >= LETTER_RULES_SINCE else f"до {day}"
+    at = str(at)
+    newer = None
+    for since, version in LETTER_RULES_BANDS:
+        if at >= since:
+            return f"с {_day(since)} ({version})" if newer is None else f"{_day(since)}–{_day(newer)} ({version})"
+        newer = since
+    return f"до {_day(LETTER_RULES_SINCE)}"
 
 
 DIMENSIONS: tuple[tuple[str, Callable[[sqlite3.Row], str | None]], ...] = (

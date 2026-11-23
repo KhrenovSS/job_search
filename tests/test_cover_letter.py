@@ -13,7 +13,9 @@ from hh_scout.pipeline import repo
 
 
 SIGNATURE = "\n\nИван Иванов\nинженер-программист ПЛК и SCADA, работаю по договору (ИП)\n+7 900 123-45-67\nivan@example.ru"
-GOOD = "Здравствуйте.\n" + "Опыт CODESYS и MasterSCADA. " * 30 + SIGNATURE
+# decision #85: the format stands in the first sentence — a response without it is refused by code
+OPENING = "Пишу по вакансии с предложением не в штат, а на подряд: работаю по ИП и беру программную часть. "
+GOOD = "Здравствуйте.\n" + OPENING + "Опыт CODESYS и MasterSCADA. " * 30 + SIGNATURE
 
 
 def _settings(tmp_path):
@@ -196,7 +198,7 @@ def test_code_checks_catch_money_and_cliches():
     row = _row_with_company(conn)
     company = {"industry": "химическое производство", "products": ["пенополиуретан"]}
 
-    ok = "Вижу, что вы производите пенополиуретан. Работаю по ИП." + SIGNATURE
+    ok = "Пишу с предложением не в штат, а на подряд: работаю по ИП и беру программы линий, где вы производите пенополиуретан." + SIGNATURE
     assert check_letter(ok, row, company) == ""
     assert "сумма" in check_letter("Ставка 150 000 ₽ в месяц. " + ok, row, company)
     assert "сумма" in check_letter("Вижу вилку 180 000–250 000 на позицию. " + ok, row, company)
@@ -204,7 +206,7 @@ def test_code_checks_catch_money_and_cliches():
     assert "оборот" in check_letter("Помогу закрыть позицию. " + ok, row, company)
     assert "оборот" in check_letter("Сэкономите бюджет. " + ok, row, company)
     assert "не называет" in check_letter("Здравствуйте. Работаю по ИП, готов обсудить." + SIGNATURE, row, company)
-    assert check_letter("Здравствуйте. Работаю по ИП." + SIGNATURE, row, None) == ""   # no dossier — no such demand
+    assert check_letter("Здравствуйте. " + OPENING + SIGNATURE, row, None) == ""   # no dossier — no such demand
     # the signature is checked by code too (decision #46 said no regex could *repair* it; it can refuse it)
     assert "подпис" in check_letter("Здравствуйте. Работаю по ИП.\n\nИван Иванов\n+7 900 123-45-67", row, None)
     # since decision #58 the e-mail is the fourth line — the old three-line signature is refused
@@ -212,10 +214,10 @@ def test_code_checks_catch_money_and_cliches():
     assert "e-mail" in check_letter("Здравствуйте. Работаю по ИП." + three, row, None)
     assert "телефон" in check_letter("Здравствуйте. Работаю по ИП.\n\nИван Иванов\nработаю по ИП\nivan@example.ru\nivan@example.ru", row, None)
     # a phone, an e-mail, a vacancy id, a year and «100 %» are not money
-    assert check_letter("Сдал объект в 2024 году, 100 % удалённо, вакансия 137256632." + SIGNATURE, row, None) == ""
+    assert check_letter(OPENING + "Сдал объект в 2024 году, 100 % удалённо, вакансия 137256632." + SIGNATURE, row, None) == ""
     # neither is the size of a SCADA project, even next to a money word (decision #58: «2500 точек»)
-    assert check_letter("Ориентир — проект MasterSCADA на 2500 тегов с архивами." + SIGNATURE, row, None) == ""
-    assert check_letter("Экраны MasterSCADA примерно на 2 500 точек контроля." + SIGNATURE, row, None) == ""
+    assert check_letter(OPENING + "Ориентир — проект MasterSCADA на 2500 тегов с архивами." + SIGNATURE, row, None) == ""
+    assert check_letter(OPENING + "Экраны MasterSCADA примерно на 2 500 точек контроля." + SIGNATURE, row, None) == ""
     assert "сумма" in check_letter("Ориентир 2500 за смену. " + ok, row, company)
 
 
@@ -233,7 +235,7 @@ def test_the_letter_speaks_for_one_person_not_a_firm():
     # the habit of company offers — «один раз пишем и отлаживаем» (46 of 211 stored) — is the same plural
     assert "«пишем»" in check_letter("Здравствуйте. Один раз пишем и отлаживаем шаблон." + SIGNATURE, row, None)
     # the singular is the norm — and «нашёл», «у вас», «вы готовы» are not the plural of the author
-    assert check_letter("Здравствуйте. Нашёл вашу вакансию на hh.ru. Работаю по договору с ИП, приеду на пуск. "
+    assert check_letter("Здравствуйте. Нашёл вашу вакансию на hh.ru. Беру на подряд, работаю по договору с ИП, приеду на пуск. "
                         "Если вы готовы обсудить, напишите." + SIGNATURE, row, None) == ""
     assert voice_problem("Готов созвониться; на объект приеду сам.") == ""
     # the rule is stamped: a stored letter with «мы» goes stale together with the code (decision #50)
@@ -250,14 +252,14 @@ def test_an_email_letter_promises_no_attachment():
     by_email = repo.lead_by_hh_id(conn, "2")
     on_hh = repo.lead_by_hh_id(conn, "1")
 
-    attach = "Здравствуйте. Пишу по вакансии с «Работы России». Резюме прикладываю к письму. Работаю по ИП." + SIGNATURE
+    attach = "Здравствуйте. Пишу по вакансии с «Работы России». Резюме прикладываю к письму. Беру на подряд, работаю по ИП." + SIGNATURE
     assert "e-mail" in check_letter(attach, by_email, None) and "«Резюме прикладываю»" in check_letter(attach, by_email, None)
-    figure = "Здравствуйте. Ориентир в резюме относится к штатной занятости, по договору считаю от объёма." + SIGNATURE
+    figure = "Здравствуйте. Беру на подряд по ИП. Ориентир в резюме относится к штатной занятости, по договору считаю от объёма." + SIGNATURE
     assert "e-mail" in check_letter(figure, by_email, None)
     assert "e-mail" in check_letter("Здравствуйте. Подробности — во вложении." + SIGNATURE, by_email, None)
     # an hh.ru response may still lean on the resume the company sees next to it
     assert check_letter(attach, on_hh, None) == "" and check_letter(figure, on_hh, None) == ""
-    clean = ("Здравствуйте. Пишу по вакансии с «Работы России». Программы для КНС писал на ОВЕН. "
+    clean = ("Здравствуйте. Пишу по вакансии с «Работы России» с предложением не в штат, а на подряд: работаю по ИП. Программы для КНС писал на ОВЕН. "
              "Стоимость по договору считается от объёма, сроков и состава задач." + SIGNATURE)
     assert check_letter(clean, by_email, None) == ""
     assert letter_checks.ATTACHMENT_RE.pattern in letter_checks.CODE_RULES
@@ -524,3 +526,35 @@ def test_a_company_offer_knows_how_it_will_be_delivered():
     by_mail = letter_payload(repo.lead_by_hh_id(conn, "2"))
     assert (by_hh["kind"], by_hh["delivery"]) == ("company", "hh_response")
     assert (by_mail["kind"], by_mail["delivery"]) == ("company", "email")
+
+
+def test_a_response_names_the_contract_format_in_its_first_sentence():
+    """Decision #85: the recruiter reads one sentence, and the resume looks like the vacancy — say «не в штат» at once."""
+    from hh_scout.llm import letter_checks
+    from hh_scout.llm.cover_letter import check_letter
+    from hh_scout.llm.letter_checks import opening_paragraph, opening_problem
+    conn = _db()
+    row = _row_with_company(conn)
+
+    # the letter the owner brought on 23.11.2026: the format appeared in the fourth sentence, second paragraph
+    old = ("Здравствуйте.\n\nПишу по вакансии «Инженер АСУ». Вижу, что вы в Екатеринбурге автоматизируете инженерные "
+           "системы ТЦ, БЦ, музейных и спортивных объектов.\n\nЯ инженер-программист ПЛК и SCADA, в АСУ ТП с 2008 года. "
+           "Работаю по ИП и предлагаю взять на подряд программную часть ваших объектов." + SIGNATURE)
+    assert "не в штат, а на подряд" in opening_problem(old) and "не в штат" in check_letter(old, row, None)
+    # the wording the owner chose
+    new = ("Здравствуйте.\n\nПишу по вакансии «Инженер АСУ» с предложением не в штат, а на подряд: работаю по ИП и беру "
+           "программную часть ваших объектов в Екатеринбурге — ПО для ПЛК и диспетчеризацию на MasterSCADA.\n\n"
+           "Я инженер-программист ПЛК и SCADA, в АСУ ТП с 2008 года." + SIGNATURE)
+    assert opening_problem(new) == "" and check_letter(new, row, None) == ""
+    assert opening_paragraph(new).startswith("Пишу по вакансии «Инженер АСУ» с предложением")
+    # the greeting may share a line with the sentence; «ИП» is a word, not a syllable of «типовой»
+    assert opening_problem("Здравствуйте. Беру программную часть на подряд, работаю по ИП.\n\nДальше.") == ""
+    assert opening_problem("Добрый день!\nПредлагаю не в штат, а на подряд.\n\nДальше.") == ""
+    assert opening_problem("Здравствуйте.\n\nБеру на подряд типовой проект.\n\nРаботаю по ИП.") != ""
+    assert opening_problem("Здравствуйте.\n\nРаботаю по ИП.\n\nБеру на подряд.") != ""
+    # a cold offer to a company answers no staff vacancy — the rule is for responses only
+    conn.execute("UPDATE vacancies SET lead_kind = 'company' WHERE id = 3")
+    assert check_letter("Здравствуйте. Собираете шкафы управления — пишу программы под них." + SIGNATURE,
+                        repo.lead_by_hh_id(conn, "3"), None) == ""
+    assert letter_checks.OPENING_RULE in letter_checks.CODE_RULES   # stored letters go stale with the rule (#50)
+

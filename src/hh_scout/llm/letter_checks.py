@@ -87,8 +87,17 @@ ATTACHMENT_RE = re.compile(
     r"|(?:ориентир\w*|сумм\w*|цифр\w*|указан\w*)\s+в\s+(?:моём\s+)?резюме|резюме\s+на\s+hh",
     re.IGNORECASE)
 
+# A response to a vacancy must say in its first sentence that it offers a contract, not a hire (decision #85): the
+# recruiter reads no further, and the owner's resume looks like the vacancy itself, so a letter that named the format
+# in its fourth sentence was answered as an ordinary application. The first paragraph after the greeting must carry
+# «подряд» and either «ИП» or «не в штат». Refused, not patched: the sentence is rebuilt around the format.
+GREETING_RE = re.compile(r"\A\s*(?:здравствуйте|добрый\s+день|доброе\s+утро|добрый\s+вечер)[^\n.!]{0,40}[.!,]?[ \t]*",
+                         re.IGNORECASE)
+_IP_RE = re.compile(r"(?<![\w-])ИП(?![\w-])")
+OPENING_RULE = "opening:first-paragraph/подряд+(ИП|не в штат)"
+
 CODE_RULES = "\n".join((MONEY_RE.pattern, "|".join(BANNED), ROLE_ADDRESS_RE.pattern, PLURAL_VOICE_RE.pattern,
-                         ATTACHMENT_RE.pattern, "signature:4-lines/ИП/phone/email"))
+                         ATTACHMENT_RE.pattern, "signature:4-lines/ИП/phone/email", OPENING_RULE))
 
 
 def strip_role_address(text: str) -> str:
@@ -139,6 +148,27 @@ def voice_problem(text: str) -> str:
         return ""
     return (f"письмо от одного человека, а «{m.group(0)}» читается как отклик от имени организации — hh.ru отклоняет "
             "такой отклик как рекламу услуг; пиши от первого лица единственного числа: работаю, беру, приеду")
+
+
+def opening_paragraph(text: str) -> str:
+    """The first paragraph after the greeting — what a recruiter actually reads."""
+    body = GREETING_RE.sub("", text.strip(), count=1)
+    for line in body.splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def opening_problem(text: str) -> str:
+    """A response to a vacancy names its format at once: a contract with a sole trader, not a hire (decision #85)."""
+    first = opening_paragraph(text)
+    low = first.lower()
+    if "подряд" in low and (_IP_RE.search(first) or "не в штат" in low):
+        return ""
+    return ("первая фраза после приветствия должна сразу называть формат — кадровик дальше неё не читает и принимает "
+            "отклик за обычный отклик в штат; начни так: «Пишу по вакансии «…» с предложением не в штат, а на подряд: "
+            "работаю по ИП и беру программную часть <объектов компании, её словами>», а во втором абзаце «работаю по "
+            "ИП» не повторяй")
 
 
 def attachment_problem(text: str) -> str:
