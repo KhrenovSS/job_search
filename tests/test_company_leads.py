@@ -157,7 +157,7 @@ def test_company_letter_uses_its_own_prompt_stamp_and_payload(tmp_path):
     assert p["kind"] == "company" and p["offer_focus"] == ["plc_hmi_per_panel"] and p["seen_through"] == "Сборщик шкафов автоматики"
     assert "salary_stated" not in p and "salary_note" not in p
     assert rules_hash(s, "company") not in ("", rules_hash(s, "hh"))
-    good = "Здравствуйте.\n" + "Собираете шкафы управления, беру программу под каждый. " * 25 + \
+    good = "Здравствуйте.\n" + "Пишу с предложением подряда: работаю по ИП. " + "Собираете шкафы управления, беру программу под каждый. " * 25 + \
            "\n\nИван Иванов\nинженер-программист ПЛК и SCADA, работаю по договору (ИП)\n+7 900 123-45-67\nivan@example.ru"
     route = respx.post("http://bridge.test/complete").mock(return_value=httpx.Response(200, json={"text": good, "cost_usd": 0.01}))
     w = CoverLetterWriter(s, conn, BridgeClient(s, sleep=lambda x: None))
@@ -248,7 +248,7 @@ def test_letter_stage_skips_a_catalogue_company_without_an_email_and_writes_for_
     conn = _db()
     _owen_row(conn, 11, "owen:11", ["vk@firm.ru"])
     _owen_row(conn, 12, "owen:12", [])
-    good = "Здравствуйте.\n" + "Ведёте проекты на ОВЕН, беру программную часть под ваши шкафы. " * 25 + \
+    good = "Здравствуйте.\n" + "Пишу с предложением подряда: работаю по ИП. " + "Ведёте проекты на ОВЕН, беру программную часть под ваши шкафы. " * 25 + \
            "\n\nИван Иванов\nинженер-программист ПЛК и SCADA, работаю по договору (ИП)\n+7 900 123-45-67\nivan@example.ru"
     route = respx.post("http://bridge.test/complete").mock(return_value=httpx.Response(200, json={"text": good, "cost_usd": 0.01}))
     w = CoverLetterWriter(s, conn, BridgeClient(s, sleep=lambda x: None))

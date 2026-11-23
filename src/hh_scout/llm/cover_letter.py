@@ -239,9 +239,9 @@ def check_letter(text: str, row: sqlite3.Row, company: dict | None) -> str:
             if hooks and not any(w.lower() in low for w in hooks):
                 return ("письмо не называет, чем занимается компания — первая строка должна показывать, "
                         f"что автор понимает их производство (например: {', '.join(hooks[:3])})")
-        if letter_key(row) == "hh":
-            # a response to a vacancy only: a cold offer to a company has no staff position to be mistaken for
-            return letter_checks.opening_problem(text)   # decision #85
+        # decision #85: the format stands in the first sentence — of a response to a vacancy (v9.56) and of an offer
+        # to a company alike (v9.57): whoever opens the letter reads little further
+        return letter_checks.opening_problem(text, offer=letter_key(row) == "company")
     return ""
 
 

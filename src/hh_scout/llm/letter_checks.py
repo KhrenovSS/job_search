@@ -91,10 +91,11 @@ ATTACHMENT_RE = re.compile(
 # recruiter reads no further, and the owner's resume looks like the vacancy itself, so a letter that named the format
 # in its fourth sentence was answered as an ordinary application. The first paragraph after the greeting must carry
 # «подряд» and either «ИП» or «не в штат». Refused, not patched: the sentence is rebuilt around the format.
+# v9.57: the owner asked the same of partnership offers to companies — one rule for both letter families.
 GREETING_RE = re.compile(r"\A\s*(?:здравствуйте|добрый\s+день|доброе\s+утро|добрый\s+вечер)[^\n.!]{0,40}[.!,]?[ \t]*",
                          re.IGNORECASE)
 _IP_RE = re.compile(r"(?<![\w-])ИП(?![\w-])")
-OPENING_RULE = "opening:first-paragraph/подряд+(ИП|не в штат)"
+OPENING_RULE = "opening:first-paragraph/подряд+(ИП|не в штат)/hh+company"
 
 CODE_RULES = "\n".join((MONEY_RE.pattern, "|".join(BANNED), ROLE_ADDRESS_RE.pattern, PLURAL_VOICE_RE.pattern,
                          ATTACHMENT_RE.pattern, "signature:4-lines/ИП/phone/email", OPENING_RULE))
@@ -159,12 +160,21 @@ def opening_paragraph(text: str) -> str:
     return ""
 
 
-def opening_problem(text: str) -> str:
-    """A response to a vacancy names its format at once: a contract with a sole trader, not a hire (decision #85)."""
+def opening_problem(text: str, offer: bool = False) -> str:
+    """The letter names its format at once: a contract with a sole trader, not a hire (decision #85).
+
+    `offer` — a partnership offer to a company (v9.57): the same rule, another sample sentence in the refusal.
+    """
     first = opening_paragraph(text)
     low = first.lower()
     if "подряд" in low and (_IP_RE.search(first) or "не в штат" in low):
         return ""
+    if offer:
+        return ("первая фраза после приветствия должна сразу называть формат и дело компании — дальше неё читают редко; "
+                "начни так: «Пишу с предложением подряда: работаю по ИП и беру программную часть <шкафов, проектов, "
+                "линий компании — её словами>» (если письмо уходит откликом на вакансию — «Пишу по вакансии «…» не на "
+                "эту должность и не в штат, а с предложением подряда: работаю по ИП и беру …»), а ниже «работаю по ИП» "
+                "не повторяй")
     return ("первая фраза после приветствия должна сразу называть формат — кадровик дальше неё не читает и принимает "
             "отклик за обычный отклик в штат; начни так: «Пишу по вакансии «…» с предложением не в штат, а на подряд: "
             "работаю по ИП и беру программную часть <объектов компании, её словами>», а во втором абзаце «работаю по "

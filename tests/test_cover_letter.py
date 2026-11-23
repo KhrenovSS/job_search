@@ -552,9 +552,15 @@ def test_a_response_names_the_contract_format_in_its_first_sentence():
     assert opening_problem("Добрый день!\nПредлагаю не в штат, а на подряд.\n\nДальше.") == ""
     assert opening_problem("Здравствуйте.\n\nБеру на подряд типовой проект.\n\nРаботаю по ИП.") != ""
     assert opening_problem("Здравствуйте.\n\nРаботаю по ИП.\n\nБеру на подряд.") != ""
-    # a cold offer to a company answers no staff vacancy — the rule is for responses only
+    # v9.57: an offer to a company keeps the same rule — with its own sample sentence in the refusal
     conn.execute("UPDATE vacancies SET lead_kind = 'company' WHERE id = 3")
-    assert check_letter("Здравствуйте. Собираете шкафы управления — пишу программы под них." + SIGNATURE,
-                        repo.lead_by_hh_id(conn, "3"), None) == ""
+    offer_row = repo.lead_by_hh_id(conn, "3")
+    refused = check_letter("Здравствуйте.\n\nВижу, что вы собираете шкафы управления.\n\nРаботаю по ИП, беру на подряд."
+                           + SIGNATURE, offer_row, None)
+    assert "Пишу с предложением подряда" in refused and "не на эту должность" in refused
+    assert check_letter("Здравствуйте.\n\nПишу с предложением подряда: работаю по ИП и беру программы ПЛК для шкафов "
+                        "управления, которые вы собираете." + SIGNATURE, offer_row, None) == ""
+    assert check_letter("Здравствуйте.\n\nПишу с предложением субподряда: работаю по ИП и беру программную часть "
+                        "вашего контракта на диспетчеризацию." + SIGNATURE, offer_row, None) == ""
     assert letter_checks.OPENING_RULE in letter_checks.CODE_RULES   # stored letters go stale with the rule (#50)
 
