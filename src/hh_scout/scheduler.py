@@ -90,6 +90,17 @@ def in_window(now: datetime, windows: list[Window]) -> bool:
     return any(_at(now.date(), start) <= now < _at(now.date(), end) for start, end in windows)
 
 
+def sitting_share(now: datetime, windows: list[Window], weights: list[float], current_idx: int | None = None) -> float:
+    """The current sitting's part of what is left of the daily cap: its weight over the weights of the sittings
+    still ahead today, itself included (v9.58, decision #86). Equal weights give `1 / sittings_left`."""
+    ahead = [idx for idx, (_, end) in enumerate(windows) if idx == current_idx or _at(now.date(), end) > now]
+    if not ahead:
+        return 1.0
+    # no window is known as "current" (a restored plan without its index): the earliest one still ahead is next
+    mine = current_idx if current_idx in ahead else ahead[0]
+    return weights[mine] / sum(weights[i] for i in ahead)
+
+
 def sittings_left(now: datetime, windows: list[Window], current_idx: int | None = None) -> int:
     """How many sittings (the current one included) are still ahead today — for sharing the daily cap."""
     n = 0
@@ -135,6 +146,7 @@ class Scheduler:
         self.crawl_lock = asyncio.Lock()
         self.last_report: CrawlReport | None = None
         self.windows = settings.crawl_windows_parsed
+        self.window_weights = settings.crawl_window_weights_parsed   # raises on a count that does not match the windows
         self.alerter = health.Alerter(conn, notify)
         self.probe_marionette: Callable[[], bool] = lambda: _port_open(settings.marionette_host, settings.marionette_port)
         self.probe_bridge: Callable[[], bool] = lambda: _bridge_ok(settings.bridge_url)
@@ -306,7 +318,7 @@ class Scheduler:
     def _budget_share(self, now: datetime) -> int:
         used = repo.page_loads_today(self.conn)
         remaining = max(0, self.daily_cap() - used)
-        return math.ceil(remaining / sittings_left(now, self.windows, self.next_window_idx()))
+        return math.ceil(remaining * sitting_share(now, self.windows, self.window_weights, self.next_window_idx()))
 
     # -- jobs ----------------------------------------------------------------------
 

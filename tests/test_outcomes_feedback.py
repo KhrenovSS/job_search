@@ -270,6 +270,8 @@ def test_stats_split_letters_by_the_rules_they_were_written_under():
     assert cut({"letter_at": "2026-11-15T02:00:00+00:00"}) == "15.11–23.11 (v9.51)"
     # v9.56 (decision #85): the format moved into the first sentence — a third band, not a blend with v9.51
     assert cut({"letter_at": "2026-11-23T15:44:01+00:00"}) == "15.11–23.11 (v9.51)"
-    assert cut({"letter_at": "2026-11-23T16:55:00+00:00"}) == "с 23.11 (v9.56)"
-    assert cut({"letter_at": "2026-12-01T08:00:00+00:00"}) == "с 23.11 (v9.56)"
+    assert cut({"letter_at": "2026-11-23T16:55:00+00:00"}) == "23.11–24.11 (v9.56)"
+    # v9.58 (decision #87): the company offer names the project closest to what the company makes — a fourth band
+    assert cut({"letter_at": "2026-11-24T15:51:19+00:00"}) == "23.11–24.11 (v9.56)"
+    assert cut({"letter_at": "2026-12-01T08:00:00+00:00"}) == "с 24.11 (v9.58)"
     assert cut({"letter_at": None}) is None

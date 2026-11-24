@@ -64,7 +64,7 @@ remote `work_format=REMOTE`, project `employment_form=PROJECT,PART` и gph `acce
 ## Лиды-компании (v9.13, решение №53)
 Единица лида — компания, вакансия лишь повод её увидеть. Четыре канала в `COMPANY_CHANNELS` (`panel,design,owen_si,plant`, по
 умолчанию все) плюс `tender`, который включается отдельно (`ZAKUPKI_ENABLED`, v9.26):
-- `panel` и `design` — задачи сбора по `COMPANY_QUERIES` (одна на канал, вся Россия): карточки получают
+- `panel` и `design` — задачи сбора по `COMPANY_QUERIES` (пары «канал, запрос», вся Россия; с v9.58 у `panel` три запроса — щитовики, производители оборудования, инженерные системы и вода; номер пары = `source` `search:<n>`): карточки получают
   `lead_kind='company'` (`repo.insert_card`), префильтр не требует инженерного слова, триаж идёт по
   `prompts/company_triage.md` (пачки по виду не смешиваются), страница вакансии читается как описание компании,
   оценка — `prompts/company_evaluation.md` → `CompanyEvaluation` (fit, lead, company_kind ∈ panel_builder /

@@ -214,7 +214,11 @@ def _by_letter_len(r: sqlite3.Row) -> str | None:
 LETTER_RULES_SINCE = "2026-11-15"
 # v9.56 (decision #85): on 23.11.2026 the format («не в штат, а на подряд: работаю по ИП») moved into the first
 # sentence (the boundary is UTC: the last letter under the old rules was written at 15:44, the service restarted at 16:51). A third band, so the 12.12 review compares v9.51 with v9.56 instead of mixing them. Newest first.
-LETTER_RULES_BANDS = (("2026-11-23T16:00", "v9.56"), (LETTER_RULES_SINCE, "v9.51"))
+# v9.58 (decision #87): on 24.11.2026 the company offer got the «what the company makes → which project to name» table
+# (UTC: the last letter under the old rules was written at 15:51, the service restarted after 16:05). A fourth band.
+# Only offers to companies changed; replies to vacancies are the same text in the v9.56 and v9.58 bands — read the
+# band together with the «Вид лида» slice.
+LETTER_RULES_BANDS = (("2026-11-24T16:00", "v9.58"), ("2026-11-23T16:00", "v9.56"), (LETTER_RULES_SINCE, "v9.51"))
 
 
 def _day(iso: str) -> str:

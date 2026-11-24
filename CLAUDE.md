@@ -55,7 +55,10 @@
 вся Россия (значения — в `.env`; умолчания кода осторожнее).
 **Открытое дело:** 12.12.2026 — оценить правила писем v9.51 по `/stats` (разрез «Правила письма») и сопоставить признаки
 текста с откликом; из писем с приглашением собрать образцы (`docs/ROADMAP.md`, решение №82). С 23.11 в разрезе третья
-полоса — v9.56, формат в первой фразе (решение №85): сравнивать полосы отдельно.
+полоса — v9.56, формат в первой фразе (решение №85), с 24.11 четвёртая — v9.58, адресность писем компаниям (№87):
+сравнивать полосы отдельно.
+**Открытое дело:** 02.12.2026 — замер пробы расширенного поиска (решение №86): запросы `search:7`, `search:8` и
+дополненный `search:5` по новым компаниям и лидам; веса подходов `CRAWL_WINDOW_WEIGHTS=1,1,1,3,3,1`.
 
 ## Быстрый старт для агента
 **Сначала** убедитесь, что браузером никто не пользуется: Marionette держит одну сессию, поэтому `check_browser.py`,
@@ -108,7 +111,7 @@ certs/    russian_trusted_root_ca.pem — корневой сертификат 
 src/hh_scout/
   config.py        Settings из .env (порог, веса, лимиты, окна, ритм, токены) + константы: SEARCH_QUERIES (5),
                    REGION_NAMES (48 — запасной путь при SEARCH_ALL_RUSSIA=false; по умолчанию ищем по всей России),
-                   TITLE_STOP/KEEP/REQUIRED_ANY, COMPANY_QUERIES (каналы panel/design), TRUDVSEM_QUERIES (v9.25) + TRUDVSEM_COMPANY_QUERIES (v9.40), ZAKUPKI_QUERIES (v9.26);  logging_setup.py — логи в stdout/journald
+                   TITLE_STOP/KEEP/REQUIRED_ANY, COMPANY_QUERIES (пары «канал, запрос» для panel/design; номер пары = `search:<n>`), TRUDVSEM_QUERIES (v9.25) + TRUDVSEM_COMPANY_QUERIES (v9.40), ZAKUPKI_QUERIES (v9.26);  logging_setup.py — логи в stdout/journald
   db.py            SQLite (автокоммит, WAL), миграции _m001…_m018 (PRAGMA user_version), kv_get/kv_set, transaction(),
                    backup() — ночная копия в data/backups/ (7 штук)
   main.py          сервис: aiogram polling + планировщик; первый старт помечает превью как sent

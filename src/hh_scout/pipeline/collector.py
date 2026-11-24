@@ -82,7 +82,7 @@ ALL_PASSES = frozenset({PASS_REGIONAL, PASS_REMOTE, PASS_PROJECT, PASS_GPH})
 def plan_tasks(region_ids: list[int], queries: tuple[str, ...] | None = None, rng: random.Random | None = None,
                company_channels: frozenset[str] | set[str] = frozenset(), only_pass: str | None = None,
                passes: frozenset[str] | set[str] = frozenset({PASS_REGIONAL})) -> list[SearchTask]:
-    """The sitting's search tasks: the enabled passes per programmer query, plus one task per enabled company channel.
+    """The sitting's search tasks: the enabled passes per programmer query, plus one task per query of an enabled company channel.
 
     `passes` is `SEARCH_PASSES` (v9.15): with the whole country in `regional` the other three passes are its
     subsets — 6 % of the cards for a quarter of the page cap — so only `regional` runs by default.
@@ -100,7 +100,7 @@ def plan_tasks(region_ids: list[int], queries: tuple[str, ...] | None = None, rn
             tasks.append(SearchTask(PASS_PROJECT, i, q, employment_forms=("PROJECT", "PART")))
         if PASS_GPH in passes:
             tasks.append(SearchTask(PASS_GPH, i, q, accept_temporary=True))
-    for j, (channel, q) in enumerate(COMPANY_QUERIES.items()):
+    for j, (channel, q) in enumerate(COMPANY_QUERIES):   # several pairs per channel are fine (v9.58)
         if channel in company_channels:
             tasks.append(SearchTask(channel, len(queries) + j, q, areas=tuple(region_ids)))
     if only_pass:

@@ -110,6 +110,12 @@ class Settings(BaseSettings):
     # hour-long gaps between them, the 03:00-04:00 gap is where the nightly backup lands, Firefox stays open all
     # night. The default keeps the daytime schedule — the same risk decision as the page cap above.
     crawl_windows: str = "07:00-10:00,12:00-15:00,18:00-22:00"
+    # How the daily cap is shared between the windows (v9.58, decision #86): one positive number per window, in the
+    # order of the sorted windows. A sitting gets `remaining × its weight / the weights of the sittings still ahead`.
+    # Empty = equal shares (the behaviour before v9.58). Measured 24.11: hh.ru posts by day, so the 12–15 and 16–19
+    # sittings ran out of search pages while 79–114 pages a day were left unused by the evening. The cap, the
+    # windows and the pacing do not change — only where in the day the pages go; the values are the owner's (.env).
+    crawl_window_weights: str = ""
     # Telegram messages sent in this interval (may cross midnight) arrive silent (`disable_notification`): a lead
     # found at 03:00 is in the chat by morning without waking anyone. Empty = never silent.
     quiet_hours: str = "23:00-07:00"
@@ -314,6 +320,10 @@ class Settings(BaseSettings):
         return parse_windows(self.crawl_windows)
 
     @property
+    def crawl_window_weights_parsed(self) -> list[float]:
+        return parse_window_weights(self.crawl_window_weights, len(self.crawl_windows_parsed))
+
+    @property
     def search_passes_set(self) -> frozenset[str]:
         return frozenset(p.strip() for p in self.search_passes.split(",") if p.strip())
 
@@ -374,6 +384,22 @@ def parse_windows(value: str) -> list[tuple[time, time]]:
         if nxt_start < prev_end:
             raise ValueError("окна сбора пересекаются")
     return windows
+
+
+def parse_window_weights(value: str, n_windows: int) -> list[float]:
+    """'1,1,3' -> [1.0, 1.0, 3.0], one positive weight per crawl window; empty -> equal weights."""
+    chunks = [c.strip() for c in value.split(",") if c.strip()]
+    if not chunks:
+        return [1.0] * n_windows
+    try:
+        weights = [float(c) for c in chunks]
+    except ValueError:
+        raise ValueError(f"CRAWL_WINDOW_WEIGHTS {value!r}: нужны числа через запятую") from None
+    if len(weights) != n_windows:
+        raise ValueError(f"CRAWL_WINDOW_WEIGHTS: весов {len(weights)}, а окон в CRAWL_WINDOWS {n_windows}")
+    if any(w <= 0 for w in weights):
+        raise ValueError("CRAWL_WINDOW_WEIGHTS: вес окна должен быть больше нуля")
+    return weights
 
 
 def parse_span(value: str) -> tuple[time, time] | None:
@@ -482,13 +508,26 @@ DISCOVERY_EXTRA_REGIONS: tuple[str, ...] = (
 # tail) but does not change the score or the threshold. Kinds not listed get 0.
 KIND_PRIORITY_BONUS: dict[str, int] = {"panel_builder": 15, "design_bureau": 10, "integrator": 5}
 
-COMPANY_QUERIES: dict[str, str] = {
-    "panel": '("сборщик шкафов" OR "сборщик щитов" OR "сборщик электрощитового" OR "электромонтажник шкафов" '
-             'OR "электромонтажник щитов" OR "электромонтажник-сборщик" OR "шкафов автоматики" OR "шкафов управления" '
-             'OR "щитовое оборудование" OR НКУ OR "щитов автоматики")',
-    "design": '("инженер-проектировщик" OR проектировщик) AND ("АСУ ТП" OR "систем автоматизации" '
-              'OR "систем автоматики" OR КИПиА OR автоматизации)',
-}
+# Company search tasks on hh.ru: (channel, query) pairs, one task per pair per sitting. A channel may have several
+# queries (v9.58, decision #86). The ORDER IS THE NUMBERING: a pair's `source` is `search:<len(SEARCH_QUERIES) + its
+# position>`, so new pairs are appended at the end — `search:5` stays the panel query and `search:6` the design one,
+# and a trial query can be measured by its own `source`.
+COMPANY_QUERIES: tuple[tuple[str, str], ...] = (
+    ("panel", '("сборщик шкафов" OR "сборщик щитов" OR "сборщик электрощитового" OR "электромонтажник шкафов" '
+              'OR "электромонтажник щитов" OR "электромонтажник-сборщик" OR "шкафов автоматики" OR "шкафов управления" '
+              'OR "щитовое оборудование" OR НКУ OR "щитов автоматики" '
+              # v9.58: the same trade under its other names
+              'OR ВРУ OR ГРЩ OR "электрощитовое производство" OR "конструктор НКУ")'),
+    ("design", '("инженер-проектировщик" OR проектировщик) AND ("АСУ ТП" OR "систем автоматизации" '
+               'OR "систем автоматики" OR КИПиА OR автоматизации)'),
+    # v9.58 trial (decision #86, owner 24.11.2026): companies whose vacancies never say «ПЛК» or «АСУ ТП».
+    # search:7 — equipment makers and service firms: drives, operator panels and a control cabinet they commission.
+    ("panel", '("частотный преобразователь" OR "частотных преобразователей" OR "панель оператора" OR сервопривод '
+              'OR "шкаф управления") AND (пусконаладка OR "пуско-наладка" OR ПНР OR "наладка оборудования")'),
+    # search:8 — building services and water: installers who put an automation cabinet next to their pumps and fans.
+    ("panel", '(вентиляция OR "насосная станция" OR "насосных станций" OR КНС OR водоподготовка OR водоочистка) '
+              'AND ("щит автоматики" OR "шкаф автоматики" OR "шкафов автоматики" OR пусконаладка)'),
+)
 
 # Fallback geography for SEARCH_ALL_RUSSIA=false. Region names resolved through GET /areas and cached in the DB.
 # Was the default until 2026-09-13 (owner's decision 2026-09-08: European Russia, roughly 1300 km from Moscow);

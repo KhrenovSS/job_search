@@ -224,14 +224,29 @@ def test_backfill_walk_goes_through_bursts_and_reports_every_page(monkeypatch):
 
 # --- v9.13: company channels ------------------------------------------------------------------------
 
-def test_company_channels_add_one_task_each_and_mark_their_cards():
+def test_the_live_company_queries_keep_their_numbers():
+    """`source` of an hh.ru row is `search:<number>`; the trial of v9.58 is measured by it, so 5 and 6 must not move."""
+    from hh_scout.config import COMPANY_QUERIES, SEARCH_QUERIES
+
+    assert len(SEARCH_QUERIES) == 5
+    assert [c for c, _ in COMPANY_QUERIES[:2]] == ["panel", "design"] and "НКУ" in COMPANY_QUERIES[0][1]
+    assert all(c in {"panel", "design"} for c, _ in COMPANY_QUERIES)
+
+
+def test_company_channels_add_a_task_per_query_and_mark_their_cards(monkeypatch):
+    from hh_scout.pipeline import collector as mod
     from hh_scout.pipeline.collector import COMPANY_PASSES, PASS_DESIGN, PASS_PANEL
 
+    monkeypatch.setattr(mod, "COMPANY_QUERIES", (("panel", "P1"), ("design", "D1"), ("panel", "P2")))
     tasks = plan_tasks([113], queries=("a",), rng=random.Random(1), company_channels={"panel", "design", "owen_si"})
-    assert len(tasks) == 3 and {t.search_pass for t in tasks} >= COMPANY_PASSES   # regional + panel + design (v9.15)
+    # regional + panel + design (v9.15) + the second panel query (v9.58)
+    assert len(tasks) == 4 and {t.search_pass for t in tasks} >= COMPANY_PASSES
     assert all(t.areas == (113,) and not t.work_formats for t in tasks if t.search_pass in COMPANY_PASSES)
+    # the position in COMPANY_QUERIES is the number: a pair appended at the end does not renumber the older ones
+    assert {(t.search_pass, t.source, t.query) for t in tasks if t.search_pass in COMPANY_PASSES} == {
+        ("panel", "search:1", "P1"), ("design", "search:2", "D1"), ("panel", "search:3", "P2")}
     only = plan_tasks([113], queries=("a",), rng=random.Random(1), company_channels={"panel"}, only_pass=PASS_PANEL)
-    assert [t.search_pass for t in only] == [PASS_PANEL]
+    assert sorted(t.query for t in only) == ["P1", "P2"] and {t.search_pass for t in only} == {PASS_PANEL}
     assert plan_tasks([113], queries=("a",), rng=random.Random(1), company_channels=set()) and PASS_DESIGN not in {
         t.search_pass for t in plan_tasks([113], queries=("a",), rng=random.Random(1), company_channels=set())}
 
@@ -242,6 +257,7 @@ def test_company_pass_cards_become_company_leads_and_the_seed_uses_its_own_perio
 
     monkeypatch.setattr(pacing, "sleep", lambda s: None)
     monkeypatch.setattr(mod, "SEARCH_QUERIES", ("Q",))
+    monkeypatch.setattr(mod, "COMPANY_QUERIES", (("panel", "НКУ"), ("design", "проектировщик")))
     conn = connect(":memory:")
     migrate(conn)
     loads = []

@@ -164,6 +164,31 @@ def test_budget_share_splits_remaining_cap_between_sittings_left():
     assert sch._budget_share(_dt(13, 0)) == 45  # (120 - 30) / 2
 
 
+def test_window_weights_move_the_cap_towards_the_heavy_sittings():
+    """v9.58, decision #86: hh.ru posts by day, so the owner gives the daytime windows a larger share of the cap."""
+    from hh_scout.config import parse_window_weights
+    from hh_scout.scheduler import sitting_share
+
+    settings = Settings(_env_file=None, daily_page_loads_min=120, daily_page_loads_max=120, crawl_window_weights="1,3,2")
+    conn = connect(":memory:")
+    migrate(conn)
+    sch = Scheduler(settings, conn, _noop, _noop)
+    kv_set(conn, "crawl_window_idx", "0")
+    kv_set(conn, "crawl_window_date", "2026-09-09")
+    assert sch._budget_share(_dt(7, 30)) == 20  # 120 × 1 / (1 + 3 + 2)
+    kv_set(conn, "crawl_window_idx", "1")
+    assert sch._budget_share(_dt(13, 0)) == 72  # 120 × 3 / (3 + 2): what the morning left unspent moves on
+    kv_set(conn, "crawl_window_idx", "2")
+    assert sch._budget_share(_dt(19, 0)) == 120  # the last sitting takes the rest
+    # the current window still counts after its end has passed (a sitting may run 30 min over)
+    assert sitting_share(_dt(15, 10), sch.windows, [1, 3, 2], 1) == 3 / 5
+    # no weights = equal shares, as before v9.58
+    assert parse_window_weights("", 3) == [1.0, 1.0, 1.0]
+    for bad in ("1,2", "1,0,2", "1,x,2", "1,-1,2"):
+        with pytest.raises(ValueError):
+            parse_window_weights(bad, 3)
+
+
 def test_restore_replans_today_when_saved_plan_is_for_a_later_day_and_a_window_is_free():
     sch, conn = _scheduler()
     kv_set(conn, "next_crawl_at", _dt(7, 9, day=10).isoformat())  # v5 plan for tomorrow morning, evening window unused
